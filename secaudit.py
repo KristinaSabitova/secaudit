@@ -359,7 +359,11 @@ def run_claude(project: Path, prompt: str, timeout: int = 3600) -> str:
     return result.stdout
 
 
-def extract_json_findings(text: str) -> list:
+_PARSE_FAILED = object()  # sentinel: could not parse JSON at all
+
+
+def extract_json_findings(text: str):
+    """Return parsed list, empty list [], or _PARSE_FAILED sentinel."""
     cleaned = re.sub(r'```json\s*', '', text)
     cleaned = re.sub(r'```\s*', '', cleaned).strip()
     try:
@@ -374,7 +378,7 @@ def extract_json_findings(text: str) -> list:
             return json.loads(m.group())
         except json.JSONDecodeError:
             pass
-    return []
+    return _PARSE_FAILED
 
 # ---------------------------------------------------------------------------
 # Display helpers
@@ -390,12 +394,10 @@ STATUS_LABEL = {
 
 
 def print_findings(findings: list, show_all: bool = False) -> None:
-    visible = [
-        f for f in findings
-        if show_all or f.status in ("new", "regressed")
-    ] if not show_all else [
-        f for f in findings if f.status != "accepted"
-    ]
+    if show_all:
+        visible = [f for f in findings if f.status != "accepted"]
+    else:
+        visible = [f for f in findings if f.status in ("new", "regressed")]
 
     by_sev = {s: [] for s in SEVERITIES}
     for f in visible:
@@ -495,8 +497,8 @@ def run_differential(args, project: Path, files=None) -> None:
     raw_output = run_claude(project, prompt)
     raw_findings = extract_json_findings(raw_output)
 
-    if not raw_findings and not args.json:
-        print("[*] Claude returned no parseable findings.", file=sys.stderr)
+    if raw_findings is _PARSE_FAILED:
+        print("[!] Could not parse JSON from Claude output:", file=sys.stderr)
         print(raw_output)
         return
 

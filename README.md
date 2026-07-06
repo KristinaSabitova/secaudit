@@ -110,3 +110,4 @@ secaudit.py baseline /path/to/project
 ```bash
 python3 -m pytest tests/ -v
 ```
+# smoke test
