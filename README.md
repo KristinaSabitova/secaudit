@@ -8,21 +8,24 @@ a standard checklist and tracks findings across runs.
 - Python 3.10+
 - One of the supported backends (see below)
 
-## Installation
+## Quick setup
 
 ```bash
-# Invoke directly
-python3 ~/tools/secaudit/secaudit.py /path/to/project
+# 1. Install the `secaudit` shell alias (writes one line to ~/.zshrc or ~/.bashrc)
+python3 ~/tools/secaudit/secaudit.py init
 
-# Or use the shell function (add to ~/.zshrc):
-secaudit() {
-  local project="$1"
-  local projpath="$HOME/$project"
-  local stamp=$(/bin/date +%Y%m%d)
-  local output="$HOME/Desktop/${project}-audit-${stamp}.md"
-  python3 ~/tools/secaudit/secaudit.py "$projpath" --report-only -o "$output"
-}
+# 2. Reload your shell
+source ~/.zshrc   # or open a new terminal
+
+# 3. Register your first project (run from inside the project directory)
+cd ~/dev/myproject
+secaudit projects add myproject
+
+# 4. Audit it
+secaudit myproject --staged
 ```
+
+`init` is idempotent — running it twice does not duplicate the alias.
 
 ## Supported backends
 
@@ -89,20 +92,30 @@ model = "llama3"
 
 ## Project aliases
 
-Register short names for project paths so you don't have to type full paths.
+Register short names so you never type a full path again.
 
 ```bash
-# Register
-secaudit.py projects add domini ~/dev/domini
-secaudit.py projects add api    ~/dev/mycompany/api
+# Register from inside the project directory (uses cwd automatically)
+cd ~/dev/domini
+secaudit projects add domini
+
+# Or register an explicit path from anywhere
+secaudit projects add api ~/dev/mycompany/api
 
 # Use alias anywhere a path is accepted
-secaudit.py domini --staged
-secaudit.py api --diff main --backend ollama
+secaudit domini --staged
+secaudit api --diff main --backend ollama
 
 # Manage
-secaudit.py projects list
-secaudit.py projects remove domini
+secaudit projects list
+secaudit projects remove domini
+```
+
+If the directory is not a git repo, secaudit warns and asks for confirmation.
+Pass `--force` to skip the prompt:
+
+```bash
+secaudit projects add scratch /tmp/scratch --force
 ```
 
 Aliases are stored in `~/.secaudit/projects.json`.
