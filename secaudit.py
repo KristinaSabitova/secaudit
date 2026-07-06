@@ -11,6 +11,18 @@ Differential mode (compares with saved state):
     secaudit . --all                 # show all findings, not just NEW+REGRESSED
     secaudit . --json                # output classified findings as JSON
 
+Backend selection:
+    secaudit . --staged --backend anthropic-api
+    secaudit . --staged --backend openai-api
+    secaudit . --staged --backend ollama
+    (default: claude-code, or read from ~/.secaudit/config.toml)
+
+Project aliases:
+    secaudit projects add myapp ~/dev/myapp
+    secaudit projects list
+    secaudit projects remove myapp
+    secaudit myapp --staged          # resolves alias to its registered path
+
 State commands:
     secaudit suppress <id> --reason "..."   # mark finding as ACCEPTED
     secaudit baseline [project]             # accept all current findings as baseline
@@ -25,7 +37,9 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
+import urllib.error
+import urllib.request
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -84,14 +98,12 @@ def _make_id(fingerprint: str) -> str:
 
 def redact_secrets(text: str) -> str:
     """Redact secret values in text; keep type + short hash hint."""
-    # key = value patterns
     text = re.sub(
         r'(?i)((?:api[_\-]?key|token|password|secret|credential|auth)\s*[:=\'"` ]+)'
         r'([A-Za-z0-9+/=_\-]{8,})',
         lambda m: m.group(1) + f"[REDACTED:{hashlib.sha256(m.group(2).encode()).hexdigest()[:6]}]",
         text,
     )
-    # known token prefixes
     text = re.sub(
         r'((?:sk-|pk-|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_\-]{10,})',
         lambda m: f"[REDACTED:{hashlib.sha256(m.group(1).encode()).hexdigest()[:6]}]",
@@ -154,7 +166,7 @@ def save_state(project_id: str, findings: dict) -> None:
 
 def classify(raw_findings: list, saved: dict) -> tuple:
     """
-    raw_findings: list of dicts from Claude JSON output
+    raw_findings: list of dicts from LLM JSON output
     saved: dict[fingerprint -> Finding] from state
 
     Returns (updated_state, all_findings_list).
@@ -195,7 +207,6 @@ def classify(raw_findings: list, saved: dict) -> tuple:
 
         updated[fp] = finding
 
-    # Findings no longer present → fixed (unless already accepted)
     for fp, prev in saved.items():
         if fp not in seen:
             if prev.status == "accepted":
@@ -237,6 +248,296 @@ def default_branch(project: Path) -> str:
         if _git(project, "rev-parse", "--verify", b):
             return b
     return "HEAD~1"
+
+# ---------------------------------------------------------------------------
+# Project aliases
+# ---------------------------------------------------------------------------
+
+_PROJECTS_FILE = Path.home() / ".secaudit" / "projects.json"
+
+
+def load_projects() -> dict:
+    """Returns dict[alias -> absolute_path_str]."""
+    if not _PROJECTS_FILE.exists():
+        return {}
+    try:
+        return json.loads(_PROJECTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_projects(projects: dict) -> None:
+    _PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _PROJECTS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(projects, indent=2), encoding="utf-8")
+    tmp.replace(_PROJECTS_FILE)
+
+
+def resolve_project(arg: str) -> Path:
+    """Resolve alias or literal path → absolute Path."""
+    projects = load_projects()
+    if arg in projects:
+        return Path(projects[arg])
+    return Path(arg).expanduser().resolve()
+
+
+def cmd_projects(argv: list) -> None:
+    p = argparse.ArgumentParser(prog="secaudit projects")
+    sub = p.add_subparsers(dest="action", required=True)
+
+    add_p = sub.add_parser("add", help="register an alias for a project path")
+    add_p.add_argument("alias")
+    add_p.add_argument("path")
+
+    sub.add_parser("list", help="list all registered aliases")
+
+    rm_p = sub.add_parser("remove", help="remove a registered alias")
+    rm_p.add_argument("alias")
+
+    args = p.parse_args(argv)
+    projects = load_projects()
+
+    if args.action == "add":
+        path = Path(args.path).expanduser().resolve()
+        if not path.is_dir():
+            sys.exit(f"error: {path} is not a directory.")
+        projects[args.alias] = str(path)
+        save_projects(projects)
+        print(f"[+] Alias '{args.alias}' → {path}")
+
+    elif args.action == "list":
+        if not projects:
+            print("No aliases registered.")
+            return
+        width = max(len(k) for k in projects)
+        for alias, path in sorted(projects.items()):
+            print(f"  {alias:<{width}}  →  {path}")
+
+    elif args.action == "remove":
+        if args.alias not in projects:
+            sys.exit(f"error: alias '{args.alias}' not found.")
+        del projects[args.alias]
+        save_projects(projects)
+        print(f"[+] Alias '{args.alias}' removed.")
+
+# ---------------------------------------------------------------------------
+# Audit backends
+# ---------------------------------------------------------------------------
+
+_CONFIG_FILE = Path.home() / ".secaudit" / "config.toml"
+
+_CONFIG_EXAMPLE = """\
+# secaudit backend configuration
+# Uncomment and edit the section for the backend you want to use.
+# See README for full documentation.
+
+backend = "claude-code"
+# model = "claude-sonnet-4-6"
+
+# --- Anthropic API (direct HTTP, no Claude Code CLI needed) ---
+# backend = "anthropic-api"
+# model = "claude-sonnet-4-6"
+# Set env var: export ANTHROPIC_API_KEY=sk-ant-...
+
+# --- OpenAI API ---
+# backend = "openai-api"
+# model = "gpt-4o"
+# Set env var: export OPENAI_API_KEY=sk-...
+
+# --- Ollama (local, no account or cost) ---
+# backend = "ollama"
+# model = "llama3"
+# ollama_url = "http://localhost:11434"
+"""
+
+
+def _parse_toml(text: str) -> dict:
+    """Parse simple key = "value" TOML (no library dependency needed)."""
+    result = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            result[k] = v
+    return result
+
+
+def load_config() -> dict:
+    if not _CONFIG_FILE.exists():
+        _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CONFIG_FILE.write_text(_CONFIG_EXAMPLE, encoding="utf-8")
+        return {}
+    return _parse_toml(_CONFIG_FILE.read_text(encoding="utf-8"))
+
+
+class AuditBackend:
+    def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
+        raise NotImplementedError
+
+
+class ClaudeCodeBackend(AuditBackend):
+    def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
+        exe = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
+        if not exe:
+            sys.exit(
+                "error: 'claude' (Claude Code CLI) not found in PATH.\n"
+                "Set CLAUDE_BIN or install from https://docs.claude.com."
+            )
+        print(f"[*] Running audit in {project} (claude-code) ...", file=sys.stderr)
+        try:
+            result = subprocess.run(
+                [exe, "-p", prompt],
+                cwd=str(project), capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            sys.exit("error: audit timed out.")
+        if result.returncode != 0:
+            sys.stderr.write(result.stderr)
+            sys.exit(f"error: claude exited with code {result.returncode}")
+        return result.stdout
+
+
+class AnthropicAPIBackend(AuditBackend):
+    DEFAULT_MODEL = "claude-sonnet-4-6"
+
+    def __init__(self, model: str | None = None):
+        self.model = model or self.DEFAULT_MODEL
+
+    def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            sys.exit(
+                "error: ANTHROPIC_API_KEY is not set.\n"
+                "Export it before running:\n"
+                "  export ANTHROPIC_API_KEY=sk-ant-..."
+            )
+        payload = json.dumps({
+            "model": self.model,
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        print(f"[*] Running audit via Anthropic API ({self.model}) ...", file=sys.stderr)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+            return data["content"][0]["text"]
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            sys.exit(f"error: Anthropic API {e.code}: {body}")
+        except urllib.error.URLError as e:
+            sys.exit(f"error: Could not reach Anthropic API: {e.reason}")
+
+
+class OpenAIBackend(AuditBackend):
+    DEFAULT_MODEL = "gpt-4o"
+
+    def __init__(self, model: str | None = None):
+        self.model = model or self.DEFAULT_MODEL
+
+    def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            sys.exit(
+                "error: OPENAI_API_KEY is not set.\n"
+                "Export it before running:\n"
+                "  export OPENAI_API_KEY=sk-..."
+            )
+        payload = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        print(f"[*] Running audit via OpenAI API ({self.model}) ...", file=sys.stderr)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            sys.exit(f"error: OpenAI API {e.code}: {body}")
+        except urllib.error.URLError as e:
+            sys.exit(f"error: Could not reach OpenAI API: {e.reason}")
+
+
+class OllamaBackend(AuditBackend):
+    DEFAULT_MODEL = "llama3"
+    DEFAULT_URL = "http://localhost:11434"
+
+    def __init__(self, model: str | None = None, base_url: str | None = None):
+        self.model = model or self.DEFAULT_MODEL
+        self.base_url = (base_url or self.DEFAULT_URL).rstrip("/")
+
+    def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
+        payload = json.dumps({
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/api/generate",
+            data=payload,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        print(f"[*] Running audit via Ollama ({self.model}) ...", file=sys.stderr)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+            return data.get("response", "")
+        except urllib.error.URLError as e:
+            sys.exit(
+                f"error: Could not reach Ollama at {self.base_url}.\n"
+                f"Is Ollama running? Start it with: ollama serve\n"
+                f"Detail: {e.reason}"
+            )
+
+
+_BACKENDS = {
+    "claude-code":   ClaudeCodeBackend,
+    "anthropic-api": AnthropicAPIBackend,
+    "openai-api":    OpenAIBackend,
+    "ollama":        OllamaBackend,
+}
+
+
+def select_backend(flag: str | None, config: dict | None = None) -> AuditBackend:
+    """Priority: explicit flag > config.toml > default (claude-code)."""
+    if config is None:
+        config = load_config()
+    name = flag or config.get("backend", "claude-code")
+    if name not in _BACKENDS:
+        valid = ", ".join(_BACKENDS)
+        sys.exit(f"error: unknown backend '{name}'. Valid: {valid}")
+    model = config.get("model") or None
+    ollama_url = config.get("ollama_url") or None
+    cls = _BACKENDS[name]
+    if name == "ollama":
+        return cls(model=model, base_url=ollama_url)
+    if name == "claude-code":
+        return cls()
+    return cls(model=model)
 
 # ---------------------------------------------------------------------------
 # Prompt builders
@@ -332,32 +633,8 @@ def build_diff_prompt(stack, scope, files):
     return "\n".join(parts)
 
 # ---------------------------------------------------------------------------
-# Claude runner
+# JSON extraction
 # ---------------------------------------------------------------------------
-
-def find_claude() -> str:
-    exe = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
-    if not exe:
-        sys.exit("error: 'claude' (Claude Code CLI) not found in PATH.\n"
-                 "Set CLAUDE_BIN or install from https://docs.claude.com.")
-    return exe
-
-
-def run_claude(project: Path, prompt: str, timeout: int = 3600) -> str:
-    claude = find_claude()
-    print(f"[*] Running audit in {project} ...", file=sys.stderr)
-    try:
-        result = subprocess.run(
-            [claude, "-p", prompt],
-            cwd=str(project), capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        sys.exit("error: audit timed out after 1h.")
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        sys.exit(f"error: claude exited with code {result.returncode}")
-    return result.stdout
-
 
 _PARSE_FAILED = object()  # sentinel: could not parse JSON at all
 
@@ -470,13 +747,13 @@ def cmd_show_suppressed(project: Path) -> None:
 # Main flows
 # ---------------------------------------------------------------------------
 
-def run_oneshot(args, project: Path) -> None:
+def run_oneshot(args, project: Path, backend: AuditBackend) -> None:
     mode = "report" if args.report_only else "fix"
     prompt = build_oneshot_prompt(args.stack, args.scope, mode)
     if args.print_prompt:
         print(prompt)
         return
-    report = run_claude(project, prompt)
+    report = backend.run(project, prompt)
     if args.output:
         header = (f"# Security Audit Report\n\n"
                   f"- Project: `{project}`\n"
@@ -488,17 +765,17 @@ def run_oneshot(args, project: Path) -> None:
         print(report)
 
 
-def run_differential(args, project: Path, files=None) -> None:
+def run_differential(args, project: Path, backend: AuditBackend, files=None) -> None:
     prompt = build_diff_prompt(args.stack, args.scope, files)
     if args.print_prompt:
         print(prompt)
         return
 
-    raw_output = run_claude(project, prompt)
+    raw_output = backend.run(project, prompt)
     raw_findings = extract_json_findings(raw_output)
 
     if raw_findings is _PARSE_FAILED:
-        print("[!] Could not parse JSON from Claude output:", file=sys.stderr)
+        print("[!] Could not parse JSON from output:", file=sys.stderr)
         print(raw_output)
         return
 
@@ -533,37 +810,41 @@ def run_differential(args, project: Path, files=None) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # Route sub-commands before full argparse
+    # Early routing for subcommands that don't need the full parser
+    if len(sys.argv) > 1 and sys.argv[1] == "projects":
+        cmd_projects(sys.argv[2:])
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "suppress":
         sp = argparse.ArgumentParser(prog="secaudit suppress")
         sp.add_argument("finding_id")
         sp.add_argument("--reason", required=True)
-        sp.add_argument("--project", type=Path, default=Path("."))
+        sp.add_argument("--project", type=str, default=".")
         sa = sp.parse_args(sys.argv[2:])
-        cmd_suppress(sa.project.expanduser().resolve(), sa.finding_id, sa.reason)
+        cmd_suppress(resolve_project(sa.project), sa.finding_id, sa.reason)
         return
 
     if len(sys.argv) > 1 and sys.argv[1] == "baseline":
         bp = argparse.ArgumentParser(prog="secaudit baseline")
-        bp.add_argument("project", type=Path, nargs="?", default=Path("."))
+        bp.add_argument("project", type=str, nargs="?", default=".")
         ba = bp.parse_args(sys.argv[2:])
-        cmd_baseline(ba.project.expanduser().resolve())
+        cmd_baseline(resolve_project(ba.project))
         return
 
     p = argparse.ArgumentParser(
         prog="secaudit",
         description="Defensive web security audit via Claude Code.",
     )
-    p.add_argument("project", type=Path, help="path to the project to audit")
+    p.add_argument("project", type=str,
+                   help="path to audit, or a registered alias (see 'projects add')")
     p.add_argument("--stack", help='tech stack hint, e.g. "Django + Vue"')
-    p.add_argument("--scope", choices=["all", "backend", "frontend"],
-                   default="all")
+    p.add_argument("--scope", choices=["all", "backend", "frontend"], default="all")
 
     # One-shot flags (backward compatible)
     p.add_argument("--report-only", action="store_true",
                    help="report without applying fixes (one-shot mode)")
     p.add_argument("--full", action="store_true",
-                   help="force full one-shot audit (same as --report-only without fix)")
+                   help="force full one-shot audit")
     p.add_argument("--output", "-o", type=Path, help="write report to file")
     p.add_argument("--print-prompt", action="store_true")
 
@@ -579,8 +860,12 @@ def main() -> None:
     p.add_argument("--show-suppressed", action="store_true",
                    help="list suppressed (ACCEPTED) findings")
 
+    # Backend selection
+    p.add_argument("--backend", choices=list(_BACKENDS),
+                   help="audit backend (overrides config.toml)")
+
     args = p.parse_args()
-    project = args.project.expanduser().resolve()
+    project = resolve_project(args.project)
     if not project.is_dir():
         sys.exit(f"error: {project} is not a directory.")
 
@@ -588,7 +873,8 @@ def main() -> None:
         cmd_show_suppressed(project)
         return
 
-    # Decide mode
+    backend = select_backend(args.backend)
+
     if args.staged or args.diff:
         if args.staged:
             files = staged_files(project)
@@ -603,10 +889,9 @@ def main() -> None:
                 print(f"[*] No changed files vs {ref}.", file=sys.stderr)
                 return
             print(f"[*] Auditing {len(files)} file(s) changed vs {ref}.", file=sys.stderr)
-        run_differential(args, project, files)
+        run_differential(args, project, backend, files)
     else:
-        # One-shot mode (backward compatible)
-        run_oneshot(args, project)
+        run_oneshot(args, project, backend)
 
 
 if __name__ == "__main__":
