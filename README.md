@@ -1,5 +1,7 @@
 # secaudit
 
+> [Leer esto en español](README.es.md)
+
 Defensive security audit CLI. Orchestrates an LLM to audit a web app against
 a standard checklist and tracks findings across runs.
 
@@ -94,21 +96,35 @@ model = "llama3"
 
 Register short names so you never type a full path again.
 
-```bash
-# Register from inside the project directory (uses cwd automatically)
-cd ~/dev/domini
-secaudit projects add domini
+Aliases are not guessed — you register them first. The workflow is:
 
-# Or register an explicit path from anywhere
+```bash
+cd ~/stela      # navigate to your project (or wherever it lives)
+secaudit projects add stela
+```
+
+This saves `stela → /Users/you/stela` (or whatever the resolved path is) to
+`~/.secaudit/projects.json`. From then on, `secaudit stela` works from
+anywhere, just like any other registered project.
+
+To check which projects you have registered at any time:
+
+```bash
+secaudit projects list
+```
+
+Other operations:
+
+```bash
+# Register an explicit path from anywhere (no need to cd first)
 secaudit projects add api ~/dev/mycompany/api
 
 # Use alias anywhere a path is accepted
-secaudit domini --staged
+secaudit stela --staged
 secaudit api --diff main --backend ollama
 
-# Manage
-secaudit projects list
-secaudit projects remove domini
+# Remove an alias
+secaudit projects remove stela
 ```
 
 If the directory is not a git repo, secaudit warns and asks for confirmation.
