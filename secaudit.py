@@ -18,10 +18,14 @@ Backend selection:
     (default: claude-code, or read from ~/.secaudit/config.toml)
 
 Project aliases:
-    secaudit projects add myapp ~/dev/myapp
+    secaudit projects add myapp              # register cwd as alias
+    secaudit projects add myapp ~/dev/myapp  # register explicit path
     secaudit projects list
     secaudit projects remove myapp
     secaudit myapp --staged          # resolves alias to its registered path
+
+Shell integration:
+    secaudit init                    # install `secaudit` alias in ~/.zshrc / ~/.bashrc
 
 State commands:
     secaudit suppress <id> --reason "..."   # mark finding as ACCEPTED
@@ -249,6 +253,22 @@ def default_branch(project: Path) -> str:
             return b
     return "HEAD~1"
 
+
+def _is_git_repo(path: Path) -> bool:
+    """True if path has a .git entry (covers normal repos, submodules, worktrees)."""
+    return (path / ".git").exists()
+
+
+def _confirm(prompt: str) -> bool:
+    """Ask y/n interactively. Returns False when stdin is not a TTY."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
 # ---------------------------------------------------------------------------
 # Project aliases
 # ---------------------------------------------------------------------------
@@ -287,7 +307,10 @@ def cmd_projects(argv: list) -> None:
 
     add_p = sub.add_parser("add", help="register an alias for a project path")
     add_p.add_argument("alias")
-    add_p.add_argument("path")
+    add_p.add_argument("path", nargs="?", default=None,
+                       help="project directory (default: current directory)")
+    add_p.add_argument("--force", action="store_true",
+                       help="register even if the directory is not a git repo")
 
     sub.add_parser("list", help="list all registered aliases")
 
@@ -298,9 +321,18 @@ def cmd_projects(argv: list) -> None:
     projects = load_projects()
 
     if args.action == "add":
-        path = Path(args.path).expanduser().resolve()
+        raw = args.path if args.path is not None else os.getcwd()
+        path = Path(raw).expanduser().resolve()
         if not path.is_dir():
             sys.exit(f"error: {path} is not a directory.")
+
+        if not _is_git_repo(path):
+            print(f"warning: {path} does not appear to be a git repository.",
+                  file=sys.stderr)
+            if not args.force:
+                if not _confirm("Register anyway? [y/N] "):
+                    sys.exit("Aborted. Pass --force to skip this check.")
+
         projects[args.alias] = str(path)
         save_projects(projects)
         print(f"[+] Alias '{args.alias}' → {path}")
@@ -319,6 +351,47 @@ def cmd_projects(argv: list) -> None:
         del projects[args.alias]
         save_projects(projects)
         print(f"[+] Alias '{args.alias}' removed.")
+
+# ---------------------------------------------------------------------------
+# Shell integration (init)
+# ---------------------------------------------------------------------------
+
+_INIT_MARKER = "# secaudit alias"
+
+
+def detect_shell_rc() -> Path:
+    """Return ~/.zshrc or ~/.bashrc based on $SHELL; default to ~/.zshrc."""
+    shell = os.environ.get("SHELL", "")
+    if "bash" in shell:
+        return Path.home() / ".bashrc"
+    return Path.home() / ".zshrc"
+
+
+def cmd_init(rc_file: Path | None = None, script: Path | None = None) -> None:
+    """Install `secaudit` alias in the user's shell RC file (idempotent)."""
+    if script is None:
+        script = Path(__file__).resolve()
+    if rc_file is None:
+        rc_file = detect_shell_rc()
+
+    alias_line = f'alias secaudit="python3 {script}"'
+
+    if rc_file.exists():
+        content = rc_file.read_text(encoding="utf-8")
+        if _INIT_MARKER in content:
+            print(f"[=] Already installed in {rc_file} — nothing changed.")
+            return
+
+    block = f"\n{_INIT_MARKER}\n{alias_line}\n"
+    with open(rc_file, "a", encoding="utf-8") as fh:
+        fh.write(block)
+
+    print(f"[+] Added to {rc_file}:")
+    print(f"    {alias_line}")
+    print()
+    print("    To activate, run:")
+    print(f"    source {rc_file}")
+    print("    (or open a new terminal)")
 
 # ---------------------------------------------------------------------------
 # Audit backends
@@ -811,6 +884,10 @@ def run_differential(args, project: Path, backend: AuditBackend, files=None) -> 
 
 def main() -> None:
     # Early routing for subcommands that don't need the full parser
+    if len(sys.argv) > 1 and sys.argv[1] == "init":
+        cmd_init()
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "projects":
         cmd_projects(sys.argv[2:])
         return
