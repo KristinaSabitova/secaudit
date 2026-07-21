@@ -1,0 +1,70 @@
+name: Auditoría de dominio
+
+# Lanza esta auditoría desde el móvil:
+#   App de GitHub (o el navegador) -> pestaña "Actions" -> "Auditoría de dominio"
+#   -> "Run workflow" -> escribe el dominio -> descarga el informe en "Artifacts".
+#
+# IMPORTANTE: audita solo dominios que POSEAS o para los que tengas permiso
+# explícito. El modo "full" incluye escaneo de puertos (comprobación activa).
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: "Dominio(s) a auditar (separa varios con un espacio)"
+        required: true
+        type: string
+      mode:
+        description: "Tipo de auditoría"
+        required: true
+        default: passive
+        type: choice
+        options:
+          - passive       # DNS, TLS, cabeceras, correo (no intrusivo)
+          - subdomains    # + enumeración por Certificate Transparency
+          - full          # + fuerza bruta + escaneo de puertos (activo)
+      format:
+        description: "Formato del informe"
+        required: true
+        default: md
+        type: choice
+        options:
+          - md
+          - json
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ejecutar auditoría
+        env:
+          # Pasamos las entradas por variables de entorno (no interpolación
+          # directa en el shell) para evitar inyección de comandos.
+          DOMAIN: ${{ inputs.domain }}
+          MODE: ${{ inputs.mode }}
+          FORMAT: ${{ inputs.format }}
+        run: |
+          FLAGS=""
+          case "$MODE" in
+            subdomains) FLAGS="--subdomains" ;;
+            full)       FLAGS="--full --yes" ;;
+          esac
+          echo "Auditando: $DOMAIN  (modo: $MODE, formato: $FORMAT)"
+          python domainaudit.py $DOMAIN $FLAGS --"$FORMAT" -o "informe.$FORMAT" --no-color || true
+          echo "-------------------- INFORME --------------------"
+          cat "informe.$FORMAT"
+
+      - name: Subir informe
+        uses: actions/upload-artifact@v4
+        with:
+          name: informe-auditoria
+          path: informe.*
+          if-no-files-found: warn
