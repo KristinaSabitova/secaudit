@@ -223,6 +223,65 @@ secaudit baseline /ruta/al/proyecto
   la ruta del archivo y un hash corto de 6 caracteres.
 - `.gitignore` excluye `.secaudit/`, `*.secaudit.json`, `.env*`.
 
+## domainaudit — auditoría de dominios y subdominios
+
+`secaudit.py` audita **código fuente**. `domainaudit.py` es una herramienta
+independiente que audita tus **dominios y subdominios en vivo**: la superficie
+de ataque que ve Internet, sin tocar el código.
+
+Ideal para auto-auditar los dominios de tus empresas. **Solo úsala en dominios
+que poseas o para los que tengas permiso explícito.**
+
+### Sin dependencias
+
+Solo la librería estándar de Python 3.9+. Las consultas DNS usan
+DNS-over-HTTPS (Google / Cloudflare), así que funciona en cualquier máquina
+con salida HTTPS: no necesita `dnspython`, resolver local ni herramientas
+externas.
+
+### Qué detecta
+
+| Categoría | Comprobaciones |
+|-----------|----------------|
+| **Subdominios** | Enumeración vía Certificate Transparency (crt.sh) + fuerza bruta opcional con diccionario interno |
+| **DNS** | DNSSEC, registros CAA, NS |
+| **TLS/certificados** | Caducidad, cadena/hostname no válidos, protocolos obsoletos (TLS 1.0/1.1) |
+| **Cabeceras HTTP** | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, redirección HTTP→HTTPS, cookies sin flags |
+| **Correo** | SPF (incl. `+all` permisivo), DMARC (incl. `p=none`), DKIM, MX |
+| **Secuestro de subdominio** | CNAME colgantes hacia servicios no reclamados (GitHub Pages, Heroku, S3, Azure…) |
+| **Exposición** | Cabeceras que revelan tecnología/versión (`Server`, `X-Powered-By`…) |
+| **Puertos** | Escaneo de puertos comunes; marca bases de datos y servicios que no deberían estar expuestos |
+
+### Uso
+
+```bash
+# Auditoría pasiva del dominio raíz (rápida, no intrusiva)
+python3 domainaudit.py miempresa.com
+
+# Enumerar y auditar subdominios (Certificate Transparency)
+python3 domainaudit.py miempresa.com --subdomains
+
+# Auditoría completa: subdominios + fuerza bruta + escaneo de puertos
+python3 domainaudit.py miempresa.com --full --yes
+
+# Varios dominios a la vez (tus dos empresas)
+python3 domainaudit.py empresa-a.com empresa-b.com --subdomains
+
+# Salidas
+python3 domainaudit.py miempresa.com --json -o informe.json
+python3 domainaudit.py miempresa.com --md   -o informe.md
+```
+
+Los checks pasivos (DNS, TLS, cabeceras, correo, subdominios por CT) no
+requieren confirmación. Los checks **activos** (`--ports`, `--brute`) piden
+confirmación de propiedad salvo que pases `--yes`.
+
+### Interpretación
+
+- Cada hallazgo trae **severidad**, **detalle** y una **solución concreta**.
+- Se calcula un **riesgo agregado 0–100** por dominio.
+- Código de salida `3` si hay hallazgos `critical`/`high` (útil en CI/cron).
+
 ## Ejecutar los tests
 
 ```bash
