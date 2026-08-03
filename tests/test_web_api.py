@@ -1,14 +1,19 @@
 """Tests for the FastAPI web layer (web/)."""
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+ROOT = Path(__file__).resolve().parent.parent
+
+from web import db as web_db
 from web import engine as web_engine
 from web import main as web_main
 from web.gitclone import CloneError, clone_repo, validate_repo_url
@@ -35,13 +40,16 @@ class FakeBackend:
 
 
 @pytest.fixture
-def client(monkeypatch):
-    web_main.store.clear()
+def client(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+    web_db.reset_engine()
+    web_db.Base.metadata.create_all(web_db.get_engine())
     monkeypatch.setattr(
         web_engine.engine, "select_backend",
         lambda flag, config=None: FakeBackend(),
     )
-    return TestClient(app)
+    yield TestClient(app)
+    web_db.reset_engine()
 
 
 @pytest.fixture
@@ -139,6 +147,26 @@ class TestRunAudit:
 
 
 # ---------------------------------------------------------------------------
+# Alembic migration
+# ---------------------------------------------------------------------------
+
+class TestMigration:
+    def test_initial_migration_creates_schema(self, tmp_path):
+        db_file = tmp_path / "mig.db"
+        env = {**os.environ, "DATABASE_URL": f"sqlite:///{db_file}"}
+        r = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=ROOT, env=env, capture_output=True, text=True,
+        )
+        assert r.returncode == 0, r.stderr
+        con = sqlite3.connect(db_file)
+        tables = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        con.close()
+        assert {"audits", "findings", "alembic_version"} <= tables
+
+
+# ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
 
@@ -147,29 +175,41 @@ class TestCreateAudit:
         r = client.post("/api/audits", json={"repo_url": "git@github.com:a/b.git"})
         assert r.status_code == 400
 
-    def test_full_flow(self, client, clone_from_sample):
+    def test_response_is_immediate_pending(self, client, clone_from_sample):
         r = client.post("/api/audits",
                         json={"repo_url": "https://github.com/acme/sample"})
-        assert r.status_code == 201
+        assert r.status_code == 202
         body = r.json()
-        assert body["status"] == "done"
+        assert body["status"] == "pending"
         assert body["repo_url"] == "https://github.com/acme/sample.git"
-        assert len(body["commit_sha"]) == 40
-        assert len(body["findings"]) == 2
-        assert body["summary"]["critical"] == 1
-        assert body["summary"]["high"] == 1
-        assert body["summary"]["low"] == 0
+        assert body["trigger"] == "manual"
+        assert body["commit_sha"] is None
+
+    def test_background_task_completes_audit(self, client, clone_from_sample):
+        audit_id = client.post(
+            "/api/audits", json={"repo_url": "https://github.com/acme/sample"}
+        ).json()["id"]
+        # TestClient runs background tasks before returning control.
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["status"] == "done"
+        assert len(detail["commit_sha"]) == 40
+        assert len(detail["findings"]) == 2
+        assert detail["summary"]["critical"] == 1
+        assert detail["summary"]["high"] == 1
+        assert detail["summary"]["low"] == 0
+        titles = {f["title"] for f in detail["findings"]}
+        assert "Hardcoded API key" in titles
 
     def test_clone_failure_recorded_as_error(self, client, monkeypatch):
         def failing(url, dest, timeout=120):
             raise CloneError("git clone failed: repository not found")
         monkeypatch.setattr(web_main, "clone_repo", failing)
-        r = client.post("/api/audits",
-                        json={"repo_url": "https://github.com/acme/missing"})
-        assert r.status_code == 201
-        body = r.json()
-        assert body["status"] == "error"
-        assert "clone failed" in body["error"]
+        audit_id = client.post(
+            "/api/audits", json={"repo_url": "https://github.com/acme/missing"}
+        ).json()["id"]
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["status"] == "error"
+        assert "clone failed" in detail["error"]
 
     def test_engine_failure_recorded_as_error(self, client, clone_from_sample,
                                               monkeypatch):
@@ -177,9 +217,10 @@ class TestCreateAudit:
             web_engine.engine, "select_backend",
             lambda flag, config=None: FakeBackend(output="garbage"),
         )
-        r = client.post("/api/audits",
-                        json={"repo_url": "https://github.com/acme/sample"})
-        assert r.json()["status"] == "error"
+        audit_id = client.post(
+            "/api/audits", json={"repo_url": "https://github.com/acme/sample"}
+        ).json()["id"]
+        assert client.get(f"/api/audits/{audit_id}").json()["status"] == "error"
 
 
 class TestReadAudits:
@@ -209,4 +250,6 @@ class TestHealth:
         body = r.json()
         assert body["status"] in ("ok", "degraded")
         assert body["git_available"] is True
+        assert body["database"] is True
+        assert body["audits_stored"] == 0
         assert "backend" in body
