@@ -209,6 +209,35 @@ secaudit.py baseline .
 secaudit.py baseline /path/to/project
 ```
 
+## Web app
+
+The same engine is exposed over HTTP by `web/`, with a dashboard for submitting
+repositories and reading findings, and a GitHub webhook that audits every push.
+`secaudit.py` is imported unmodified — the CLI keeps working exactly as above.
+
+```bash
+pip install -r requirements.txt
+alembic upgrade head                    # SQLite by default; set DATABASE_URL for PostgreSQL
+uvicorn web.main:app --reload
+```
+
+Then open <http://127.0.0.1:8000>.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/audits` | queue an audit of a repository (202 with the pending record) |
+| `GET /api/audits` | every audit, newest first, with severity counts |
+| `GET /api/audits/{id}` | one audit including its findings |
+| `POST /api/webhook/github` | signed push deliveries from GitHub |
+| `GET /api/health` | git, database, and backend readiness |
+
+Audits run as background tasks: the endpoint answers immediately and the record
+moves from `pending` through `running` to `done` or `error`.
+
+Set `GITHUB_WEBHOOK_SECRET` to enable the webhook — without it the endpoint
+refuses every delivery with 503 rather than accepting unverified ones.
+See [DEPLOY.md](DEPLOY.md) for running it in production.
+
 ## Security notes
 
 - State files live in `~/.secaudit/` — never written inside the audited repo.
