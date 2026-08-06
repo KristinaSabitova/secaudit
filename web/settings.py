@@ -9,6 +9,7 @@ import hashlib
 import os
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Settings
@@ -63,15 +64,17 @@ def detect_backend(api_key: str) -> str | None:
     return None
 
 
-def load(session: Session) -> Settings | None:
-    return session.get(Settings, 1)
+def load(session: Session, user_id: int | None = None) -> Settings | None:
+    """The row for a user, or the instance-wide default when user_id is None."""
+    return session.scalar(select(Settings).where(Settings.user_id == user_id))
 
 
-def save(session: Session, *, backend: str | None = None, model: str | None = None,
+def save(session: Session, user_id: int | None = None, *,
+         backend: str | None = None, model: str | None = None,
          ollama_url: str | None = None, api_key: str | None = None,
          clear_api_key: bool = False) -> Settings:
     """Store the settings, encrypting the key. Fields left as None are unchanged."""
-    settings = load(session) or Settings(id=1)
+    settings = load(session, user_id) or Settings(user_id=user_id)
     if backend is not None:
         settings.backend = backend or None
     if model is not None:
@@ -87,9 +90,9 @@ def save(session: Session, *, backend: str | None = None, model: str | None = No
     return settings
 
 
-def config_overrides(session: Session) -> dict:
+def config_overrides(session: Session, user_id: int | None = None) -> dict:
     """The engine config the dashboard settings ask for."""
-    settings = load(session)
+    settings = load(session, user_id)
     if settings is None:
         return {}
     stored = {"backend": settings.backend, "model": settings.model,
@@ -97,20 +100,19 @@ def config_overrides(session: Session) -> dict:
     return {k: v for k, v in stored.items() if v}
 
 
-def apply_to_environment(session: Session) -> str | None:
-    """Publish the stored credential into the process environment.
+def credentials(session: Session, user_id: int | None = None) -> dict[str, str]:
+    """The environment variables this user's audits should run with.
 
-    Returns the variable it set, if any. The engine reads credentials from the
-    environment and there is exactly one settings row, so this stays coherent.
+    Returned rather than exported: the audit runs in its own process, so one
+    user's key never becomes visible to another user's concurrent audit.
     """
-    settings = load(session)
+    settings = load(session, user_id)
     if settings is None or not settings.api_key_encrypted:
-        return None
+        return {}
     env_name = CREDENTIAL_ENV.get(settings.backend or "")
     if env_name is None:
-        return None
-    os.environ[env_name] = decrypt(settings.api_key_encrypted)
-    return env_name
+        return {}
+    return {env_name: decrypt(settings.api_key_encrypted)}
 
 
 def to_dict(settings: Settings | None) -> dict:

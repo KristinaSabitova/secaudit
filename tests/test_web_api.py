@@ -11,11 +11,13 @@ from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 ROOT = Path(__file__).resolve().parent.parent
 
+from web import auth as web_auth
 from web import db as web_db
 from web import engine as web_engine
 from web import main as web_main
@@ -42,7 +44,8 @@ def clean_backend_env(monkeypatch):
     """Keep the developer's own backend config out of the tests."""
     for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
-                 web_settings.SECRET_ENV):
+                 web_auth.ADMIN_LOGIN_ENV, web_auth.CLIENT_ID_ENV,
+                 web_auth.CLIENT_SECRET_ENV, web_settings.SECRET_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(web_engine.engine, "load_config", dict)
 
@@ -100,7 +103,7 @@ def sample_repo(tmp_path):
 
 
 @pytest.fixture
-def clone_from_sample(monkeypatch, sample_repo):
+def clone_from_sample(monkeypatch, sample_repo, stub_audit):
     """Route the app's clone through a real shallow clone of the local sample repo.
 
     Yields the list of clone calls the app made, so tests can assert on the
@@ -116,6 +119,38 @@ def clone_from_sample(monkeypatch, sample_repo):
     return calls
 
 
+def sign_in(client, github_id=4242, login="kris", name="Kris"):
+    """Create a GitHub account and give the client its session cookie."""
+    session = web_db.get_session()
+    user = web_auth.upsert_user(session, {"id": github_id, "login": login,
+                                          "name": name})
+    record = web_auth.start_session(session, user)
+    user_id, is_admin = user.id, user.is_admin
+    session.close()
+    client.cookies.set(web_auth.COOKIE_NAME, record.token)
+    user.id, user.is_admin = user_id, is_admin
+    return user
+
+
+@pytest.fixture
+def signed_in(client):
+    """The first account to sign in, which administers the instance."""
+    return sign_in(client)
+
+
+@pytest.fixture
+def stub_audit(monkeypatch):
+    """Return canned findings instead of spawning a real audit process."""
+    calls = []
+
+    def fake(project, config=None, credentials=None):
+        calls.append({"config": config, "credentials": credentials})
+        return web_engine.run_audit_in_process(project, config or {}, 10)
+
+    monkeypatch.setattr(web_main, "run_audit", fake)
+    return calls
+
+
 @pytest.fixture
 def master_key(monkeypatch):
     monkeypatch.setenv(web_settings.SECRET_ENV, "test-master-key")
@@ -126,6 +161,15 @@ def master_key(monkeypatch):
 def webhook_secret(monkeypatch):
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
     return SECRET
+
+
+def stored_audits():
+    """Audits straight from the database, for assertions without signing in."""
+    session = web_db.get_session()
+    try:
+        return session.scalars(select(web_models.Audit)).all()
+    finally:
+        session.close()
 
 
 def push_payload(ref="refs/heads/main", after="a" * 40,
@@ -202,7 +246,7 @@ class TestRunAudit:
             web_engine.engine, "select_backend",
             lambda flag, config=None: FakeBackend(),
         )
-        findings = web_engine.run_audit(tmp_path)
+        findings = web_engine.run_audit_in_process(tmp_path, {}, 10)
         assert len(findings) == 2
         sevs = {f["severity"] for f in findings}
         assert sevs == {"critical", "high"}
@@ -214,14 +258,14 @@ class TestRunAudit:
             lambda flag, config=None: FakeBackend(output="not json at all"),
         )
         with pytest.raises(web_engine.AuditError):
-            web_engine.run_audit(tmp_path)
+            web_engine.run_audit_in_process(tmp_path, {}, 10)
 
     def test_engine_sysexit_becomes_audit_error(self, monkeypatch, tmp_path):
         def exploding(flag, config=None):
             sys.exit("error: unknown backend 'nope'")
         monkeypatch.setattr(web_engine.engine, "select_backend", exploding)
         with pytest.raises(web_engine.AuditError):
-            web_engine.run_audit(tmp_path)
+            web_engine.run_audit_in_process(tmp_path, {}, 10)
 
 
 # ---------------------------------------------------------------------------
@@ -264,88 +308,217 @@ class TestBackendConfig:
         assert backend.base_url == "http://ollama:11434"
 
 
+class TestSignIn:
+    def test_anonymous_callers_are_refused(self, client):
+        assert client.get("/api/audits").status_code == 401
+        assert client.get("/api/settings").status_code == 401
+        assert client.put("/api/settings", json={}).status_code == 401
+        assert client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).status_code == 401
+
+    def test_health_and_webhook_stay_public(self, client, webhook_secret):
+        assert client.get("/api/health").status_code == 200
+        assert deliver(client, {"zen": "hi"}, event="ping").status_code == 200
+
+    def test_me_reports_who_is_signed_in(self, client):
+        assert client.get("/api/me").json()["user"] is None
+        user = sign_in(client)
+        assert client.get("/api/me").json()["user"]["login"] == user.login
+
+    def test_logout_ends_the_session(self, client, signed_in):
+        assert client.get("/api/settings").status_code == 200
+        assert client.post("/api/auth/logout").status_code == 204
+        assert client.get("/api/settings").status_code == 401
+
+    def test_an_expired_session_does_not_authenticate(self, client, signed_in):
+        session = web_db.get_session()
+        record = session.scalars(select(web_models.UserSession)).one()
+        record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+        session.close()
+        assert client.get("/api/settings").status_code == 401
+
+    def test_login_is_503_without_an_oauth_app(self, client):
+        r = client.get("/api/auth/login", follow_redirects=False)
+        assert r.status_code == 503
+        assert web_auth.CLIENT_ID_ENV in r.json()["detail"]
+
+    def test_a_callback_with_a_mismatched_state_is_rejected(self, client, monkeypatch):
+        """Otherwise a link could sign a victim into the attacker's account."""
+        monkeypatch.setenv(web_auth.CLIENT_ID_ENV, "id")
+        monkeypatch.setenv(web_auth.CLIENT_SECRET_ENV, "secret")
+        client.cookies.set(web_main.OAUTH_STATE_COOKIE, "the-real-state")
+        r = client.get("/api/auth/callback?code=abc&state=forged",
+                       follow_redirects=False)
+        assert r.status_code == 400
+
+    def test_the_first_account_administers_the_instance(self, client):
+        first = sign_in(client, github_id=1, login="first")
+        second = sign_in(client, github_id=2, login="second")
+        assert first.is_admin is True
+        assert second.is_admin is False
+
+    def test_the_named_account_administers_the_instance(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
+        assert sign_in(client, github_id=1, login="someone").is_admin is False
+        assert sign_in(client, github_id=2, login="kris").is_admin is True
+
+
+class TestPerUserIsolation:
+    def test_audits_are_not_visible_to_other_users(self, client, clone_from_sample):
+        sign_in(client, github_id=1, login="first")
+        mine = client.post("/api/audits",
+                           json={"repo_url": "https://github.com/acme/sample"}).json()
+
+        sign_in(client, github_id=2, login="second")
+        assert client.get("/api/audits").json() == []
+        # 404 rather than 403: the response must not confirm the id exists.
+        assert client.get(f"/api/audits/{mine['id']}").status_code == 404
+
+    def test_an_admin_sees_every_audit(self, client, webhook_secret,
+                                       clone_from_sample):
+        sign_in(client, github_id=1, login="admin")          # first, so admin
+        sign_in(client, github_id=2, login="other")
+        client.post("/api/audits", json={"repo_url": "https://github.com/acme/sample"})
+        deliver(client, push_payload())                      # owned by nobody
+
+        sign_in(client, github_id=1, login="admin")
+        triggers = {a["trigger"] for a in client.get("/api/audits").json()}
+        assert triggers == {"manual", "webhook"}
+
+    def test_keys_are_stored_per_user(self, client, master_key):
+        sign_in(client, github_id=1, login="first")
+        client.put("/api/settings", json={"api_key": "sk-ant-first-key"})
+
+        sign_in(client, github_id=2, login="second")
+        assert client.get("/api/settings").json()["api_key_set"] is False
+        client.put("/api/settings", json={"api_key": "sk-proj-second-key"})
+
+        session = web_db.get_session()
+        keys = {u.login: web_settings.credentials(session, u.id)
+                for u in session.scalars(select(web_models.User)).all()}
+        session.close()
+        assert keys["first"] == {"ANTHROPIC_API_KEY": "sk-ant-first-key"}
+        assert keys["second"] == {"OPENAI_API_KEY": "sk-proj-second-key"}
+
+    def test_an_audit_runs_with_its_own_owners_key(self, client, master_key,
+                                                   clone_from_sample, stub_audit):
+        sign_in(client, github_id=1, login="first")
+        client.put("/api/settings", json={"api_key": "sk-ant-first-key"})
+        client.post("/api/audits", json={"repo_url": "https://github.com/acme/sample"})
+        assert stub_audit[-1]["credentials"] == {"ANTHROPIC_API_KEY": "sk-ant-first-key"}
+
+
+class TestCredentialIsolation:
+    """The audit runs in its own process so keys cannot cross between users."""
+
+    def test_the_parents_key_is_not_inherited(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-belongs-to-someone-else")
+        with pytest.raises(web_engine.AuditError) as excinfo:
+            web_engine.run_audit(tmp_path, {"backend": "anthropic-api"},
+                                 credentials={})
+        assert "ANTHROPIC_API_KEY is not set" in str(excinfo.value)
+
+    def test_the_supplied_key_reaches_the_audit(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(web_engine.AuditError) as excinfo:
+            web_engine.run_audit(tmp_path, {"backend": "anthropic-api"},
+                                 credentials={"ANTHROPIC_API_KEY": "sk-ant-supplied"})
+        # It got past the missing-key check and failed at the API call instead.
+        assert "ANTHROPIC_API_KEY is not set" not in str(excinfo.value)
+
+
 class TestStoredSettings:
     """The dashboard stores the backend config; the key is encrypted at rest."""
 
-    def test_a_pasted_key_picks_its_own_backend(self, client, master_key):
+    def test_a_pasted_key_picks_its_own_backend(self, client, signed_in, master_key):
         body = client.put("/api/settings", json={"api_key": "sk-ant-abc123"}).json()
         assert body["backend"] == "anthropic-api"
         assert body["api_key_set"] is True
         assert body["backend_status"]["ready"] is True
 
-    def test_an_openai_key_picks_openai(self, client, master_key):
+    def test_an_openai_key_picks_openai(self, client, signed_in, master_key):
         body = client.put("/api/settings", json={"api_key": "sk-proj-abc123"}).json()
         assert body["backend"] == "openai-api"
 
-    def test_an_unrecognisable_key_is_400(self, client, master_key):
+    def test_an_unrecognisable_key_is_400(self, client, signed_in, master_key):
         r = client.put("/api/settings", json={"api_key": "nonsense"})
         assert r.status_code == 400
         assert "explicitly" in r.json()["detail"]
 
-    def test_the_key_is_never_returned(self, client, master_key):
+    def test_the_key_is_never_returned(self, client, signed_in, master_key):
         client.put("/api/settings", json={"api_key": "sk-ant-secret-value"})
         for body in (client.get("/api/settings").text,
                      client.get("/api/health").text):
             assert "sk-ant-secret-value" not in body
 
-    def test_the_key_is_encrypted_in_the_database(self, client, master_key):
+    def test_the_key_is_encrypted_in_the_database(self, client, signed_in, master_key):
         client.put("/api/settings", json={"api_key": "sk-ant-secret-value"})
         session = web_db.get_session()
-        stored = web_settings.load(session).api_key_encrypted
+        stored = web_settings.load(session, signed_in.id).api_key_encrypted
         session.close()
         assert stored and "sk-ant-secret-value" not in stored
         assert web_settings.decrypt(stored) == "sk-ant-secret-value"
 
-    def test_a_stored_key_reaches_the_engine(self, client, master_key):
+    def test_a_stored_key_reaches_the_audit_but_not_the_environment(
+            self, client, signed_in, master_key):
+        """It is handed to the audit process, never exported process-wide."""
         client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
-        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-abc123"
+        session = web_db.get_session()
+        assert web_settings.credentials(session, signed_in.id) == {
+            "ANTHROPIC_API_KEY": "sk-ant-abc123"}
+        session.close()
+        assert "ANTHROPIC_API_KEY" not in os.environ
 
-    def test_removing_the_key_forgets_it_everywhere(self, client, master_key):
+    def test_removing_the_key_forgets_it_everywhere(self, client, signed_in, master_key):
         client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
         body = client.put("/api/settings", json={"clear_api_key": True}).json()
         assert body["api_key_set"] is False
         assert body["backend_status"]["ready"] is False
-        assert "ANTHROPIC_API_KEY" not in os.environ
+        session = web_db.get_session()
+        assert web_settings.credentials(session, signed_in.id) == {}
+        session.close()
 
-    def test_health_reports_the_configured_backend(self, client, master_key):
-        """The header and the settings panel must never disagree."""
+    def test_health_describes_the_instance_not_the_signed_in_user(
+            self, client, signed_in, master_key):
+        """Health is public, so it must not leak whether a user has a key."""
         client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
-        health = client.get("/api/health").json()["backend"]
-        settings = client.get("/api/settings").json()["backend_status"]
-        assert health == settings
-        assert health["name"] == "anthropic-api"
+        assert client.get("/api/settings").json()["backend_status"]["name"] == \
+            "anthropic-api"
+        # The instance itself has no key configured, so health falls back to the
+        # deployment default rather than describing the signed-in user.
+        assert client.get("/api/health").json()["backend"]["name"] != "anthropic-api"
 
-    def test_settings_override_the_environment(self, client, master_key, monkeypatch):
+    def test_settings_override_the_environment(self, client, signed_in, master_key, monkeypatch):
         monkeypatch.setenv("SECAUDIT_BACKEND", "claude-code")
         client.put("/api/settings", json={"backend": "ollama",
                                           "ollama_url": "http://ollama:11434"})
         assert client.get("/api/settings").json()["backend_status"]["name"] == "ollama"
 
-    def test_an_unknown_backend_is_rejected(self, client, master_key):
+    def test_an_unknown_backend_is_rejected(self, client, signed_in, master_key):
         r = client.put("/api/settings", json={"backend": "chatgpt5"})
         assert r.status_code == 400
 
-    def test_without_a_master_key_storing_is_refused(self, client, monkeypatch):
+    def test_without_a_master_key_storing_is_refused(self, client, signed_in, monkeypatch):
         monkeypatch.delenv(web_settings.SECRET_ENV, raising=False)
         r = client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
         assert r.status_code == 503
         assert web_settings.SECRET_ENV in r.json()["detail"]
 
-    def test_a_rotated_master_key_is_reported_not_silently_wrong(self, client,
-                                                                master_key,
-                                                                monkeypatch):
+    def test_a_rotated_master_key_is_reported_not_silently_wrong(
+            self, client, signed_in, master_key, monkeypatch):
         client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
         monkeypatch.setenv(web_settings.SECRET_ENV, "a-different-master-key")
         session = web_db.get_session()
         with pytest.raises(web_settings.SecretsUnavailable):
-            web_settings.apply_to_environment(session)
+            web_settings.credentials(session, signed_in.id)
         session.close()
 
-    def test_settings_survive_a_restart(self, client, master_key, monkeypatch):
+    def test_settings_survive_a_restart(self, client, signed_in, master_key):
         client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        web_main.restore_stored_credentials()
-        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-abc123"
+        web_main.fail_interrupted_audits()          # what startup does
+        assert client.get("/api/settings").json()["api_key_set"] is True
 
 
 class TestBackendStatus:
@@ -432,11 +605,11 @@ class TestMigration:
 # ---------------------------------------------------------------------------
 
 class TestCreateAudit:
-    def test_invalid_url_is_400(self, client):
+    def test_invalid_url_is_400(self, client, signed_in):
         r = client.post("/api/audits", json={"repo_url": "git@github.com:a/b.git"})
         assert r.status_code == 400
 
-    def test_response_is_immediate_pending(self, client, clone_from_sample):
+    def test_response_is_immediate_pending(self, client, signed_in, clone_from_sample):
         r = client.post("/api/audits",
                         json={"repo_url": "https://github.com/acme/sample"})
         assert r.status_code == 202
@@ -446,7 +619,7 @@ class TestCreateAudit:
         assert body["trigger"] == "manual"
         assert body["commit_sha"] is None
 
-    def test_background_task_completes_audit(self, client, clone_from_sample):
+    def test_background_task_completes_audit(self, client, signed_in, clone_from_sample):
         audit_id = client.post(
             "/api/audits", json={"repo_url": "https://github.com/acme/sample"}
         ).json()["id"]
@@ -461,7 +634,7 @@ class TestCreateAudit:
         titles = {f["title"] for f in detail["findings"]}
         assert "Hardcoded API key" in titles
 
-    def test_clone_failure_recorded_as_error(self, client, monkeypatch):
+    def test_clone_failure_recorded_as_error(self, client, signed_in, monkeypatch):
         def failing(url, dest, timeout=120, branch=None):
             raise CloneError("git clone failed: repository not found")
         monkeypatch.setattr(web_main, "clone_repo", failing)
@@ -472,7 +645,7 @@ class TestCreateAudit:
         assert detail["status"] == "error"
         assert "clone failed" in detail["error"]
 
-    def test_engine_failure_recorded_as_error(self, client, clone_from_sample,
+    def test_engine_failure_recorded_as_error(self, client, signed_in, clone_from_sample,
                                               monkeypatch):
         monkeypatch.setattr(
             web_engine.engine, "select_backend",
@@ -485,7 +658,7 @@ class TestCreateAudit:
 
 
 class TestTimestamps:
-    def test_created_at_carries_an_explicit_utc_offset(self, client, clone_from_sample):
+    def test_created_at_carries_an_explicit_utc_offset(self, client, signed_in, clone_from_sample):
         """Without an offset browsers read the timestamp as local time."""
         created = client.post(
             "/api/audits", json={"repo_url": "https://github.com/acme/sample"}
@@ -508,7 +681,7 @@ class TestTimestamps:
 
 
 class TestReadAudits:
-    def test_list_and_detail(self, client, clone_from_sample):
+    def test_list_and_detail(self, client, signed_in, clone_from_sample):
         audit_id = client.post(
             "/api/audits", json={"repo_url": "https://github.com/acme/sample"}
         ).json()["id"]
@@ -523,7 +696,7 @@ class TestReadAudits:
         assert detail["id"] == audit_id
         assert len(detail["findings"]) == 2
 
-    def test_unknown_id_is_404(self, client):
+    def test_unknown_id_is_404(self, client, signed_in):
         assert client.get("/api/audits/doesnotexist").status_code == 404
 
 
@@ -657,7 +830,7 @@ class TestParsePushEvent:
 
 
 class TestWebhookEndpoint:
-    def test_without_secret_configured_is_503(self, client, monkeypatch):
+    def test_without_secret_configured_is_503(self, client, signed_in, monkeypatch):
         monkeypatch.delenv("GITHUB_WEBHOOK_SECRET", raising=False)
         assert deliver(client, push_payload()).status_code == 503
 
@@ -679,7 +852,7 @@ class TestWebhookEndpoint:
 
     def test_unsigned_delivery_creates_no_audit(self, client, webhook_secret):
         deliver(client, push_payload(), signature="")
-        assert client.get("/api/audits").json() == []
+        assert stored_audits() == []
 
     def test_push_queues_a_webhook_audit(self, client, webhook_secret,
                                          clone_from_sample):
@@ -721,8 +894,8 @@ class TestWebhookEndpoint:
         )
         assert r.status_code == 400
 
-    def test_queued_audit_runs_to_completion(self, client, webhook_secret,
-                                             clone_from_sample):
+    def test_queued_audit_runs_to_completion(self, client, signed_in,
+                                             webhook_secret, clone_from_sample):
         audit_id = deliver(client, push_payload()).json()["id"]
         detail = client.get(f"/api/audits/{audit_id}").json()
         assert detail["status"] == "done"
@@ -737,13 +910,13 @@ class TestWebhookEndpoint:
         r = deliver(client, payload)
         assert r.status_code == 200
         assert r.json()["status"] == "ignored"
-        assert client.get("/api/audits").json() == []
+        assert stored_audits() == []
 
     def test_unsupported_event_is_ignored(self, client, webhook_secret):
         r = deliver(client, {"action": "opened"}, event="issues")
         assert r.status_code == 200
         assert r.json()["status"] == "ignored"
-        assert client.get("/api/audits").json() == []
+        assert stored_audits() == []
 
     def test_foreign_repository_is_400(self, client, webhook_secret):
         r = deliver(client, push_payload(clone_url="https://evil.com/acme/sample.git"))
@@ -759,7 +932,7 @@ class TestWebhookEndpoint:
 
 
 class TestRestartRecovery:
-    def test_interrupted_audits_are_failed_on_startup(self, client):
+    def test_interrupted_audits_are_failed_on_startup(self, client, signed_in):
         session = web_db.get_session()
         for status in ("pending", "running", "done"):
             session.add(web_models.Audit(
@@ -776,12 +949,12 @@ class TestRestartRecovery:
             assert audit["status"] == "error"
             assert "restarted" in audit["error"]
 
-    def test_startup_is_a_no_op_without_stale_audits(self, client):
+    def test_startup_is_a_no_op_without_stale_audits(self, client, signed_in):
         assert web_main.fail_interrupted_audits() == 0
 
 
 class TestStaticFrontend:
-    def test_root_serves_the_ui(self, client):
+    def test_root_serves_the_ui(self, client, signed_in):
         r = client.get("/")
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/html")
@@ -810,16 +983,16 @@ class TestStaticFrontend:
         assert re.search(r"\[hidden\][^{]*\{[^}]*display:\s*none\s*!important",
                          css), "style.css must force [hidden] to display:none"
 
-    def test_api_routes_are_not_shadowed(self, client):
+    def test_api_routes_are_not_shadowed(self, client, signed_in):
         assert client.get("/api/health").status_code == 200
         assert client.get("/api/audits").json() == []
 
-    def test_unknown_path_is_404(self, client):
+    def test_unknown_path_is_404(self, client, signed_in):
         assert client.get("/nope.html").status_code == 404
 
 
 class TestHealth:
-    def test_health_shape(self, client):
+    def test_health_shape(self, client, signed_in):
         r = client.get("/api/health")
         assert r.status_code == 200
         body = r.json()

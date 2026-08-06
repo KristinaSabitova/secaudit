@@ -3,7 +3,8 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
+                        Text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -49,6 +50,10 @@ class Audit(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     repo_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL means the audit came from a webhook, not from a signed-in user.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     # NULL means "whatever the repository's default branch is".
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -63,15 +68,54 @@ class Audit(Base):
     )
 
 
-class Settings(Base):
-    """Single row holding the backend configuration entered in the dashboard.
+class User(Base):
+    """A GitHub account that has signed in."""
 
-    The API key is stored encrypted; see web/settings.py.
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    github_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    login: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Admins see webhook-triggered audits and everyone else's; see web/auth.py.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+
+
+class UserSession(Base):
+    """A signed-in browser session, keyed by the value of the session cookie."""
+
+    __tablename__ = "user_sessions"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+
+
+class Settings(Base):
+    """Backend configuration entered in the dashboard, one row per user.
+
+    The row with no user is the instance-wide default. API keys are stored
+    encrypted; see web/settings.py.
     """
 
     __tablename__ = "settings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # NULL is the instance-wide default, used by webhook-triggered audits.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, unique=True,
+    )
     backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     ollama_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
