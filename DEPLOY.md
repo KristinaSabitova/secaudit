@@ -50,23 +50,52 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
 
 3. Point the reverse proxy at `127.0.0.1:8811`. For nginx:
 
+   **Only the webhook path is published.** The dashboard and the rest of the
+   API have no authentication, so nothing but `/api/webhook/github` — which
+   authenticates every request by HMAC signature — is reachable from the
+   internet. See [Reaching the dashboard](#reaching-the-dashboard) below.
+
+   nginx:
+
    ```nginx
+   # Rate limit the one public endpoint. Declare the zone at http level:
+   #   limit_req_zone $binary_remote_addr zone=secaudit_hook:1m rate=30r/m;
    server {
        server_name secaudit.<domain>;
 
-       location / {
+       location = /api/webhook/github {
+           limit_req zone=secaudit_hook burst=10 nodelay;
            proxy_pass http://127.0.0.1:8811;
            proxy_set_header Host $host;
            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
            proxy_set_header X-Forwarded-Proto $scheme;
        }
+
+       location / {
+           return 404;
+       }
    }
    ```
 
-   Then `sudo certbot --nginx -d secaudit.<domain>` for the certificate, or the
-   equivalent in whatever issues certificates for the other services. With
-   Caddy the whole block is `secaudit.<domain> { reverse_proxy 127.0.0.1:8811 }`
-   and TLS is automatic.
+   Caddy:
+
+   ```caddy
+   secaudit.<domain> {
+       @hook path /api/webhook/github
+       handle @hook {
+           reverse_proxy 127.0.0.1:8811
+       }
+       handle {
+           respond 404
+       }
+   }
+   ```
+
+   For the certificate: `sudo certbot --nginx -d secaudit.<domain>`, or whatever
+   issues certificates for the other services. Caddy handles TLS by itself.
+
+   If you later want the dashboard reachable from a browser anywhere, add HTTP
+   basic auth to the `location /` block rather than opening it up.
 
 ## Subsequent deploys
 
@@ -75,6 +104,18 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
 ```
 
 Migrations run from the entrypoint on every start and are idempotent.
+
+## Reaching the dashboard
+
+The app binds to loopback on the server and the proxy publishes only the
+webhook, so the dashboard is not exposed. Forward the port over SSH instead:
+
+```sh
+./deploy.sh --tunnel        # then open http://127.0.0.1:8811
+```
+
+That runs `ssh -N -L 8811:127.0.0.1:8811`, so the traffic never leaves the
+encrypted connection and the UI stays off the public internet entirely.
 
 ## Connecting the GitHub webhook
 

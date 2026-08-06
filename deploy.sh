@@ -3,6 +3,7 @@
 #
 #   ./deploy.sh                 # deploy
 #   ./deploy.sh --check         # connectivity and prerequisites only, no changes
+#   ./deploy.sh --tunnel        # forward the dashboard to this machine over SSH
 #
 # The server's .env is never touched: it holds the secrets and lives only there.
 set -euo pipefail
@@ -13,6 +14,14 @@ REMOTE_DIR="${SECAUDIT_REMOTE_DIR:-/srv/secaudit}"
 SSH=(ssh -i "$KEY" "$HOST")
 
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+
+PORT="${SECAUDIT_PORT:-8811}"
+
+if [[ "${1:-}" == "--tunnel" ]]; then
+  # The dashboard is deliberately not published: reach it through the tunnel.
+  log "forwarding $HOST:$PORT to http://127.0.0.1:$PORT (ctrl-c to stop)"
+  exec ssh -i "$KEY" -N -L "$PORT:127.0.0.1:$PORT" "$HOST"
+fi
 
 if [[ "${1:-}" == "--check" ]]; then
   log "checking $HOST"
@@ -37,7 +46,7 @@ log "building and restarting"
 
 log "waiting for health"
 "${SSH[@]}" "cd $REMOTE_DIR && for i in \$(seq 1 30); do
-  if curl -fsS http://127.0.0.1:\${SECAUDIT_PORT:-8811}/api/health; then echo; exit 0; fi
+  if curl -fsS http://127.0.0.1:$PORT/api/health; then echo; exit 0; fi
   sleep 2
 done; echo 'service did not become healthy'; docker compose logs --tail 50 app; exit 1"
 
