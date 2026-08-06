@@ -21,6 +21,7 @@ from .models import User, UserSession
 CLIENT_ID_ENV = "GITHUB_OAUTH_CLIENT_ID"
 CLIENT_SECRET_ENV = "GITHUB_OAUTH_CLIENT_SECRET"
 ADMIN_LOGIN_ENV = "SECAUDIT_ADMIN_GITHUB_LOGIN"
+ALLOWED_LOGINS_ENV = "SECAUDIT_ALLOWED_GITHUB_LOGINS"
 
 COOKIE_NAME = "secaudit_session"
 SESSION_DAYS = 30
@@ -39,6 +40,10 @@ class AuthUnavailable(AuthError):
     """No OAuth application is configured, so nobody can sign in."""
 
 
+class NotInvited(AuthError):
+    """The account is not on this instance's guest list."""
+
+
 def _credentials() -> tuple[str, str]:
     client_id = os.environ.get(CLIENT_ID_ENV)
     client_secret = os.environ.get(CLIENT_SECRET_ENV)
@@ -48,6 +53,18 @@ def _credentials() -> tuple[str, str]:
             "is disabled. Register a GitHub OAuth App and set both."
         )
     return client_id, client_secret
+
+
+def allowed_logins() -> set[str]:
+    """GitHub logins allowed to sign in. Empty means anyone may."""
+    raw = os.environ.get(ALLOWED_LOGINS_ENV, "")
+    return {name.strip().lower() for name in raw.split(",") if name.strip()}
+
+
+def check_invited(login: str) -> None:
+    allowed = allowed_logins()
+    if allowed and login.lower() not in allowed:
+        raise NotInvited(f"{login} is not on this instance\'s guest list")
 
 
 def is_configured() -> bool:
@@ -119,6 +136,7 @@ def exchange_code(code: str, redirect_uri: str) -> dict:
 def upsert_user(session: Session, profile: dict) -> User:
     """Create or refresh the local record for a GitHub account."""
     github_id = str(profile["id"])
+    check_invited(str(profile.get("login") or ""))
     user = session.scalar(select(User).where(User.github_id == github_id))
     if user is None:
         user = User(github_id=github_id)

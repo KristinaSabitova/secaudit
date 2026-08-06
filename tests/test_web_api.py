@@ -44,8 +44,9 @@ def clean_backend_env(monkeypatch):
     """Keep the developer's own backend config out of the tests."""
     for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
-                 web_auth.ADMIN_LOGIN_ENV, web_auth.CLIENT_ID_ENV,
-                 web_auth.CLIENT_SECRET_ENV, web_settings.SECRET_ENV):
+                 web_auth.ADMIN_LOGIN_ENV, web_auth.ALLOWED_LOGINS_ENV,
+                 web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
+                 web_settings.SECRET_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(web_engine.engine, "load_config", dict)
 
@@ -363,6 +364,32 @@ class TestSignIn:
         monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
         assert sign_in(client, github_id=1, login="someone").is_admin is False
         assert sign_in(client, github_id=2, login="kris").is_admin is True
+
+
+class TestGuestList:
+    """Empty guest list means anyone with a GitHub account may sign in."""
+
+    def test_anyone_may_sign_in_by_default(self, client):
+        assert web_auth.allowed_logins() == set()
+        assert sign_in(client, github_id=9, login="stranger").login == "stranger"
+
+    def test_only_invited_logins_may_sign_in(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris, Someone-Else")
+        assert sign_in(client, github_id=1, login="KRIS").login == "KRIS"
+        assert sign_in(client, github_id=2, login="someone-else")
+        with pytest.raises(web_auth.NotInvited):
+            sign_in(client, github_id=3, login="stranger")
+
+    def test_an_uninvited_callback_is_403(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris")
+        monkeypatch.setenv(web_auth.CLIENT_ID_ENV, "id")
+        monkeypatch.setenv(web_auth.CLIENT_SECRET_ENV, "secret")
+        monkeypatch.setattr(web_auth, "exchange_code",
+                            lambda code, uri: {"id": 7, "login": "stranger"})
+        client.cookies.set(web_main.OAUTH_STATE_COOKIE, "s")
+        r = client.get("/api/auth/callback?code=c&state=s", follow_redirects=False)
+        assert r.status_code == 403
+        assert "guest list" in r.json()["detail"]
 
 
 class TestPerUserIsolation:

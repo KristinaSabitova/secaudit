@@ -28,6 +28,7 @@ services:
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       SECAUDIT_PUBLIC_URL: ${SECAUDIT_PUBLIC_URL:-}
       SECAUDIT_ADMIN_GITHUB_LOGIN: ${SECAUDIT_ADMIN_GITHUB_LOGIN:-}
+      SECAUDIT_ALLOWED_GITHUB_LOGINS: ${SECAUDIT_ALLOWED_GITHUB_LOGINS:-}
       # Any engine backend works; pick one in .env. Credentials are not required
       # to boot — /api/health reports an unusable backend instead of crashing.
       SECAUDIT_BACKEND: ${SECAUDIT_BACKEND:-anthropic-api}

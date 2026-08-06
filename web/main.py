@@ -16,7 +16,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from . import auth, settings as settings_store
-from .auth import AuthError, AuthUnavailable
+from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
 from .engine import AuditError, backend_config, backend_status, run_audit
 from .gitclone import CloneError, clone_repo, validate_repo_url
@@ -206,7 +206,10 @@ def auth_callback(request: Request, code: str = "", state: str = "",
     except AuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    user = auth.upsert_user(session, profile)
+    try:
+        user = auth.upsert_user(session, profile)
+    except NotInvited as e:
+        raise HTTPException(status_code=403, detail=str(e))
     record = auth.start_session(session, user)
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(auth.COOKIE_NAME, record.token, httponly=True,
