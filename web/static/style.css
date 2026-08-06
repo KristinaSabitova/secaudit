@@ -357,3 +357,26 @@ button.ghost:hover:not(:disabled) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---------- sign-in ---------- */
+
+#signin { max-width: 46rem; }
+
+.signin-lead {
+  margin: -.35rem 0 1.4rem;
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+.button-link {
+  display: inline-block;
+  padding: .6rem 1.1rem;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.button-link:hover { background: rgba(126, 231, 135, .1); }
+
+#whoami { font-size: .8rem; }

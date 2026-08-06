@@ -11,73 +11,93 @@
     <h1>secaudit</h1>
     <div class="header-right">
       <div id="health" class="health" data-state="unknown">checking&hellip;</div>
-      <button id="settings-toggle" class="ghost" type="button" aria-expanded="false">
-        backend
-      </button>
+      <span id="whoami" class="muted" hidden></span>
+      <button id="settings-toggle" class="ghost" type="button"
+              aria-expanded="false" hidden>backend</button>
+      <button id="logout" class="ghost" type="button" hidden>sign out</button>
     </div>
   </header>
 
   <main>
-    <section class="pane" id="settings" hidden>
-      <h2>audit backend</h2>
-      <p class="muted settings-intro">
-        Paste an API key and secaudit works with it. The key is encrypted before
-        it is stored and is never sent back to this page.
+    <section class="pane" id="signin" hidden>
+      <h2>sign in</h2>
+      <p class="signin-lead">
+        secaudit audits GitHub repositories with the model of your choice.
+        Sign in to bring your own API key &mdash; your key and your audits
+        stay yours, and nobody else on this instance can see either.
       </p>
-      <form id="settings-form" autocomplete="off">
-        <div class="field">
-          <label for="api-key">api key</label>
-          <input id="api-key" type="password" spellcheck="false"
-                 placeholder="sk-ant-… or sk-…">
-        </div>
-        <div class="field">
-          <label for="backend">backend</label>
-          <select id="backend">
-            <option value="">detect from the key</option>
-            <option value="anthropic-api">anthropic-api</option>
-            <option value="openai-api">openai-api</option>
-            <option value="ollama">ollama (free, local)</option>
-            <option value="claude-code">claude-code (local binary)</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="model">model <span class="muted">(optional)</span></label>
-          <input id="model" spellcheck="false" placeholder="backend default">
-        </div>
-        <div class="field" id="ollama-field" hidden>
-          <label for="ollama-url">ollama url</label>
-          <input id="ollama-url" spellcheck="false"
-                 placeholder="http://host.docker.internal:11434">
-        </div>
-        <div class="settings-actions">
-          <button type="submit">save</button>
-          <button type="button" id="clear-key" class="ghost">remove key</button>
-        </div>
-      </form>
-      <p id="settings-error" class="error" hidden></p>
-      <p id="settings-state" class="muted"></p>
+      <p>
+        <a class="button-link" id="signin-link" href="/api/auth/login">
+          sign in with GitHub
+        </a>
+      </p>
+      <p id="signin-disabled" class="muted" hidden>
+        Sign-in is not configured on this instance yet.
+      </p>
     </section>
 
-    <form id="audit-form" autocomplete="off">
-      <label class="sr-only" for="repo-url">repository</label>
-      <input id="repo-url" name="repo-url" type="text" spellcheck="false"
-             placeholder="https://github.com/owner/repo" required>
-      <button type="submit">run audit</button>
-    </form>
-    <p id="form-error" class="error" hidden></p>
-
-    <div class="panes">
-      <section class="pane" id="audits-pane">
-        <h2>audits <span id="audit-count" class="muted"></span></h2>
-        <ul id="audit-list"></ul>
-        <p id="audits-empty" class="muted">no audits yet</p>
+    <div id="app" hidden>
+      <section class="pane" id="settings" hidden>
+        <h2>audit backend</h2>
+        <p class="muted settings-intro">
+          Paste an API key and secaudit works with it. The key is encrypted
+          before it is stored and is never sent back to this page.
+        </p>
+        <form id="settings-form" autocomplete="off">
+          <div class="field">
+            <label for="api-key">api key</label>
+            <input id="api-key" type="password" spellcheck="false"
+                   placeholder="sk-ant-… or sk-…">
+          </div>
+          <div class="field">
+            <label for="backend">backend</label>
+            <select id="backend">
+              <option value="">detect from the key</option>
+              <option value="anthropic-api">anthropic-api</option>
+              <option value="openai-api">openai-api</option>
+              <option value="ollama">ollama (free, local)</option>
+              <option value="claude-code">claude-code (local binary)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="model">model <span class="muted">(optional)</span></label>
+            <input id="model" spellcheck="false" placeholder="backend default">
+          </div>
+          <div class="field" id="ollama-field" hidden>
+            <label for="ollama-url">ollama url</label>
+            <input id="ollama-url" spellcheck="false"
+                   placeholder="http://host.docker.internal:11434">
+          </div>
+          <div class="settings-actions">
+            <button type="submit">save</button>
+            <button type="button" id="clear-key" class="ghost">remove key</button>
+          </div>
+        </form>
+        <p id="settings-error" class="error" hidden></p>
+        <p id="settings-state" class="muted"></p>
       </section>
 
-      <section class="pane" id="detail-pane">
-        <h2>findings</h2>
-        <p id="detail-empty" class="muted">select an audit</p>
-        <div id="detail" hidden></div>
-      </section>
+      <form id="audit-form" autocomplete="off">
+        <label class="sr-only" for="repo-url">repository</label>
+        <input id="repo-url" name="repo-url" type="text" spellcheck="false"
+               placeholder="https://github.com/owner/repo" required>
+        <button type="submit">run audit</button>
+      </form>
+      <p id="form-error" class="error" hidden></p>
+
+      <div class="panes">
+        <section class="pane" id="audits-pane">
+          <h2>audits <span id="audit-count" class="muted"></span></h2>
+          <ul id="audit-list"></ul>
+          <p id="audits-empty" class="muted">no audits yet</p>
+        </section>
+
+        <section class="pane" id="detail-pane">
+          <h2>findings</h2>
+          <p id="detail-empty" class="muted">select an audit</p>
+          <div id="detail" hidden></div>
+        </section>
+      </div>
     </div>
   </main>
 

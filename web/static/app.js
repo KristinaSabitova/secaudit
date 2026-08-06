@@ -27,6 +27,9 @@ async function api(path, options) {
   } catch (_) {
     // no body, or not JSON
   }
+  if (response.status === 401 && path !== "/api/me") {
+    location.reload();          // the session expired; show the sign-in screen
+  }
   if (!response.ok) {
     throw new Error((body && body.detail) || `request failed (${response.status})`);
   }
@@ -321,5 +324,45 @@ el("audit-form").addEventListener("submit", async (event) => {
   }
 });
 
-loadHealth();
-refresh();
+// ---------------------------------------------------------------------------
+// session
+// ---------------------------------------------------------------------------
+
+function showSignedOut(signInEnabled) {
+  el("app").hidden = true;
+  el("signin").hidden = false;
+  el("signin-link").hidden = !signInEnabled;
+  el("signin-disabled").hidden = signInEnabled;
+  for (const id of ["whoami", "settings-toggle", "logout"]) el(id).hidden = true;
+}
+
+function showSignedIn(user) {
+  el("signin").hidden = true;
+  el("app").hidden = false;
+  el("whoami").textContent = user.login + (user.is_admin ? " · admin" : "");
+  for (const id of ["whoami", "settings-toggle", "logout"]) el(id).hidden = false;
+}
+
+el("logout").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  location.reload();
+});
+
+async function start() {
+  loadHealth();
+  let me;
+  try {
+    me = await api("/api/me");
+  } catch (_) {
+    showSignedOut(false);
+    return;
+  }
+  if (!me.user) {
+    showSignedOut(me.sign_in_enabled);
+    return;
+  }
+  showSignedIn(me.user);
+  refresh();
+}
+
+start();
