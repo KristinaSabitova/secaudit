@@ -8,5 +8,6 @@ build/
 .secaudit/
 .env
 .env.*
+!.env.example
 *.secret
 secaudit-web.db

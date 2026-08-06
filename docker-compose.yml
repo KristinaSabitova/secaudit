@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: secaudit
+      POSTGRES_DB: secaudit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secaudit -d secaudit"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://secaudit:${POSTGRES_PASSWORD}@db:5432/secaudit
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      SECAUDIT_BACKEND: ${SECAUDIT_BACKEND:-anthropic-api}
+      SECAUDIT_TIMEOUT: ${SECAUDIT_TIMEOUT:-1800}
+    # Bound to loopback on purpose: the host already runs a reverse proxy, and
+    # this port must not be reachable from the internet directly.
+    ports:
+      - "127.0.0.1:${SECAUDIT_PORT:-8811}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
