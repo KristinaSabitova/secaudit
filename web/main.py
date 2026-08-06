@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -173,3 +174,9 @@ def health(session: Session = Depends(db_session)):
         "backend": backend,
         "audits_stored": audits_stored,
     }
+
+
+# Mounted last: a mount at "/" matches any path, so it must come after every
+# API route or it would shadow them.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

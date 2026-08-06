@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>secaudit</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>secaudit</h1>
+    <div id="health" class="health" data-state="unknown">checking&hellip;</div>
+  </header>
+
+  <main>
+    <form id="audit-form" autocomplete="off">
+      <label class="sr-only" for="repo-url">repository</label>
+      <input id="repo-url" name="repo-url" type="text" spellcheck="false"
+             placeholder="https://github.com/owner/repo" required>
+      <button type="submit">run audit</button>
+    </form>
+    <p id="form-error" class="error" hidden></p>
+
+    <div class="panes">
+      <section class="pane" id="audits-pane">
+        <h2>audits <span id="audit-count" class="muted"></span></h2>
+        <ul id="audit-list"></ul>
+        <p id="audits-empty" class="muted">no audits yet</p>
+      </section>
+
+      <section class="pane" id="detail-pane">
+        <h2>findings</h2>
+        <p id="detail-empty" class="muted">select an audit</p>
+        <div id="detail" hidden></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

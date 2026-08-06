@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 from web import db as web_db
 from web import engine as web_engine
 from web import main as web_main
+from web import models as web_models
 from web.gitclone import CloneError, clone_repo, validate_branch, validate_repo_url
 from web.main import app
 from web.webhook import (
@@ -283,6 +285,29 @@ class TestCreateAudit:
         assert client.get(f"/api/audits/{audit_id}").json()["status"] == "error"
 
 
+class TestTimestamps:
+    def test_created_at_carries_an_explicit_utc_offset(self, client, clone_from_sample):
+        """Without an offset browsers read the timestamp as local time."""
+        created = client.post(
+            "/api/audits", json={"repo_url": "https://github.com/acme/sample"}
+        ).json()["created_at"]
+        assert created.endswith("+00:00")
+        parsed = datetime.fromisoformat(created)
+        assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
+
+    def test_naive_timestamps_are_treated_as_utc(self):
+        naive = datetime(2026, 8, 6, 2, 41, 17)
+        assert web_models.isoformat_utc(naive) == "2026-08-06T02:41:17+00:00"
+
+    def test_aware_timestamps_are_converted_to_utc(self):
+        madrid = timezone(timedelta(hours=2))
+        aware = datetime(2026, 8, 6, 4, 41, 17, tzinfo=madrid)
+        assert web_models.isoformat_utc(aware) == "2026-08-06T02:41:17+00:00"
+
+    def test_missing_timestamp_stays_none(self):
+        assert web_models.isoformat_utc(None) is None
+
+
 class TestReadAudits:
     def test_list_and_detail(self, client, clone_from_sample):
         audit_id = client.post(
@@ -532,6 +557,33 @@ class TestWebhookEndpoint:
             headers={EVENT_HEADER: "push", SIGNATURE_HEADER: sign(body, SECRET)},
         )
         assert r.status_code == 400
+
+
+class TestStaticFrontend:
+    def test_root_serves_the_ui(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/html")
+        assert "secaudit" in r.text
+
+    @pytest.mark.parametrize("path", ["/app.js", "/style.css"])
+    def test_assets_are_served(self, client, path):
+        assert client.get(path).status_code == 200
+
+    def test_ui_has_no_external_references(self):
+        """The UI must work offline behind TLS: no CDNs, no remote fonts."""
+        for name in ("index.html", "app.js", "style.css"):
+            text = (ROOT / "web" / "static" / name).read_text()
+            assert "//fonts." not in text
+            assert "http://" not in text
+            assert "https://" not in text.replace("https://github.com/", "")
+
+    def test_api_routes_are_not_shadowed(self, client):
+        assert client.get("/api/health").status_code == 200
+        assert client.get("/api/audits").json() == []
+
+    def test_unknown_path_is_404(self, client):
+        assert client.get("/nope.html").status_code == 404
 
 
 class TestHealth:

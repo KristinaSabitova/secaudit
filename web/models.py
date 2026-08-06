@@ -19,6 +19,19 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def isoformat_utc(dt: datetime | None) -> str | None:
+    """Serialise a timestamp as UTC with an explicit offset.
+
+    Timestamps are stored in UTC, but SQLite hands them back without tzinfo,
+    and browsers read an offset-less ISO string as local time.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def empty_summary() -> dict:
     return {s: 0 for s in SEVERITIES}
 
@@ -108,7 +121,7 @@ def audit_to_dict(audit: Audit, include_findings: bool = False) -> dict:
         "commit_sha": audit.commit_sha,
         "trigger": audit.trigger,
         "status": audit.status,
-        "created_at": audit.created_at.isoformat() if audit.created_at else None,
+        "created_at": isoformat_utc(audit.created_at),
         "error": audit.error,
         "summary": audit.summary or empty_summary(),
     }
