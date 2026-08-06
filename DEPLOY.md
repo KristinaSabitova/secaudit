@@ -48,51 +48,67 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
    `deploy.sh` rsyncs the working tree (never `.env`), rebuilds, restarts, and
    polls `/api/health` until the service answers.
 
-3. Point the reverse proxy at `127.0.0.1:8811`. For nginx:
+3. Create a DNS **A record** for `secaudit.<domain>` pointing at the server,
+   and wait for it to resolve. Certificate issuance fails without it:
+
+   ```sh
+   dig +short secaudit.<domain> A
+   ```
+
+4. Issue the certificate. With the certbot container this stack's proxy already
+   uses, over the ACME webroot it serves on port 80:
+
+   ```sh
+   cd <proxy stack dir>
+   docker compose run --rm certbot certonly \
+     --webroot -w /var/www/certbot -d secaudit.<domain>
+   ```
+
+5. Add the server block to the proxy's nginx config.
 
    **Only the webhook path is published.** The dashboard and the rest of the
    API have no authentication, so nothing but `/api/webhook/github` — which
    authenticates every request by HMAC signature — is reachable from the
    internet. See [Reaching the dashboard](#reaching-the-dashboard) below.
 
-   nginx:
+   The proxy is itself a container on `PROXY_NETWORK`, which the app joins, so
+   it reaches the app by container name. It must **not** use `127.0.0.1`: that
+   is the proxy container's own loopback, not the host's.
 
    ```nginx
-   # Rate limit the one public endpoint. Declare the zone at http level:
-   #   limit_req_zone $binary_remote_addr zone=secaudit_hook:1m rate=30r/m;
+   # At http level, next to the other upstreams:
+   upstream secaudit { server secaudit-app:8000; }
+   limit_req_zone $binary_remote_addr zone=secaudit_hook:1m rate=30r/m;
+
    server {
+       listen 443 ssl;
+       http2 on;
        server_name secaudit.<domain>;
+
+       ssl_certificate     /etc/letsencrypt/live/secaudit.<domain>/fullchain.pem;
+       ssl_certificate_key /etc/letsencrypt/live/secaudit.<domain>/privkey.pem;
+       ssl_protocols TLSv1.2 TLSv1.3;
+
+       add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
 
        location = /api/webhook/github {
            limit_req zone=secaudit_hook burst=10 nodelay;
-           proxy_pass http://127.0.0.1:8811;
+           proxy_pass http://secaudit;
            proxy_set_header Host $host;
-           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $remote_addr;
            proxy_set_header X-Forwarded-Proto $scheme;
        }
 
-       location / {
-           return 404;
-       }
+       location / { return 404; }
    }
    ```
 
-   Caddy:
+   Validate before reloading, so a typo cannot take the other sites down:
 
-   ```caddy
-   secaudit.<domain> {
-       @hook path /api/webhook/github
-       handle @hook {
-           reverse_proxy 127.0.0.1:8811
-       }
-       handle {
-           respond 404
-       }
-   }
+   ```sh
+   docker exec <proxy container> nginx -t && docker exec <proxy container> nginx -s reload
    ```
-
-   For the certificate: `sudo certbot --nginx -d secaudit.<domain>`, or whatever
-   issues certificates for the other services. Caddy handles TLS by itself.
 
    If you later want the dashboard reachable from a browser anywhere, add HTTP
    basic auth to the `location /` block rather than opening it up.
