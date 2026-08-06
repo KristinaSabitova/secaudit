@@ -163,6 +163,25 @@ backend has credentials. `degraded` still serves, so check which flag is false.
 To exercise the whole path, push a commit to a connected repository and watch
 the audit appear on the dashboard, or submit a repository URL from the form.
 
+## Choosing the audit backend
+
+The image bakes in no backend. `SECAUDIT_BACKEND` in `.env` picks one of
+`anthropic-api`, `openai-api`, `ollama`, or `claude-code`, and `/api/health`
+reports whether that choice is actually usable — naming the missing variable,
+or the Ollama URL it could not reach.
+
+For the free, local option, three things have to line up. Ollama needs a
+**generative** model pulled: an embeddings model such as `bge-m3` will make the
+backend report as unready, because it cannot produce findings. `SECAUDIT_OLLAMA_URL`
+has to be reachable **from inside the container**, so `localhost` never works —
+use `http://host.docker.internal:11434` for an Ollama on the host, or the
+container name if it shares a docker network with this stack. And the machine
+needs the memory: roughly 5 GB of free RAM for an 8B model. A 1-2 GB model like
+`qwen2.5-coder:1.5b` fits a small VPS, but expect it to fail the JSON contract
+more often, which surfaces as audits ending in `error`.
+
+Switching backend is `.env` plus `docker compose up -d app`; nothing is rebuilt.
+
 ## Operational notes
 
 - **Audits run in-process.** They are FastAPI background tasks in the app

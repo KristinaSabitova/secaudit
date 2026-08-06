@@ -35,6 +35,15 @@ from web.webhook import (
 SECRET = "s3cr3t-webhook-token"
 
 
+@pytest.fixture(autouse=True)
+def clean_backend_env(monkeypatch):
+    """Keep the developer's own backend config out of the tests."""
+    for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
+                 "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(web_engine.engine, "load_config", dict)
+
+
 FAKE_FINDINGS = [
     {"category": "injection", "file": "app.py", "anchor": "get_user",
      "severity": "critical", "title": "SQL injection in get_user",
@@ -204,6 +213,103 @@ class TestRunAudit:
         monkeypatch.setattr(web_engine.engine, "select_backend", exploding)
         with pytest.raises(web_engine.AuditError):
             web_engine.run_audit(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Backend selection: the deployment must work with any supported backend
+# ---------------------------------------------------------------------------
+
+class TestBackendConfig:
+    def test_environment_overrides_the_config_file(self, monkeypatch):
+        monkeypatch.setattr(web_engine.engine, "load_config",
+                            lambda: {"backend": "claude-code", "model": "from-file"})
+        monkeypatch.setenv("SECAUDIT_BACKEND", "ollama")
+        monkeypatch.setenv("SECAUDIT_MODEL", "qwen2.5-coder")
+        config = web_engine.backend_config()
+        assert config["backend"] == "ollama"
+        assert config["model"] == "qwen2.5-coder"
+
+    def test_config_file_is_used_when_environment_is_empty(self, monkeypatch):
+        monkeypatch.setattr(web_engine.engine, "load_config",
+                            lambda: {"backend": "openai-api"})
+        assert web_engine.backend_config()["backend"] == "openai-api"
+
+    @pytest.mark.parametrize("backend,cls", [
+        ("ollama", "OllamaBackend"),
+        ("anthropic-api", "AnthropicAPIBackend"),
+        ("openai-api", "OpenAIBackend"),
+        ("claude-code", "ClaudeCodeBackend"),
+    ])
+    def test_every_backend_can_be_selected_from_the_environment(
+            self, monkeypatch, backend, cls):
+        monkeypatch.setenv("SECAUDIT_BACKEND", backend)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")   # ClaudeCode/API constructors
+        monkeypatch.setenv("OPENAI_API_KEY", "x")
+        selected = web_engine.engine.select_backend(None, web_engine.backend_config())
+        assert type(selected).__name__ == cls
+
+    def test_ollama_url_reaches_the_backend(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "ollama")
+        monkeypatch.setenv("SECAUDIT_OLLAMA_URL", "http://ollama:11434/")
+        backend = web_engine.engine.select_backend(None, web_engine.backend_config())
+        assert backend.base_url == "http://ollama:11434"
+
+
+class TestBackendStatus:
+    def test_missing_credentials_name_the_variable(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "anthropic-api")
+        status = web_engine.backend_status()
+        assert status["ready"] is False
+        assert "ANTHROPIC_API_KEY" in status["detail"]
+
+    def test_credentials_present_is_ready(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "openai-api")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        status = web_engine.backend_status()
+        assert status["ready"] is True
+        assert status["detail"] is None
+        assert status["model"]
+
+    def test_unknown_backend_is_reported_not_ready(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "does-not-exist")
+        status = web_engine.backend_status()
+        assert status["ready"] is False
+        assert "does-not-exist" in status["detail"]
+
+    def _fake_tags(self, monkeypatch, models):
+        class Resp:
+            def read(self):
+                return json.dumps({"models": [{"name": m} for m in models]}).encode()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        monkeypatch.setattr(web_engine.urllib.request, "urlopen",
+                            lambda url, timeout=None: Resp())
+
+    def test_ollama_with_the_model_pulled_is_ready(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "ollama")
+        monkeypatch.setenv("SECAUDIT_MODEL", "llama3")
+        self._fake_tags(monkeypatch, ["llama3:latest"])
+        status = web_engine.backend_status()
+        assert status["ready"] is True
+
+    def test_ollama_without_a_generative_model_is_not_ready(self, monkeypatch):
+        """An embeddings-only server cannot produce findings."""
+        monkeypatch.setenv("SECAUDIT_BACKEND", "ollama")
+        monkeypatch.setenv("SECAUDIT_MODEL", "llama3")
+        self._fake_tags(monkeypatch, ["bge-m3:latest"])
+        status = web_engine.backend_status()
+        assert status["ready"] is False
+        assert "bge-m3:latest" in status["detail"]
+
+    def test_unreachable_ollama_reports_the_url(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "ollama")
+        monkeypatch.setenv("SECAUDIT_OLLAMA_URL", "http://nope:11434")
+        def boom(url, timeout=None):
+            raise OSError("connection refused")
+        monkeypatch.setattr(web_engine.urllib.request, "urlopen", boom)
+        status = web_engine.backend_status()
+        assert status["ready"] is False
+        assert "http://nope:11434" in status["detail"]
 
 
 # ---------------------------------------------------------------------------

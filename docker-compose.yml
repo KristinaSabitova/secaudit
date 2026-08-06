@@ -20,11 +20,18 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://secaudit:${POSTGRES_PASSWORD}@db:5432/secaudit
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
-      # Not required to boot: without it the service still starts and
-      # /api/health reports the backend as unready, which is the honest state.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Any engine backend works; pick one in .env. Credentials are not required
+      # to boot — /api/health reports an unusable backend instead of crashing.
       SECAUDIT_BACKEND: ${SECAUDIT_BACKEND:-anthropic-api}
+      SECAUDIT_MODEL: ${SECAUDIT_MODEL:-}
+      SECAUDIT_OLLAMA_URL: ${SECAUDIT_OLLAMA_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SECAUDIT_TIMEOUT: ${SECAUDIT_TIMEOUT:-1800}
+    # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
+    # http://host.docker.internal:11434.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Loopback only, and only so 'deploy.sh --tunnel' can forward the dashboard
     # over SSH. The reverse proxy does not use this port: it is a container on
     # PROXY_NETWORK and reaches the app directly as http://secaudit-app:8000.

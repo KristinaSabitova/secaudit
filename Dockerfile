@@ -19,9 +19,9 @@ RUN useradd --create-home --uid 10001 secaudit \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 USER secaudit
 
+# No backend is baked in: the image works with any of them, chosen at runtime.
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    SECAUDIT_BACKEND=anthropic-api
+    PYTHONDONTWRITEBYTECODE=1
 
 EXPOSE 8000
 ENTRYPOINT ["docker-entrypoint.sh"]
