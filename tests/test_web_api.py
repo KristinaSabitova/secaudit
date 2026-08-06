@@ -559,6 +559,28 @@ class TestWebhookEndpoint:
         assert r.status_code == 400
 
 
+class TestRestartRecovery:
+    def test_interrupted_audits_are_failed_on_startup(self, client):
+        session = web_db.get_session()
+        for status in ("pending", "running", "done"):
+            session.add(web_models.Audit(
+                repo_url=f"https://github.com/acme/{status}.git", status=status))
+        session.commit()
+        session.close()
+
+        assert web_main.fail_interrupted_audits() == 2
+
+        by_repo = {a["repo_url"]: a for a in client.get("/api/audits").json()}
+        assert by_repo["https://github.com/acme/done.git"]["status"] == "done"
+        for status in ("pending", "running"):
+            audit = by_repo[f"https://github.com/acme/{status}.git"]
+            assert audit["status"] == "error"
+            assert "restarted" in audit["error"]
+
+    def test_startup_is_a_no_op_without_stale_audits(self, client):
+        assert web_main.fail_interrupted_audits() == 0
+
+
 class TestStaticFrontend:
     def test_root_serves_the_ui(self, client):
         r = client.get("/")

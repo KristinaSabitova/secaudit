@@ -2,6 +2,7 @@
 
 import shutil
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
@@ -24,7 +25,36 @@ from .webhook import (
     webhook_secret,
 )
 
-app = FastAPI(title="secaudit web", version="0.2.0")
+INTERRUPTED = "interrupted: the service restarted while this audit was running"
+
+
+def fail_interrupted_audits() -> int:
+    """Close out audits the previous process was running when it stopped.
+
+    Background tasks do not survive a restart, so anything still pending or
+    running at startup would otherwise sit in that state forever.
+    """
+    session = get_session()
+    try:
+        stale = session.scalars(
+            select(Audit).where(Audit.status.in_(("pending", "running")))
+        ).all()
+        for audit in stale:
+            audit.status = "error"
+            audit.error = INTERRUPTED
+        session.commit()
+        return len(stale)
+    finally:
+        session.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    fail_interrupted_audits()
+    yield
+
+
+app = FastAPI(title="secaudit web", version="0.2.0", lifespan=lifespan)
 
 
 class AuditRequest(BaseModel):
