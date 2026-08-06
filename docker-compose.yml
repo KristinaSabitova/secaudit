@@ -20,7 +20,9 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://secaudit:${POSTGRES_PASSWORD}@db:5432/secaudit
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      # Not required to boot: without it the service still starts and
+      # /api/health reports the backend as unready, which is the honest state.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SECAUDIT_BACKEND: ${SECAUDIT_BACKEND:-anthropic-api}
       SECAUDIT_TIMEOUT: ${SECAUDIT_TIMEOUT:-1800}
     # Loopback only, and only so 'deploy.sh --tunnel' can forward the dashboard
