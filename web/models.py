@@ -63,6 +63,24 @@ class Audit(Base):
     )
 
 
+class Settings(Base):
+    """Single row holding the backend configuration entered in the dashboard.
+
+    The API key is stored encrypted; see web/settings.py.
+    """
+
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ollama_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+    )
+
+
 class Finding(Base):
     __tablename__ = "findings"
 

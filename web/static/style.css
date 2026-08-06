@@ -16,6 +16,9 @@
 
 * { box-sizing: border-box; }
 
+/* A class that sets `display` would otherwise beat the hidden attribute. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -63,6 +66,12 @@ header h1 {
 }
 
 header h1::before { content: "> "; color: var(--muted); }
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
 
 .health {
   display: flex;
@@ -155,6 +164,67 @@ button {
 
 button:hover:not(:disabled) { background: rgba(126, 231, 135, .1); }
 button:disabled { opacity: .45; cursor: default; }
+
+button.ghost {
+  padding: .35rem .7rem;
+  border-color: var(--border);
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+/* ---------- settings ---------- */
+
+#settings { margin-bottom: 1.25rem; }
+
+.settings-intro {
+  margin: -.35rem 0 1rem;
+  font-size: .8rem;
+  max-width: 60ch;
+}
+
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .5rem 1rem;
+  margin-bottom: .7rem;
+}
+
+.field label {
+  flex: 0 0 7rem;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+.field input,
+.field select {
+  flex: 1;
+  min-width: 14rem;
+  padding: .5rem .65rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-alt);
+  color: var(--text);
+  font: inherit;
+}
+
+.field input:focus,
+.field select:focus { outline: none; border-color: var(--accent); }
+.field input::placeholder { color: var(--muted); }
+
+.settings-actions {
+  display: flex;
+  gap: .6rem;
+  margin-top: 1rem;
+}
+
+#settings-state { margin: .9rem 0 0; font-size: .8rem; }
 
 /* ---------- audit list ---------- */
 

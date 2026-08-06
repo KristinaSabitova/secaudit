@@ -165,9 +165,26 @@ the audit appear on the dashboard, or submit a repository URL from the form.
 
 ## Choosing the audit backend
 
-The image bakes in no backend. `SECAUDIT_BACKEND` in `.env` picks one of
-`anthropic-api`, `openai-api`, `ollama`, or `claude-code`, and `/api/health`
-reports whether that choice is actually usable — naming the missing variable,
+The usual way is the **backend panel in the dashboard**: paste an API key and
+secaudit works with it. The backend is inferred from the key's prefix —
+`sk-ant-…` selects `anthropic-api`, `sk-…` selects `openai-api` — or pick one
+explicitly for Ollama and claude-code, which need no key.
+
+The key is encrypted with `SECAUDIT_SECRET_KEY` before it is stored, is never
+returned to the browser, and is republished to the audit process on restart.
+Rotating `SECAUDIT_SECRET_KEY` makes an already-stored key unreadable; the
+panel says so rather than failing silently, and you enter the key again.
+
+**A Claude Pro or Max subscription is not an API credential**, and neither is
+ChatGPT Plus. Those cover claude.ai and Claude Code; API access is billed
+separately and issued from the provider's console. The only backend that runs
+on a subscription is `claude-code`, which shells out to a `claude` binary
+already logged in on that machine — workable for a local or single-user
+install, not for a hosted service.
+
+`SECAUDIT_BACKEND` and friends in `.env` still work and act as the deployment
+default; whatever is saved from the dashboard takes precedence. `/api/health`
+reports whether the effective choice is usable — naming the missing variable,
 or the Ollama URL it could not reach.
 
 For the free, local option, three things have to line up. Ollama needs a

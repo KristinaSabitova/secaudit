@@ -1,5 +1,6 @@
 """FastAPI app exposing the secaudit engine over HTTP."""
 
+import os
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
@@ -11,10 +12,12 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from . import settings as settings_store
 from .db import get_session
-from .engine import AuditError, backend_status, run_audit
+from .engine import AuditError, backend_config, backend_status, run_audit
 from .gitclone import CloneError, clone_repo, validate_repo_url
 from .models import Audit, audit_to_dict, finding_from_dict, summarize
+from .settings import SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
     SIGNATURE_HEADER,
@@ -26,6 +29,7 @@ from .webhook import (
 )
 
 INTERRUPTED = "interrupted: the service restarted while this audit was running"
+BACKENDS = ("anthropic-api", "openai-api", "ollama", "claude-code")
 
 
 def fail_interrupted_audits() -> int:
@@ -48,9 +52,21 @@ def fail_interrupted_audits() -> int:
         session.close()
 
 
+def restore_stored_credentials() -> None:
+    """Publish the dashboard-configured credential into the environment."""
+    session = get_session()
+    try:
+        settings_store.apply_to_environment(session)
+    except SecretsUnavailable:
+        pass  # /api/settings reports the same problem where a user can see it
+    finally:
+        session.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     fail_interrupted_audits()
+    restore_stored_credentials()
     yield
 
 
@@ -59,6 +75,15 @@ app = FastAPI(title="secaudit web", version="0.2.0", lifespan=lifespan)
 
 class AuditRequest(BaseModel):
     repo_url: str
+
+
+class SettingsRequest(BaseModel):
+    """Fields left unset are kept as they are."""
+    backend: str | None = None
+    model: str | None = None
+    ollama_url: str | None = None
+    api_key: str | None = None
+    clear_api_key: bool = False
 
 
 def db_session():
@@ -83,7 +108,8 @@ def execute_audit(audit_id: str) -> None:
                                               branch=audit.branch)
                 audit.status = "running"
                 session.commit()
-                findings = run_audit(dest)
+                findings = run_audit(
+                    dest, backend_config(settings_store.config_overrides(session)))
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = str(e)
@@ -185,6 +211,47 @@ def get_audit(audit_id: str, session: Session = Depends(db_session)):
     return audit_to_dict(audit, include_findings=True)
 
 
+def settings_response(session: Session) -> dict:
+    stored = settings_store.to_dict(settings_store.load(session))
+    stored["backend_status"] = backend_status(
+        backend_config(settings_store.config_overrides(session)))
+    return stored
+
+
+@app.get("/api/settings")
+def get_settings(session: Session = Depends(db_session)):
+    return settings_response(session)
+
+
+@app.put("/api/settings")
+def put_settings(req: SettingsRequest, session: Session = Depends(db_session)):
+    backend = req.backend
+    # A key alone is enough: its prefix says which backend it belongs to.
+    if not backend and req.api_key:
+        backend = settings_store.detect_backend(req.api_key)
+        if backend is None:
+            raise HTTPException(
+                status_code=400,
+                detail="cannot tell which backend this key belongs to; "
+                       "choose one explicitly",
+            )
+    if backend and backend not in BACKENDS:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown backend '{backend}'. "
+                                   f"Valid: {', '.join(BACKENDS)}")
+    try:
+        settings_store.save(session, backend=backend, model=req.model,
+                            ollama_url=req.ollama_url, api_key=req.api_key,
+                            clear_api_key=req.clear_api_key)
+        if req.clear_api_key:
+            for env_name in settings_store.CREDENTIAL_ENV.values():
+                os.environ.pop(env_name, None)
+        settings_store.apply_to_environment(session)
+    except SecretsUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return settings_response(session)
+
+
 @app.get("/api/health")
 def health(session: Session = Depends(db_session)):
     git_ok = shutil.which("git") is not None
@@ -195,7 +262,9 @@ def health(session: Session = Depends(db_session)):
     except Exception:
         db_ok = False
         audits_stored = None
-    backend = backend_status()
+    # Same config the audits will actually run with, so the header and the
+    # settings panel can never disagree.
+    backend = backend_status(backend_config(settings_store.config_overrides(session)))
     ok = git_ok and db_ok and backend["ready"]
     return {
         "status": "ok" if ok else "degraded",

@@ -28,24 +28,29 @@ _ENV_CONFIG = {
 }
 
 
-def backend_config() -> dict:
-    """Engine configuration: the CLI's config file, overridden by the environment."""
+def backend_config(overrides: dict | None = None) -> dict:
+    """Engine configuration, in increasing order of precedence.
+
+    The CLI's config file, then the environment, then whatever was configured
+    from the dashboard.
+    """
     config = dict(engine.load_config())
     for env_name, key in _ENV_CONFIG.items():
         value = os.environ.get(env_name)
         if value:
             config[key] = value
+    config.update(overrides or {})
     return config
 
 
-def run_audit(project: Path) -> list[dict]:
+def run_audit(project: Path, config: dict | None = None) -> list[dict]:
     """Run a full structured audit on a checked-out project directory.
 
     Returns findings as JSON-serialisable dicts (Finding fields).
     """
     timeout = int(os.environ.get("SECAUDIT_TIMEOUT", "3600"))
     try:
-        backend = engine.select_backend(None, backend_config())
+        backend = engine.select_backend(None, config or backend_config())
         prompt = engine.build_diff_prompt(None, "all", None)
         raw_output = backend.run(project, prompt, timeout=timeout)
     except SystemExit as e:  # the engine reports failures via sys.exit()
@@ -96,9 +101,9 @@ def _claude_code_ready() -> tuple[bool, str | None]:
     return False, "the 'claude' binary is not on PATH"
 
 
-def backend_status() -> dict:
+def backend_status(config: dict | None = None) -> dict:
     """Report which backend is configured and whether it looks usable."""
-    config = backend_config()
+    config = config or backend_config()
     name = config.get("backend", "claude-code")
     try:
         engine.select_backend(None, config)

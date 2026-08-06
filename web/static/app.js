@@ -201,6 +201,84 @@ async function refresh() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// backend settings
+// ---------------------------------------------------------------------------
+
+function renderSettings(settings) {
+  el("backend").value = settings.backend || "";
+  el("model").value = settings.model || "";
+  el("ollama-url").value = settings.ollama_url || "";
+  el("ollama-field").hidden = el("backend").value !== "ollama";
+
+  const key = el("api-key");
+  key.value = "";
+  key.placeholder = settings.api_key_set
+    ? "a key is stored — type a new one to replace it"
+    : "sk-ant-… or sk-…";
+  el("clear-key").disabled = !settings.api_key_set;
+
+  const status = settings.backend_status || {};
+  const state = el("settings-state");
+  state.replaceChildren(
+    node("span", `status status-${status.ready ? "done" : "error"}`,
+         status.ready ? "ready" : "not ready"),
+    node("span", null, `  ${status.name || "no backend"}`),
+  );
+  if (status.model) state.append(node("span", null, `  ·  ${status.model}`));
+  if (status.detail) state.append(node("div", "muted", status.detail));
+}
+
+async function loadSettings() {
+  try {
+    renderSettings(await api("/api/settings"));
+  } catch (e) {
+    el("settings-error").textContent = e.message;
+    el("settings-error").hidden = false;
+  }
+}
+
+async function saveSettings(body) {
+  const error = el("settings-error");
+  error.hidden = true;
+  try {
+    renderSettings(await api("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+    await loadHealth();
+  } catch (e) {
+    error.textContent = e.message;
+    error.hidden = false;
+  }
+}
+
+el("settings-toggle").addEventListener("click", () => {
+  const panel = el("settings");
+  panel.hidden = !panel.hidden;
+  el("settings-toggle").setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden) loadSettings();
+});
+
+el("backend").addEventListener("change", () => {
+  el("ollama-field").hidden = el("backend").value !== "ollama";
+});
+
+el("settings-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const body = {
+    backend: el("backend").value,
+    model: el("model").value.trim(),
+    ollama_url: el("ollama-url").value.trim(),
+  };
+  const key = el("api-key").value.trim();
+  if (key) body.api_key = key;
+  saveSettings(body);
+});
+
+el("clear-key").addEventListener("click", () => saveSettings({ clear_api_key: true }));
+
 async function loadHealth() {
   const health = el("health");
   try {

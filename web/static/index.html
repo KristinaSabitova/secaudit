@@ -9,10 +9,55 @@
 <body>
   <header>
     <h1>secaudit</h1>
-    <div id="health" class="health" data-state="unknown">checking&hellip;</div>
+    <div class="header-right">
+      <div id="health" class="health" data-state="unknown">checking&hellip;</div>
+      <button id="settings-toggle" class="ghost" type="button" aria-expanded="false">
+        backend
+      </button>
+    </div>
   </header>
 
   <main>
+    <section class="pane" id="settings" hidden>
+      <h2>audit backend</h2>
+      <p class="muted settings-intro">
+        Paste an API key and secaudit works with it. The key is encrypted before
+        it is stored and is never sent back to this page.
+      </p>
+      <form id="settings-form" autocomplete="off">
+        <div class="field">
+          <label for="api-key">api key</label>
+          <input id="api-key" type="password" spellcheck="false"
+                 placeholder="sk-ant-… or sk-…">
+        </div>
+        <div class="field">
+          <label for="backend">backend</label>
+          <select id="backend">
+            <option value="">detect from the key</option>
+            <option value="anthropic-api">anthropic-api</option>
+            <option value="openai-api">openai-api</option>
+            <option value="ollama">ollama (free, local)</option>
+            <option value="claude-code">claude-code (local binary)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="model">model <span class="muted">(optional)</span></label>
+          <input id="model" spellcheck="false" placeholder="backend default">
+        </div>
+        <div class="field" id="ollama-field" hidden>
+          <label for="ollama-url">ollama url</label>
+          <input id="ollama-url" spellcheck="false"
+                 placeholder="http://host.docker.internal:11434">
+        </div>
+        <div class="settings-actions">
+          <button type="submit">save</button>
+          <button type="button" id="clear-key" class="ghost">remove key</button>
+        </div>
+      </form>
+      <p id="settings-error" class="error" hidden></p>
+      <p id="settings-state" class="muted"></p>
+    </section>
+
     <form id="audit-form" autocomplete="off">
       <label class="sr-only" for="repo-url">repository</label>
       <input id="repo-url" name="repo-url" type="text" spellcheck="false"

@@ -1,6 +1,7 @@
 """Tests for the FastAPI web layer (web/)."""
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from web import db as web_db
 from web import engine as web_engine
 from web import main as web_main
 from web import models as web_models
+from web import settings as web_settings
 from web.gitclone import CloneError, clone_repo, validate_branch, validate_repo_url
 from web.main import app
 from web.webhook import (
@@ -39,7 +41,8 @@ SECRET = "s3cr3t-webhook-token"
 def clean_backend_env(monkeypatch):
     """Keep the developer's own backend config out of the tests."""
     for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
-                 "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN"):
+                 "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
+                 web_settings.SECRET_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(web_engine.engine, "load_config", dict)
 
@@ -111,6 +114,12 @@ def clone_from_sample(monkeypatch, sample_repo):
 
     monkeypatch.setattr(web_main, "clone_repo", fake_clone)
     return calls
+
+
+@pytest.fixture
+def master_key(monkeypatch):
+    monkeypatch.setenv(web_settings.SECRET_ENV, "test-master-key")
+    return "test-master-key"
 
 
 @pytest.fixture
@@ -253,6 +262,90 @@ class TestBackendConfig:
         monkeypatch.setenv("SECAUDIT_OLLAMA_URL", "http://ollama:11434/")
         backend = web_engine.engine.select_backend(None, web_engine.backend_config())
         assert backend.base_url == "http://ollama:11434"
+
+
+class TestStoredSettings:
+    """The dashboard stores the backend config; the key is encrypted at rest."""
+
+    def test_a_pasted_key_picks_its_own_backend(self, client, master_key):
+        body = client.put("/api/settings", json={"api_key": "sk-ant-abc123"}).json()
+        assert body["backend"] == "anthropic-api"
+        assert body["api_key_set"] is True
+        assert body["backend_status"]["ready"] is True
+
+    def test_an_openai_key_picks_openai(self, client, master_key):
+        body = client.put("/api/settings", json={"api_key": "sk-proj-abc123"}).json()
+        assert body["backend"] == "openai-api"
+
+    def test_an_unrecognisable_key_is_400(self, client, master_key):
+        r = client.put("/api/settings", json={"api_key": "nonsense"})
+        assert r.status_code == 400
+        assert "explicitly" in r.json()["detail"]
+
+    def test_the_key_is_never_returned(self, client, master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-secret-value"})
+        for body in (client.get("/api/settings").text,
+                     client.get("/api/health").text):
+            assert "sk-ant-secret-value" not in body
+
+    def test_the_key_is_encrypted_in_the_database(self, client, master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-secret-value"})
+        session = web_db.get_session()
+        stored = web_settings.load(session).api_key_encrypted
+        session.close()
+        assert stored and "sk-ant-secret-value" not in stored
+        assert web_settings.decrypt(stored) == "sk-ant-secret-value"
+
+    def test_a_stored_key_reaches_the_engine(self, client, master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-abc123"
+
+    def test_removing_the_key_forgets_it_everywhere(self, client, master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
+        body = client.put("/api/settings", json={"clear_api_key": True}).json()
+        assert body["api_key_set"] is False
+        assert body["backend_status"]["ready"] is False
+        assert "ANTHROPIC_API_KEY" not in os.environ
+
+    def test_health_reports_the_configured_backend(self, client, master_key):
+        """The header and the settings panel must never disagree."""
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
+        health = client.get("/api/health").json()["backend"]
+        settings = client.get("/api/settings").json()["backend_status"]
+        assert health == settings
+        assert health["name"] == "anthropic-api"
+
+    def test_settings_override_the_environment(self, client, master_key, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_BACKEND", "claude-code")
+        client.put("/api/settings", json={"backend": "ollama",
+                                          "ollama_url": "http://ollama:11434"})
+        assert client.get("/api/settings").json()["backend_status"]["name"] == "ollama"
+
+    def test_an_unknown_backend_is_rejected(self, client, master_key):
+        r = client.put("/api/settings", json={"backend": "chatgpt5"})
+        assert r.status_code == 400
+
+    def test_without_a_master_key_storing_is_refused(self, client, monkeypatch):
+        monkeypatch.delenv(web_settings.SECRET_ENV, raising=False)
+        r = client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
+        assert r.status_code == 503
+        assert web_settings.SECRET_ENV in r.json()["detail"]
+
+    def test_a_rotated_master_key_is_reported_not_silently_wrong(self, client,
+                                                                master_key,
+                                                                monkeypatch):
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
+        monkeypatch.setenv(web_settings.SECRET_ENV, "a-different-master-key")
+        session = web_db.get_session()
+        with pytest.raises(web_settings.SecretsUnavailable):
+            web_settings.apply_to_environment(session)
+        session.close()
+
+    def test_settings_survive_a_restart(self, client, master_key, monkeypatch):
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123"})
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        web_main.restore_stored_credentials()
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-abc123"
 
 
 class TestBackendStatus:
@@ -698,13 +791,24 @@ class TestStaticFrontend:
     def test_assets_are_served(self, client, path):
         assert client.get(path).status_code == 200
 
-    def test_ui_has_no_external_references(self):
-        """The UI must work offline behind TLS: no CDNs, no remote fonts."""
+    def test_ui_loads_no_external_resources(self):
+        """The UI must work offline behind TLS: no CDNs, no remote fonts.
+
+        Matches resource loads specifically — a URL in placeholder text is fine.
+        """
+        loads_remotely = re.compile(
+            r"""(?:src|href)\s*=\s*["']\s*(?:https?:)?//|@import|url\(\s*["']?\s*(?:https?:)?//""",
+            re.IGNORECASE,
+        )
         for name in ("index.html", "app.js", "style.css"):
             text = (ROOT / "web" / "static" / name).read_text()
-            assert "//fonts." not in text
-            assert "http://" not in text
-            assert "https://" not in text.replace("https://github.com/", "")
+            assert not loads_remotely.search(text), f"{name} loads a remote resource"
+
+    def test_hidden_attribute_is_not_beaten_by_a_display_rule(self):
+        """Several panels use [hidden]; a class setting display would win."""
+        css = (ROOT / "web" / "static" / "style.css").read_text()
+        assert re.search(r"\[hidden\][^{]*\{[^}]*display:\s*none\s*!important",
+                         css), "style.css must force [hidden] to display:none"
 
     def test_api_routes_are_not_shadowed(self, client):
         assert client.get("/api/health").status_code == 200
