@@ -1,6 +1,5 @@
 """FastAPI app exposing the secaudit engine over HTTP."""
 
-import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -18,6 +17,7 @@ from .webhook import (
     EVENT_HEADER,
     SIGNATURE_HEADER,
     WebhookError,
+    decode_payload,
     parse_push_event,
     verify_signature,
     webhook_secret,
@@ -125,13 +125,7 @@ async def github_webhook(request: Request, response: Response,
         return {"status": "ignored", "reason": f"unsupported event '{event}'"}
 
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="body is not valid JSON")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="payload must be a JSON object")
-
-    try:
+        payload = decode_payload(body, request.headers.get("content-type", ""))
         push = parse_push_event(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

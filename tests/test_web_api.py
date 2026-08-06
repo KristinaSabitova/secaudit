@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,8 +21,10 @@ from web.gitclone import CloneError, clone_repo, validate_branch, validate_repo_
 from web.main import app
 from web.webhook import (
     EVENT_HEADER,
+    FORM_CONTENT_TYPE,
     SIGNATURE_HEADER,
     WebhookError,
+    decode_payload,
     parse_push_event,
     sign,
     verify_signature,
@@ -115,13 +118,22 @@ def push_payload(ref="refs/heads/main", after="a" * 40,
     }
 
 
-def deliver(client, payload, *, secret=SECRET, event="push", signature=None):
+def encode_delivery(payload, form=False):
+    """Serialise a payload the way a hook's Content type setting would."""
+    if form:
+        return (urlencode({"payload": json.dumps(payload)}).encode(),
+                FORM_CONTENT_TYPE)
+    return json.dumps(payload).encode(), "application/json"
+
+
+def deliver(client, payload, *, secret=SECRET, event="push", signature=None,
+            form=False):
     """POST a webhook delivery, signed with secret unless told otherwise.
 
     signature=None signs the body; a string is sent verbatim; "" omits the header.
     """
-    body = json.dumps(payload).encode()
-    headers = {EVENT_HEADER: event, "Content-Type": "application/json"}
+    body, content_type = encode_delivery(payload, form)
+    headers = {EVENT_HEADER: event, "Content-Type": content_type}
     sig = sign(body, secret) if signature is None else signature
     if sig:
         headers[SIGNATURE_HEADER] = sig
@@ -363,6 +375,35 @@ class TestVerifySignature:
             verify_signature(b"{}", signature, SECRET)
 
 
+class TestDecodePayload:
+    def test_reads_json_body(self):
+        body, content_type = encode_delivery(push_payload())
+        assert decode_payload(body, content_type)["ref"] == "refs/heads/main"
+
+    def test_reads_form_encoded_body(self):
+        """GitHub's default Content type wraps the JSON in a payload field."""
+        body, content_type = encode_delivery(push_payload(), form=True)
+        assert decode_payload(body, content_type)["ref"] == "refs/heads/main"
+
+    def test_form_content_type_is_matched_with_charset(self):
+        body, _ = encode_delivery(push_payload(), form=True)
+        decoded = decode_payload(body, f"{FORM_CONTENT_TYPE}; charset=utf-8")
+        assert decoded["ref"] == "refs/heads/main"
+
+    def test_missing_content_type_falls_back_to_json(self):
+        body, _ = encode_delivery(push_payload())
+        assert decode_payload(body)["ref"] == "refs/heads/main"
+
+    def test_form_body_without_payload_field(self):
+        with pytest.raises(ValueError):
+            decode_payload(b"other=1", FORM_CONTENT_TYPE)
+
+    @pytest.mark.parametrize("body", [b"not json", b"[1, 2]", b'"a string"', b""])
+    def test_rejects_non_object_payloads(self, body):
+        with pytest.raises(ValueError):
+            decode_payload(body, "application/json")
+
+
 class TestParsePushEvent:
     def test_extracts_url_branch_and_sha(self):
         push = parse_push_event(push_payload(ref="refs/heads/feature/login"))
@@ -428,6 +469,33 @@ class TestWebhookEndpoint:
         assert clone_from_sample == [
             {"url": "https://github.com/acme/sample.git", "branch": "release"}
         ]
+
+    def test_form_encoded_push_queues_an_audit(self, client, webhook_secret,
+                                               clone_from_sample):
+        """A hook left on GitHub's default Content type must still work."""
+        r = deliver(client, push_payload(ref="refs/heads/release"), form=True)
+        assert r.status_code == 202
+        assert r.json()["branch"] == "release"
+
+    def test_tampered_form_payload_is_401(self, client, webhook_secret):
+        signed_body, _ = encode_delivery(push_payload(), form=True)
+        tampered, content_type = encode_delivery(
+            push_payload(clone_url="https://github.com/evil/repo.git"), form=True)
+        r = client.post(
+            "/api/webhook/github", content=tampered,
+            headers={EVENT_HEADER: "push", "Content-Type": content_type,
+                     SIGNATURE_HEADER: sign(signed_body, SECRET)},
+        )
+        assert r.status_code == 401
+
+    def test_form_body_without_payload_field_is_400(self, client, webhook_secret):
+        body = b"other=1"
+        r = client.post(
+            "/api/webhook/github", content=body,
+            headers={EVENT_HEADER: "push", "Content-Type": FORM_CONTENT_TYPE,
+                     SIGNATURE_HEADER: sign(body, SECRET)},
+        )
+        assert r.status_code == 400
 
     def test_queued_audit_runs_to_completion(self, client, webhook_secret,
                                              clone_from_sample):

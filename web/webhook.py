@@ -2,12 +2,15 @@
 
 import hashlib
 import hmac
+import json
 import os
+from urllib.parse import parse_qs
 
 from .gitclone import validate_branch, validate_repo_url
 
 SIGNATURE_HEADER = "X-Hub-Signature-256"
 EVENT_HEADER = "X-GitHub-Event"
+FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 
 # GitHub reports a deleted branch with an all-zero "after" sha.
 _NULL_SHA = "0" * 40
@@ -34,6 +37,31 @@ def verify_signature(body: bytes, signature: str | None, secret: str) -> None:
         raise WebhookError(f"missing {SIGNATURE_HEADER} header")
     if not hmac.compare_digest(sign(body, secret), signature):
         raise WebhookError("signature does not match")
+
+
+def decode_payload(body: bytes, content_type: str = "") -> dict:
+    """Decode an authenticated delivery body into its event payload.
+
+    A hook's "Content type" setting decides the encoding: GitHub's default,
+    application/x-www-form-urlencoded, wraps the JSON in a "payload" field,
+    while application/json sends it as the body. Raises ValueError on anything
+    that does not decode to a JSON object.
+    """
+    if content_type.split(";", 1)[0].strip().lower() == FORM_CONTENT_TYPE:
+        fields = parse_qs(body.decode("utf-8", "replace"))
+        if not fields.get("payload"):
+            raise ValueError(f"{FORM_CONTENT_TYPE} body has no 'payload' field")
+        raw = fields["payload"][0]
+    else:
+        raw = body.decode("utf-8", "replace")
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError("body is not valid JSON")
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a JSON object")
+    return payload
 
 
 def parse_push_event(payload: dict) -> dict | None:
