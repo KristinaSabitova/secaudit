@@ -1,10 +1,11 @@
 """FastAPI app exposing the secaudit engine over HTTP."""
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -13,6 +14,14 @@ from .db import get_session
 from .engine import AuditError, backend_status, run_audit
 from .gitclone import CloneError, clone_repo, validate_repo_url
 from .models import Audit, audit_to_dict, finding_from_dict, summarize
+from .webhook import (
+    EVENT_HEADER,
+    SIGNATURE_HEADER,
+    WebhookError,
+    parse_push_event,
+    verify_signature,
+    webhook_secret,
+)
 
 app = FastAPI(title="secaudit web", version="0.2.0")
 
@@ -39,7 +48,8 @@ def execute_audit(audit_id: str) -> None:
         with tempfile.TemporaryDirectory(prefix="secaudit-") as tmp:
             dest = Path(tmp) / "repo"
             try:
-                audit.commit_sha = clone_repo(audit.repo_url, dest)
+                audit.commit_sha = clone_repo(audit.repo_url, dest,
+                                              branch=audit.branch)
                 audit.status = "running"
                 session.commit()
                 findings = run_audit(dest)
@@ -62,6 +72,22 @@ def execute_audit(audit_id: str) -> None:
         session.close()
 
 
+def queue_audit(session: Session, background_tasks: BackgroundTasks, repo_url: str,
+                trigger: str, branch: str | None = None,
+                commit_sha: str | None = None) -> Audit:
+    """Record a pending audit and hand it to a background worker.
+
+    commit_sha is what the caller announced; the worker replaces it with the
+    sha it actually checked out.
+    """
+    audit = Audit(repo_url=repo_url, branch=branch, trigger=trigger,
+                  commit_sha=commit_sha)
+    session.add(audit)
+    session.commit()
+    background_tasks.add_task(execute_audit, audit.id)
+    return audit
+
+
 @app.post("/api/audits", status_code=202)
 def create_audit(req: AuditRequest, background_tasks: BackgroundTasks,
                  session: Session = Depends(db_session)):
@@ -70,10 +96,51 @@ def create_audit(req: AuditRequest, background_tasks: BackgroundTasks,
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    audit = Audit(repo_url=url, trigger="manual")
-    session.add(audit)
-    session.commit()
-    background_tasks.add_task(execute_audit, audit.id)
+    audit = queue_audit(session, background_tasks, url, "manual")
+    return audit_to_dict(audit)
+
+
+@app.post("/api/webhook/github", status_code=202)
+async def github_webhook(request: Request, response: Response,
+                         background_tasks: BackgroundTasks,
+                         session: Session = Depends(db_session)):
+    secret = webhook_secret()
+    if secret is None:
+        raise HTTPException(status_code=503,
+                            detail="GITHUB_WEBHOOK_SECRET is not configured")
+
+    # Authenticate the raw body before it is parsed or acted upon.
+    body = await request.body()
+    try:
+        verify_signature(body, request.headers.get(SIGNATURE_HEADER), secret)
+    except WebhookError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    event = request.headers.get(EVENT_HEADER, "")
+    if event == "ping":
+        response.status_code = 200
+        return {"status": "pong"}
+    if event != "push":
+        response.status_code = 200
+        return {"status": "ignored", "reason": f"unsupported event '{event}'"}
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="body is not valid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    try:
+        push = parse_push_event(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if push is None:
+        response.status_code = 200
+        return {"status": "ignored", "reason": "push does not update a branch"}
+
+    audit = queue_audit(session, background_tasks, push["repo_url"], "webhook",
+                        branch=push["branch"], commit_sha=push["sha"])
     return audit_to_dict(audit)
 
 

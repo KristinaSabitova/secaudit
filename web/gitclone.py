@@ -10,6 +10,10 @@ _GITHUB_RE = re.compile(
     r"^https://github\.com/([A-Za-z0-9][A-Za-z0-9_.\-]*)/([A-Za-z0-9_.\-]+?)(?:\.git)?/?$"
 )
 
+# Conservative subset of git's ref rules: no leading dash (which git would read
+# as an option), no "..", no whitespace or shell-significant characters.
+_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,254}$")
+
 CLONE_TIMEOUT = int(os.environ.get("SECAUDIT_CLONE_TIMEOUT", "120"))
 
 
@@ -31,13 +35,29 @@ def validate_repo_url(url: str) -> str:
     return f"https://github.com/{owner}/{repo}.git"
 
 
-def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT) -> str:
-    """Shallow-clone url into dest and return the HEAD commit sha."""
+def validate_branch(name: str) -> str:
+    """Return the branch name unchanged, or raise ValueError."""
+    name = name.strip()
+    if not _BRANCH_RE.match(name) or ".." in name or name.endswith(".lock"):
+        raise ValueError("invalid branch name")
+    return name
+
+
+def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
+               branch: str | None = None) -> str:
+    """Shallow-clone url into dest and return the HEAD commit sha.
+
+    With no branch, git checks out the repository's default branch.
+    """
+    cmd = ["git", "clone", "--depth", "1"]
+    if branch is not None:
+        cmd += ["--branch", validate_branch(branch), "--single-branch"]
+    cmd += ["--", url, str(dest)]
+
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
         r = subprocess.run(
-            ["git", "clone", "--depth", "1", "--", url, str(dest)],
-            capture_output=True, text=True, timeout=timeout, env=env,
+            cmd, capture_output=True, text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired:
         raise CloneError(f"git clone timed out after {timeout}s")

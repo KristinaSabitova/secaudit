@@ -16,8 +16,18 @@ ROOT = Path(__file__).resolve().parent.parent
 from web import db as web_db
 from web import engine as web_engine
 from web import main as web_main
-from web.gitclone import CloneError, clone_repo, validate_repo_url
+from web.gitclone import CloneError, clone_repo, validate_branch, validate_repo_url
 from web.main import app
+from web.webhook import (
+    EVENT_HEADER,
+    SIGNATURE_HEADER,
+    WebhookError,
+    parse_push_event,
+    sign,
+    verify_signature,
+)
+
+SECRET = "s3cr3t-webhook-token"
 
 
 FAKE_FINDINGS = [
@@ -74,12 +84,48 @@ def sample_repo(tmp_path):
 
 @pytest.fixture
 def clone_from_sample(monkeypatch, sample_repo):
-    """Route the app's clone through a real shallow clone of the local sample repo."""
-    monkeypatch.setattr(
-        web_main, "clone_repo",
-        lambda url, dest, timeout=120: clone_repo(f"file://{sample_repo}", dest),
-    )
-    return sample_repo
+    """Route the app's clone through a real shallow clone of the local sample repo.
+
+    Yields the list of clone calls the app made, so tests can assert on the
+    arguments without depending on the local repo's default branch name.
+    """
+    calls = []
+
+    def fake_clone(url, dest, timeout=120, branch=None):
+        calls.append({"url": url, "branch": branch})
+        return clone_repo(f"file://{sample_repo}", dest)
+
+    monkeypatch.setattr(web_main, "clone_repo", fake_clone)
+    return calls
+
+
+@pytest.fixture
+def webhook_secret(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+    return SECRET
+
+
+def push_payload(ref="refs/heads/main", after="a" * 40,
+                 clone_url="https://github.com/acme/sample.git", **extra):
+    return {
+        "ref": ref,
+        "after": after,
+        "repository": {"clone_url": clone_url, "full_name": "acme/sample"},
+        **extra,
+    }
+
+
+def deliver(client, payload, *, secret=SECRET, event="push", signature=None):
+    """POST a webhook delivery, signed with secret unless told otherwise.
+
+    signature=None signs the body; a string is sent verbatim; "" omits the header.
+    """
+    body = json.dumps(payload).encode()
+    headers = {EVENT_HEADER: event, "Content-Type": "application/json"}
+    sig = sign(body, secret) if signature is None else signature
+    if sig:
+        headers[SIGNATURE_HEADER] = sig
+    return client.post("/api/webhook/github", content=body, headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +208,10 @@ class TestMigration:
         con = sqlite3.connect(db_file)
         tables = {row[0] for row in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
+        columns = {row[1] for row in con.execute("PRAGMA table_info(audits)")}
         con.close()
         assert {"audits", "findings", "alembic_version"} <= tables
+        assert "branch" in columns          # added by revision 0002
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +249,7 @@ class TestCreateAudit:
         assert "Hardcoded API key" in titles
 
     def test_clone_failure_recorded_as_error(self, client, monkeypatch):
-        def failing(url, dest, timeout=120):
+        def failing(url, dest, timeout=120, branch=None):
             raise CloneError("git clone failed: repository not found")
         monkeypatch.setattr(web_main, "clone_repo", failing)
         audit_id = client.post(
@@ -241,6 +289,181 @@ class TestReadAudits:
 
     def test_unknown_id_is_404(self, client):
         assert client.get("/api/audits/doesnotexist").status_code == 404
+
+
+class TestBranchCloning:
+    @pytest.mark.parametrize("name", ["main", "feature/x", "v1.2-rc", "a_b.c"])
+    def test_accepts_ordinary_names(self, name):
+        assert validate_branch(name) == name
+
+    @pytest.mark.parametrize("name", [
+        "--upload-pack=touch /tmp/pwned",
+        "-b",
+        "a..b",
+        "refs/heads/x.lock",
+        "with space",
+        "semi;colon",
+        "$(whoami)",
+        "",
+    ])
+    def test_rejects_dangerous_names(self, name):
+        with pytest.raises(ValueError):
+            validate_branch(name)
+
+    def test_clones_the_requested_branch(self, tmp_path, sample_repo):
+        subprocess.run(["git", "checkout", "-qb", "topic"], cwd=sample_repo, check=True)
+        (sample_repo / "extra.py").write_text("PASSWORD = 'hunter2'\n")
+        subprocess.run(["git", "add", "."], cwd=sample_repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@test",
+             "commit", "-qm", "on topic"],
+            cwd=sample_repo, check=True,
+        )
+        # Leave the repo on its original branch so "topic" is not simply HEAD.
+        subprocess.run(["git", "checkout", "-q", "-"], cwd=sample_repo, check=True)
+
+        dest = tmp_path / "checkout"
+        sha = clone_repo(f"file://{sample_repo}", dest, branch="topic")
+        assert len(sha) == 40
+        assert (dest / "extra.py").exists()
+
+    def test_unknown_branch_raises_clone_error(self, tmp_path, sample_repo):
+        with pytest.raises(CloneError):
+            clone_repo(f"file://{sample_repo}", tmp_path / "x", branch="nope")
+
+
+# ---------------------------------------------------------------------------
+# Webhook: signature verification and payload parsing
+# ---------------------------------------------------------------------------
+
+class TestVerifySignature:
+    def test_accepts_matching_signature(self):
+        body = b'{"ref": "refs/heads/main"}'
+        verify_signature(body, sign(body, SECRET), SECRET)      # does not raise
+
+    def test_rejects_missing_header(self):
+        with pytest.raises(WebhookError):
+            verify_signature(b"{}", None, SECRET)
+
+    def test_rejects_wrong_secret(self):
+        body = b"{}"
+        with pytest.raises(WebhookError):
+            verify_signature(body, sign(body, "other-secret"), SECRET)
+
+    def test_rejects_tampered_body(self):
+        signature = sign(b'{"ref": "refs/heads/main"}', SECRET)
+        with pytest.raises(WebhookError):
+            verify_signature(b'{"ref": "refs/heads/evil"}', signature, SECRET)
+
+    @pytest.mark.parametrize("signature", [
+        "", "sha256=", "deadbeef", "sha1=deadbeef", "sha256=not-hex",
+    ])
+    def test_rejects_malformed_signatures(self, signature):
+        with pytest.raises(WebhookError):
+            verify_signature(b"{}", signature, SECRET)
+
+
+class TestParsePushEvent:
+    def test_extracts_url_branch_and_sha(self):
+        push = parse_push_event(push_payload(ref="refs/heads/feature/login"))
+        assert push == {
+            "repo_url": "https://github.com/acme/sample.git",
+            "branch": "feature/login",
+            "sha": "a" * 40,
+        }
+
+    @pytest.mark.parametrize("payload", [
+        push_payload(ref="refs/tags/v1.0"),
+        push_payload(ref=""),
+        push_payload(deleted=True),
+        push_payload(after="0" * 40),
+    ], ids=["tag", "no-ref", "deleted", "null-sha"])
+    def test_ignores_pushes_without_a_branch_to_audit(self, payload):
+        assert parse_push_event(payload) is None
+
+    @pytest.mark.parametrize("clone_url", [
+        "https://gitlab.com/acme/sample.git",
+        "git@github.com:acme/sample.git",
+        "",
+    ])
+    def test_rejects_repositories_we_will_not_clone(self, clone_url):
+        with pytest.raises(ValueError):
+            parse_push_event(push_payload(clone_url=clone_url))
+
+
+class TestWebhookEndpoint:
+    def test_without_secret_configured_is_503(self, client, monkeypatch):
+        monkeypatch.delenv("GITHUB_WEBHOOK_SECRET", raising=False)
+        assert deliver(client, push_payload()).status_code == 503
+
+    def test_ping_is_acknowledged(self, client, webhook_secret):
+        r = deliver(client, {"zen": "Non-blocking is better than blocking."},
+                    event="ping")
+        assert r.status_code == 200
+        assert r.json()["status"] == "pong"
+
+    @pytest.mark.parametrize("signature", ["", "sha256=" + "0" * 64],
+                             ids=["missing", "wrong"])
+    def test_bad_signature_is_401(self, client, webhook_secret, signature):
+        assert deliver(client, push_payload(),
+                       signature=signature).status_code == 401
+
+    def test_signature_from_another_secret_is_401(self, client, webhook_secret):
+        assert deliver(client, push_payload(),
+                       secret="not-the-secret").status_code == 401
+
+    def test_unsigned_delivery_creates_no_audit(self, client, webhook_secret):
+        deliver(client, push_payload(), signature="")
+        assert client.get("/api/audits").json() == []
+
+    def test_push_queues_a_webhook_audit(self, client, webhook_secret,
+                                         clone_from_sample):
+        r = deliver(client, push_payload(ref="refs/heads/release"))
+        assert r.status_code == 202
+        body = r.json()
+        assert body["trigger"] == "webhook"
+        assert body["repo_url"] == "https://github.com/acme/sample.git"
+        assert body["branch"] == "release"
+        assert body["commit_sha"] == "a" * 40      # the sha the push announced
+        assert clone_from_sample == [
+            {"url": "https://github.com/acme/sample.git", "branch": "release"}
+        ]
+
+    def test_queued_audit_runs_to_completion(self, client, webhook_secret,
+                                             clone_from_sample):
+        audit_id = deliver(client, push_payload()).json()["id"]
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["status"] == "done"
+        assert len(detail["commit_sha"]) == 40
+        assert detail["summary"]["critical"] == 1
+
+    @pytest.mark.parametrize("payload", [
+        push_payload(ref="refs/tags/v1.0"),
+        push_payload(deleted=True, after="0" * 40),
+    ], ids=["tag", "branch-deleted"])
+    def test_uninteresting_pushes_are_ignored(self, client, webhook_secret, payload):
+        r = deliver(client, payload)
+        assert r.status_code == 200
+        assert r.json()["status"] == "ignored"
+        assert client.get("/api/audits").json() == []
+
+    def test_unsupported_event_is_ignored(self, client, webhook_secret):
+        r = deliver(client, {"action": "opened"}, event="issues")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ignored"
+        assert client.get("/api/audits").json() == []
+
+    def test_foreign_repository_is_400(self, client, webhook_secret):
+        r = deliver(client, push_payload(clone_url="https://evil.com/acme/sample.git"))
+        assert r.status_code == 400
+
+    def test_signed_non_json_body_is_400(self, client, webhook_secret):
+        body = b"not json"
+        r = client.post(
+            "/api/webhook/github", content=body,
+            headers={EVENT_HEADER: "push", SIGNATURE_HEADER: sign(body, SECRET)},
+        )
+        assert r.status_code == 400
 
 
 class TestHealth:

@@ -36,6 +36,8 @@ class Audit(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     repo_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL means "whatever the repository's default branch is".
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     trigger: Mapped[str] = mapped_column(String(16), default="manual")   # manual | webhook
     status: Mapped[str] = mapped_column(String(16), default="pending")   # pending | running | done | error
@@ -102,6 +104,7 @@ def audit_to_dict(audit: Audit, include_findings: bool = False) -> dict:
     d = {
         "id": audit.id,
         "repo_url": audit.repo_url,
+        "branch": audit.branch,
         "commit_sha": audit.commit_sha,
         "trigger": audit.trigger,
         "status": audit.status,
