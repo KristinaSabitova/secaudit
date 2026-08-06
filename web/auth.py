@@ -22,6 +22,9 @@ CLIENT_ID_ENV = "GITHUB_OAUTH_CLIENT_ID"
 CLIENT_SECRET_ENV = "GITHUB_OAUTH_CLIENT_SECRET"
 ADMIN_LOGIN_ENV = "SECAUDIT_ADMIN_GITHUB_LOGIN"
 ALLOWED_LOGINS_ENV = "SECAUDIT_ALLOWED_GITHUB_LOGINS"
+# Names the sole owner of a personal instance, which then needs no sign-in.
+# Only safe while the app is bound to loopback: it authenticates nobody.
+SINGLE_USER_ENV = "SECAUDIT_SINGLE_USER"
 
 COOKIE_NAME = "secaudit_session"
 SESSION_DAYS = 30
@@ -154,6 +157,25 @@ def upsert_user(session: Session, profile: dict) -> User:
         user.is_admin = True
 
     session.commit()
+    return user
+
+
+def single_user_login() -> str | None:
+    """The account a personal instance runs as, if it is configured as one."""
+    return os.environ.get(SINGLE_USER_ENV, "").strip() or None
+
+
+def single_user(session: Session) -> User | None:
+    """The owner of a personal instance, created on first use."""
+    login = single_user_login()
+    if login is None:
+        return None
+    github_id = f"local:{login.lower()}"
+    user = session.scalar(select(User).where(User.github_id == github_id))
+    if user is None:
+        user = User(github_id=github_id, login=login, is_admin=True)
+        session.add(user)
+        session.commit()
     return user
 
 

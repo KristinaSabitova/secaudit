@@ -163,6 +163,20 @@ backend has credentials. `degraded` still serves, so check which flag is false.
 To exercise the whole path, push a commit to a connected repository and watch
 the audit appear on the dashboard, or submit a repository URL from the form.
 
+## Running it on your own machine instead
+
+`./run-local.sh` starts the dashboard on loopback with the `claude-code`
+backend, so audits run through the `claude` binary already signed in on that
+machine — a Claude subscription, no API key, nothing billed per audit. State
+lives in `~/.secaudit/`.
+
+That mode sets `SECAUDIT_SINGLE_USER`, which makes every request the named
+owner and skips sign-in entirely. **It authenticates nobody**, so it is only
+sound while the port stays on loopback; the hosted instance is the one with
+accounts. A subscription cannot be used by the hosted instance at all: the
+`claude` binary authenticates a person on a machine, not a server on their
+behalf.
+
 ## Choosing the audit backend
 
 The usual way is the **backend panel in the dashboard**: paste an API key and

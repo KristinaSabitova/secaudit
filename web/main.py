@@ -168,6 +168,9 @@ def redirect_uri(request: Request) -> str:
 
 def current_user(session: Session = Depends(db_session),
                  secaudit_session: str | None = Cookie(default=None)) -> User | None:
+    owner = auth.single_user(session)
+    if owner is not None:
+        return owner
     return auth.user_for_token(session, secaudit_session)
 
 
@@ -230,7 +233,11 @@ def auth_logout(session: Session = Depends(db_session),
 
 @app.get("/api/me")
 def me(user: User | None = Depends(current_user)):
-    return {"user": auth.user_to_dict(user), "sign_in_enabled": auth.is_configured()}
+    return {
+        "user": auth.user_to_dict(user),
+        "sign_in_enabled": auth.is_configured(),
+        "single_user": auth.single_user_login() is not None,
+    }
 
 
 @app.post("/api/audits", status_code=202)

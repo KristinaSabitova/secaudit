@@ -336,11 +336,14 @@ function showSignedOut(signInEnabled) {
   for (const id of ["whoami", "settings-toggle", "logout"]) el(id).hidden = true;
 }
 
-function showSignedIn(user) {
+function showSignedIn(user, singleUser) {
   el("signin").hidden = true;
   el("app").hidden = false;
   el("whoami").textContent = user.login + (user.is_admin ? " · admin" : "");
-  for (const id of ["whoami", "settings-toggle", "logout"]) el(id).hidden = false;
+  el("whoami").hidden = false;
+  el("settings-toggle").hidden = false;
+  // A personal instance has no session to end.
+  el("logout").hidden = singleUser;
 }
 
 el("logout").addEventListener("click", async () => {
@@ -361,7 +364,7 @@ async function start() {
     showSignedOut(me.sign_in_enabled);
     return;
   }
-  showSignedIn(me.user);
+  showSignedIn(me.user, me.single_user);
   refresh();
 }
 

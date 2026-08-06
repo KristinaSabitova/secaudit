@@ -46,7 +46,7 @@ def clean_backend_env(monkeypatch):
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
                  web_auth.ADMIN_LOGIN_ENV, web_auth.ALLOWED_LOGINS_ENV,
                  web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
-                 web_settings.SECRET_ENV):
+                 web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(web_engine.engine, "load_config", dict)
 
@@ -364,6 +364,37 @@ class TestSignIn:
         monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
         assert sign_in(client, github_id=1, login="someone").is_admin is False
         assert sign_in(client, github_id=2, login="kris").is_admin is True
+
+
+class TestSingleUserMode:
+    """A personal instance on loopback has one owner and no sign-in."""
+
+    def test_without_it_sign_in_is_required(self, client):
+        assert client.get("/api/audits").status_code == 401
+
+    def test_the_owner_is_signed_in_by_default(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.SINGLE_USER_ENV, "kris")
+        body = client.get("/api/me").json()
+        assert body["single_user"] is True
+        assert body["user"]["login"] == "kris"
+        assert body["user"]["is_admin"] is True
+        assert client.get("/api/audits").status_code == 200
+
+    def test_the_owner_is_created_once(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.SINGLE_USER_ENV, "kris")
+        client.get("/api/me")
+        client.get("/api/me")
+        session = web_db.get_session()
+        assert len(session.scalars(select(web_models.User)).all()) == 1
+        session.close()
+
+    def test_the_owner_keeps_settings_and_audits(self, client, monkeypatch,
+                                                 master_key, clone_from_sample):
+        monkeypatch.setenv(web_auth.SINGLE_USER_ENV, "kris")
+        client.put("/api/settings", json={"api_key": "sk-ant-local"})
+        client.post("/api/audits", json={"repo_url": "https://github.com/acme/sample"})
+        assert client.get("/api/settings").json()["api_key_set"] is True
+        assert len(client.get("/api/audits").json()) == 1
 
 
 class TestGuestList:
