@@ -526,6 +526,51 @@ class TestRunnerQueue:
         assert r.status_code == 409
 
 
+class TestDeleteAudit:
+    def test_the_owner_can_delete_and_findings_go_too(self, client, signed_in,
+                                                      clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        assert len(client.get(f"/api/audits/{audit_id}").json()["findings"]) == 2
+
+        assert client.delete(f"/api/audits/{audit_id}").status_code == 204
+        assert client.get(f"/api/audits/{audit_id}").status_code == 404
+
+        session = web_db.get_session()
+        assert session.scalars(select(web_models.Finding)).all() == []
+        session.close()
+
+    def test_someone_elses_audit_cannot_be_deleted(self, client,
+                                                   clone_from_sample):
+        sign_in(client, github_id=1, login="first")
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+
+        sign_in(client, github_id=2, login="second")
+        assert client.delete(f"/api/audits/{audit_id}").status_code == 404
+        assert len(stored_audits()) == 1        # still there
+
+    def test_an_admin_can_delete_any_audit(self, client, webhook_secret,
+                                           clone_from_sample):
+        sign_in(client, github_id=1, login="admin")          # first: admin
+        audit_id = deliver(client, push_payload()).json()["id"]
+        assert client.delete(f"/api/audits/{audit_id}").status_code == 204
+        assert stored_audits() == []
+
+    def test_deleting_an_unknown_audit_is_404(self, client, signed_in):
+        assert client.delete("/api/audits/doesnotexist").status_code == 404
+
+    def test_anonymous_callers_cannot_delete(self, client, clone_from_sample):
+        sign_in(client, github_id=1, login="first")
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        client.cookies.clear()
+        assert client.delete(f"/api/audits/{audit_id}").status_code == 401
+
+
 class TestGuestList:
     """Empty guest list means anyone with a GitHub account may sign in."""
 

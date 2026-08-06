@@ -316,6 +316,18 @@ def get_audit(audit_id: str, user: User = Depends(require_user),
     return audit_to_dict(audit, include_findings=True)
 
 
+@app.delete("/api/audits/{audit_id}", status_code=204)
+def delete_audit(audit_id: str, user: User = Depends(require_user),
+                 session: Session = Depends(db_session)):
+    audit = session.get(Audit, audit_id)
+    # Same 404-for-someone-else's rule as reading one.
+    if audit is None or not (user.is_admin or audit.user_id == user.id):
+        raise HTTPException(status_code=404, detail="audit not found")
+    session.delete(audit)          # findings go with it, via cascade
+    session.commit()
+    return Response(status_code=204)
+
+
 def settings_response(session: Session, user_id: int | None) -> dict:
     stored = settings_store.to_dict(settings_store.load(session, user_id))
     stored["backend_status"] = backend_status(

@@ -120,9 +120,43 @@ function findingNode(finding) {
   return item;
 }
 
+function deleteButton(audit) {
+  // Two clicks rather than a modal: the second one is the confirmation.
+  const button = node("button", "ghost danger", "delete");
+  button.type = "button";
+  let armed = false;
+  button.addEventListener("click", async () => {
+    if (!armed) {
+      armed = true;
+      button.textContent = "click again to delete";
+      setTimeout(() => {
+        armed = false;
+        button.textContent = "delete";
+      }, 4000);
+      return;
+    }
+    button.disabled = true;
+    try {
+      await api(`/api/audits/${encodeURIComponent(audit.id)}`,
+                { method: "DELETE" });
+      selectedId = null;
+      el("detail").hidden = true;
+      el("detail-empty").hidden = false;
+      await refresh();
+    } catch (e) {
+      button.disabled = false;
+      button.textContent = e.message;
+    }
+  });
+  return button;
+}
+
 function detailHead(audit) {
   const head = node("div", "detail-head");
-  head.append(node("div", "finding-title", repoLabel(audit.repo_url)));
+  const title = node("div", "detail-title");
+  title.append(node("span", "finding-title", repoLabel(audit.repo_url)),
+               deleteButton(audit));
+  head.append(title);
 
   const dl = document.createElement("dl");
   const rows = [

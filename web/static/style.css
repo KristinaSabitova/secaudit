@@ -408,3 +408,19 @@ button.ghost:hover:not(:disabled) {
   color: var(--accent);
   overflow-wrap: anywhere;
 }
+
+.detail-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+button.danger { border-color: var(--border); color: var(--muted); }
+
+button.danger:hover:not(:disabled) {
+  border-color: var(--critical);
+  color: var(--critical);
+  background: rgba(255, 107, 107, .07);
+}
