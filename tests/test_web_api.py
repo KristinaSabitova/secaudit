@@ -22,6 +22,7 @@ from web import db as web_db
 from web import engine as web_engine
 from web import main as web_main
 from web import models as web_models
+from web import runnerqueue as web_runnerqueue
 from web import settings as web_settings
 from web.gitclone import CloneError, clone_repo, validate_branch, validate_repo_url
 from web.main import app
@@ -395,6 +396,134 @@ class TestSingleUserMode:
         client.post("/api/audits", json={"repo_url": "https://github.com/acme/sample"})
         assert client.get("/api/settings").json()["api_key_set"] is True
         assert len(client.get("/api/audits").json()) == 1
+
+
+class TestRunnerQueue:
+    """claude-code audits are executed by the owner's machine, not the server."""
+
+    def bearer(self, token):
+        return {"Authorization": f"Bearer {token}"}
+
+    def queue_claude_code_audit(self, client, master_key, clone_from_sample):
+        client.put("/api/settings", json={"backend": "claude-code"})
+        return client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+
+    def test_the_server_leaves_them_queued(self, client, signed_in, master_key,
+                                           clone_from_sample):
+        audit_id = self.queue_claude_code_audit(client, master_key,
+                                                clone_from_sample)
+        assert client.get(f"/api/audits/{audit_id}").json()["status"] == "pending"
+        assert clone_from_sample == []       # the server did not even clone
+
+    def test_a_runner_claims_and_completes_one(self, client, signed_in,
+                                               master_key, clone_from_sample):
+        audit_id = self.queue_claude_code_audit(client, master_key,
+                                                clone_from_sample)
+        token = client.post("/api/runner/token").json()["token"]
+
+        job = client.post("/api/runner/claim", headers=self.bearer(token)).json()
+        assert job["id"] == audit_id
+        assert client.get(f"/api/audits/{audit_id}").json()["status"] == "running"
+
+        client.post("/api/runner/result", headers=self.bearer(token), json={
+            "audit_id": audit_id, "commit_sha": "a" * 40,
+            "findings": [{"severity": "high", "title": "Found on my laptop"}],
+        })
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["status"] == "done"
+        assert detail["summary"]["high"] == 1
+        assert detail["findings"][0]["title"] == "Found on my laptop"
+
+    def test_a_runner_reports_failures(self, client, signed_in, master_key,
+                                       clone_from_sample):
+        audit_id = self.queue_claude_code_audit(client, master_key,
+                                                clone_from_sample)
+        token = client.post("/api/runner/token").json()["token"]
+        client.post("/api/runner/claim", headers=self.bearer(token))
+        client.post("/api/runner/result", headers=self.bearer(token),
+                    json={"audit_id": audit_id, "error": "claude exited with code 1"})
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["status"] == "error"
+        assert "exited" in detail["error"]
+
+    def test_a_claimed_audit_is_not_handed_out_twice(self, client, signed_in,
+                                                     master_key,
+                                                     clone_from_sample):
+        self.queue_claude_code_audit(client, master_key, clone_from_sample)
+        token = client.post("/api/runner/token").json()["token"]
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(token)).status_code == 200
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(token)).status_code == 204
+
+    def test_an_abandoned_claim_is_handed_out_again(self, client, signed_in,
+                                                    master_key,
+                                                    clone_from_sample):
+        """A runner that goes offline must not strand the audit forever."""
+        audit_id = self.queue_claude_code_audit(client, master_key,
+                                                clone_from_sample)
+        token = client.post("/api/runner/token").json()["token"]
+        client.post("/api/runner/claim", headers=self.bearer(token))
+
+        session = web_db.get_session()
+        audit = session.get(web_models.Audit, audit_id)
+        audit.runner_claimed_at = (datetime.now(timezone.utc)
+                                   - web_runnerqueue.CLAIM_TIMEOUT
+                                   - timedelta(minutes=1))
+        session.commit()
+        session.close()
+
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(token)).json()["id"] == audit_id
+
+    def test_a_runner_sees_only_its_owners_audits(self, client, master_key,
+                                                  clone_from_sample):
+        sign_in(client, github_id=1, login="admin")          # first: admin
+        sign_in(client, github_id=2, login="other")
+        self.queue_claude_code_audit(client, master_key, clone_from_sample)
+        other_token = client.post("/api/runner/token").json()["token"]
+
+        sign_in(client, github_id=1, login="admin")
+        admin_token = client.post("/api/runner/token").json()["token"]
+        # The admin's runner also takes what a webhook queued; the other's
+        # runner sees only its own, and there is nothing left for it after.
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(other_token)).status_code == 200
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(admin_token)).status_code == 204
+
+    def test_an_invalid_token_is_refused(self, client):
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer("nope")).status_code == 401
+        assert client.post("/api/runner/claim").status_code == 401
+
+    def test_a_revoked_token_stops_working(self, client, signed_in):
+        token = client.post("/api/runner/token").json()["token"]
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(token)).status_code in (200, 204)
+        client.delete("/api/runner/token")
+        assert client.post("/api/runner/claim",
+                           headers=self.bearer(token)).status_code == 401
+
+    def test_the_token_is_stored_hashed(self, client, signed_in):
+        token = client.post("/api/runner/token").json()["token"]
+        session = web_db.get_session()
+        stored = session.scalars(select(web_models.User)).one().runner_token_hash
+        session.close()
+        assert stored != token
+        assert stored == web_runnerqueue.hash_token(token)
+
+    def test_a_result_for_an_unclaimed_audit_is_refused(self, client, signed_in,
+                                                        master_key,
+                                                        clone_from_sample):
+        audit_id = self.queue_claude_code_audit(client, master_key,
+                                                clone_from_sample)
+        token = client.post("/api/runner/token").json()["token"]
+        r = client.post("/api/runner/result", headers=self.bearer(token),
+                        json={"audit_id": audit_id, "findings": []})
+        assert r.status_code == 409
 
 
 class TestGuestList:

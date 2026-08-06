@@ -7,15 +7,15 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import (BackgroundTasks, Cookie, Depends, FastAPI, HTTPException,
-                     Request, Response)
+from fastapi import (BackgroundTasks, Cookie, Depends, FastAPI, Header,
+                     HTTPException, Request, Response)
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from . import auth, settings as settings_store
+from . import auth, runnerqueue, settings as settings_store
 from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
 from .engine import AuditError, backend_config, backend_status, run_audit
@@ -101,6 +101,10 @@ def execute_audit(audit_id: str) -> None:
             audit.status = "error"
             audit.error = str(e)
             session.commit()
+            return
+        if config.get("backend") == runnerqueue.RUNNER_BACKEND:
+            # This backend runs a binary signed in on someone's own machine,
+            # which the server is not. Leave it queued for that user's runner.
             return
         with tempfile.TemporaryDirectory(prefix="secaudit-") as tmp:
             dest = Path(tmp) / "repo"
@@ -350,6 +354,79 @@ def put_settings(req: SettingsRequest, user: User = Depends(require_user),
     except SecretsUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
     return settings_response(session, user.id)
+
+
+
+# ---------------------------------------------------------------------------
+# Runners: audits executed on the owner's own machine
+# ---------------------------------------------------------------------------
+
+class RunnerResult(BaseModel):
+    audit_id: str
+    commit_sha: str | None = None
+    findings: list[dict] | None = None
+    error: str | None = None
+
+
+def runner_user(session: Session = Depends(db_session),
+                authorization: str | None = Header(default=None)) -> User:
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(None, 1)[1].strip()
+    user = runnerqueue.user_for_token(session, token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid runner token")
+    return user
+
+
+@app.post("/api/runner/token")
+def create_runner_token(user: User = Depends(require_user),
+                        session: Session = Depends(db_session)):
+    """Issue a runner token, shown once and never retrievable again."""
+    return {"token": runnerqueue.issue_token(session, user)}
+
+
+@app.delete("/api/runner/token", status_code=204)
+def delete_runner_token(user: User = Depends(require_user),
+                        session: Session = Depends(db_session)):
+    runnerqueue.revoke_token(session, user)
+    return Response(status_code=204)
+
+
+@app.post("/api/runner/claim")
+def runner_claim(response: Response, user: User = Depends(runner_user),
+                 session: Session = Depends(db_session)):
+    audit = runnerqueue.claim_next(session, user)
+    if audit is None:
+        response.status_code = 204
+        return Response(status_code=204)
+    return runnerqueue.to_dict(audit)
+
+
+@app.post("/api/runner/result")
+def runner_result(result: RunnerResult, user: User = Depends(runner_user),
+                  session: Session = Depends(db_session)):
+    audit = session.get(Audit, result.audit_id)
+    if audit is None or not (user.is_admin or audit.user_id == user.id):
+        raise HTTPException(status_code=404, detail="audit not found")
+    if audit.runner_claimed_at is None:
+        raise HTTPException(status_code=409, detail="audit was not claimed")
+
+    if result.commit_sha:
+        audit.commit_sha = result.commit_sha[:40]
+    if result.error is not None:
+        audit.status = "error"
+        audit.error = result.error
+    else:
+        findings = result.findings or []
+        for f in findings:
+            session.add(finding_from_dict(audit.id, f))
+        audit.summary = summarize(findings)
+        audit.status = "done"
+        audit.error = None
+    audit.runner_claimed_at = None
+    session.commit()
+    return audit_to_dict(audit)
 
 
 @app.get("/api/health")

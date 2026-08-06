@@ -177,6 +177,31 @@ accounts. A subscription cannot be used by the hosted instance at all: the
 `claude` binary authenticates a person on a machine, not a server on their
 behalf.
 
+## Running a hosted instance's audits on your own machine
+
+A Claude subscription authenticates a person on a machine, not a server on
+their behalf, so the hosted instance can never use `claude-code` itself.
+A **runner** bridges that: pick `claude-code` in the backend panel and the
+server stops executing your audits, leaving them queued for a runner you
+control. Nothing but the findings leaves your machine.
+
+1. In the backend panel, choose `claude-code` and save, then
+   **create runner token** — it is shown once and stored only as a hash.
+2. On the machine that has `claude` signed in:
+
+   ```sh
+   export SECAUDIT_RUNNER_TOKEN=...
+   ./secaudit-runner.py https://secaudit.<domain>
+   ```
+
+It polls every 15 seconds and audits only what belongs to your account; an
+admin's runner also takes the ones a webhook queued, which belong to nobody.
+A claim that goes stale (the machine slept, the process was killed) is handed
+out again after 45 minutes, so an interrupted runner cannot strand an audit.
+
+The obvious limit: audits only run while that machine is awake and the script
+is running. Queued work waits, it does not fail.
+
 ## Choosing the audit backend
 
 The usual way is the **backend panel in the dashboard**: paste an API key and

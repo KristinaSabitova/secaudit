@@ -75,6 +75,22 @@
         </form>
         <p id="settings-error" class="error" hidden></p>
         <p id="settings-state" class="muted"></p>
+
+        <div id="runner" hidden>
+          <h3>run audits on your own machine</h3>
+          <p class="muted settings-intro">
+            The <code>claude-code</code> backend runs a program signed in on a
+            machine, which this server is not. Audits you queue are left waiting
+            for a runner on your computer to pick them up — see
+            <code>secaudit-runner.py</code>. Nothing but the findings leaves
+            your machine.
+          </p>
+          <div class="settings-actions">
+            <button type="button" id="runner-token">create runner token</button>
+            <button type="button" id="runner-revoke" class="ghost">revoke</button>
+          </div>
+          <p id="runner-shown" class="muted" hidden></p>
+        </div>
       </section>
 
       <form id="audit-form" autocomplete="off">

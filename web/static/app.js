@@ -221,6 +221,10 @@ function renderSettings(settings) {
     : "sk-ant-… or sk-…";
   el("clear-key").disabled = !settings.api_key_set;
 
+  // The runner only matters for the backend the server cannot run itself.
+  el("runner").hidden = (settings.backend_status || {}).name !== "claude-code";
+  el("runner-shown").hidden = true;
+
   const status = settings.backend_status || {};
   const state = el("settings-state");
   state.replaceChildren(
@@ -281,6 +285,29 @@ el("settings-form").addEventListener("submit", (event) => {
 });
 
 el("clear-key").addEventListener("click", () => saveSettings({ clear_api_key: true }));
+
+el("runner-token").addEventListener("click", async () => {
+  const shown = el("runner-shown");
+  try {
+    const { token } = await api("/api/runner/token", { method: "POST" });
+    // Shown once: the server keeps only a hash of it.
+    shown.replaceChildren(
+      node("div", null, "Copy this now — it is not shown again:"),
+      node("code", "runner-token-value", token),
+      node("div", null, `SECAUDIT_RUNNER_TOKEN=… ./secaudit-runner.py ${location.origin}`),
+    );
+    shown.hidden = false;
+  } catch (e) {
+    shown.replaceChildren(node("div", null, e.message));
+    shown.hidden = false;
+  }
+});
+
+el("runner-revoke").addEventListener("click", async () => {
+  await fetch("/api/runner/token", { method: "DELETE" });
+  el("runner-shown").replaceChildren(node("div", null, "runner token revoked"));
+  el("runner-shown").hidden = false;
+});
 
 async function loadHealth() {
   const health = el("health");

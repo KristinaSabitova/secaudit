@@ -62,6 +62,10 @@ class Audit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[dict] = mapped_column(JSON, default=empty_summary)
+    # When a runner took this audit, so an abandoned one can be reclaimed.
+    runner_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="audit", cascade="all, delete-orphan", order_by="Finding.id",
@@ -80,6 +84,8 @@ class User(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Admins see webhook-triggered audits and everyone else's; see web/auth.py.
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # SHA-256 of this account's runner token; the token itself is shown once.
+    runner_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow,
     )
