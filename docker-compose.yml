@@ -61,10 +61,11 @@ services:
 
 networks:
   # The network the existing reverse proxy already runs on. Created by that
-  # stack, joined here; compose must not try to manage it.
+  # stack, joined here; compose must not try to manage it. Name it in .env —
+  # this fallback is only a placeholder and will not match a real host.
   proxy:
     external: true
-    name: ${PROXY_NETWORK:-spectra_default}
+    name: ${PROXY_NETWORK:-proxy_default}
 
 volumes:
   pgdata:
