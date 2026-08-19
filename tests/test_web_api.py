@@ -1417,6 +1417,81 @@ class TestAuditLanguage:
         assert audit["language"] == "es"
 
 
+class TestErrorSanitisation:
+    """An audit failure is stored and served; a key must not ride along."""
+
+    KEY = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
+
+    def test_a_key_in_an_engine_error_is_masked(self, client, signed_in,
+                                                clone_from_sample, monkeypatch):
+        def explode(project, config=None, credentials=None):
+            raise web_engine.AuditError(
+                f"anthropic error: invalid x-api-key: {self.KEY}")
+
+        monkeypatch.setattr(web_main, "run_audit", explode)
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["status"] == "error"
+        assert self.KEY not in detail["error"]
+        assert self.KEY not in json.dumps(detail)
+        assert "invalid x-api-key" in detail["error"]
+
+        session = web_db.get_session()
+        stored = session.get(web_models.Audit, audit_id).error
+        session.close()
+        assert self.KEY not in stored          # masked before it reached the db
+
+    def test_a_key_in_a_crashing_subprocess_is_masked(self, client, signed_in,
+                                                      clone_from_sample,
+                                                      monkeypatch):
+        """The engine subprocess dies with the key in its traceback."""
+        class Result:
+            stdout = "not json"
+            stderr = f"Traceback...\nAuthenticationError: key={self.KEY}"
+            returncode = 1
+
+        monkeypatch.setattr(web_engine.subprocess, "run",
+                            lambda *a, **k: Result())
+        monkeypatch.setattr(web_main, "run_audit", web_engine.run_audit)
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+
+        error = client.get(f"/api/audits/{audit_id}").json()["error"]
+        assert self.KEY not in error
+        assert "REDACTED" in error
+
+    def test_a_key_in_a_runner_result_is_masked(self, client, signed_in,
+                                                master_key, clone_from_sample):
+        client.put("/api/settings", json={"backend": "claude-code"})
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        token = client.post("/api/runner/token").json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        client.post("/api/runner/claim", headers=headers)
+        client.post("/api/runner/result", headers=headers, json={
+            "audit_id": audit_id, "error": f"claude failed with {self.KEY}",
+        })
+        assert self.KEY not in client.get(f"/api/audits/{audit_id}").json()["error"]
+
+    @pytest.mark.parametrize("message,secret", [
+        ("x-api-key: sk-ant-api03-ZZZZYYYYXXXXWWWWVVVVUUUU", "sk-ant-api03-ZZZZ"),
+        ("OPENAI_API_KEY=sk-proj-1234567890abcdefghij", "sk-proj-1234567890"),
+        ("Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdef"),
+        ("ANTHROPIC_API_KEY = supersecretvalue123", "supersecretvalue123"),
+    ])
+    def test_credential_shapes_are_masked(self, message, secret):
+        assert secret not in web_engine.sanitize_error(message)
+
+    def test_an_ordinary_error_is_left_readable(self):
+        message = "audit timed out after 1800s"
+        assert web_engine.sanitize_error(message) == message
+
+
 class TestHealth:
     def test_health_shape(self, client, signed_in):
         r = client.get("/api/health")

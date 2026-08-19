@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,39 @@ _ENV_CONFIG = {
 }
 
 
+# Shapes that are worth masking even before knowing which SDK produced them:
+# an exception message is written by someone else's library, and some of them
+# quote the request they just made.
+_KEY_PATTERNS = (
+    re.compile(r'sk-ant-[A-Za-z0-9_\-]{8,}'),
+    re.compile(r'sk-[A-Za-z0-9_\-]{16,}'),
+    re.compile(r'(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}'),
+    re.compile(r'(?i)\b(ANTHROPIC_API_KEY|OPENAI_API_KEY|x-api-key|authorization)'
+               r'\b(\s*[:=]\s*|\s+)(?:bearer\s+)?[A-Za-z0-9+/=_\-]{8,}'),
+)
+
+MASK = "[REDACTED]"
+
+
+def sanitize_error(message: str) -> str:
+    """Mask anything credential-shaped in an error before it is stored or shown.
+
+    Audit failures are persisted on the audit and served over the API, and the
+    text comes from a backend SDK's exception — which is free to quote the
+    request it just made, key header included.
+    """
+    if not message:
+        return message
+    text = engine.redact_secrets(str(message))
+    for pattern in _KEY_PATTERNS:
+        text = pattern.sub(
+            lambda m: (f"{m.group(1)}{m.group(2)}{MASK}"
+                       if m.re.groups >= 2 else MASK),
+            text,
+        )
+    return text
+
+
 def backend_config(overrides: dict | None = None) -> dict:
     """Engine configuration, in increasing order of precedence.
 
@@ -58,7 +92,8 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> list[dict
         prompt = engine.build_diff_prompt(None, "all", None, language)
         raw_output = backend.run(project, prompt, timeout=timeout)
     except SystemExit as e:  # the engine reports failures via sys.exit()
-        raise AuditError(str(e.code) if e.code else "engine aborted") from e
+        raise AuditError(sanitize_error(str(e.code)) if e.code
+                         else "engine aborted") from e
 
     raw = engine.extract_json_findings(raw_output)
     if raw is engine._PARSE_FAILED:
@@ -100,11 +135,14 @@ def run_audit(project: Path, config: dict | None = None,
     try:
         response = json.loads(result.stdout)
     except json.JSONDecodeError:
+        # stderr is a traceback from someone else's SDK: mask it before it is
+        # stored on the audit and served back over the API.
         detail = (result.stderr or "").strip().splitlines()
-        raise AuditError(f"audit process produced no result: "
-                         f"{detail[-1] if detail else f'exit {result.returncode}'}")
+        raise AuditError(sanitize_error(
+            f"audit process produced no result: "
+            f"{detail[-1] if detail else f'exit {result.returncode}'}"))
     if "error" in response:
-        raise AuditError(response["error"])
+        raise AuditError(sanitize_error(str(response["error"])))
     return response["findings"]
 
 

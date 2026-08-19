@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from . import auth, runnerqueue, settings as settings_store
 from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
-from .engine import AuditError, backend_config, backend_status, run_audit
+from .engine import (AuditError, backend_config, backend_status, run_audit,
+                     sanitize_error)
 from .gitclone import CloneError, clone_repo, validate_repo_url
 from .models import (LANGUAGES, Audit, User, audit_to_dict, finding_from_dict,
                      summarize)
@@ -123,12 +124,12 @@ def execute_audit(audit_id: str) -> None:
                 findings = run_audit(dest, config, credentials)
             except (CloneError, AuditError) as e:
                 audit.status = "error"
-                audit.error = str(e)
+                audit.error = sanitize_error(str(e))
                 session.commit()
                 return
             except Exception as e:  # never leave an audit stuck in "running"
                 audit.status = "error"
-                audit.error = f"internal error: {e}"
+                audit.error = sanitize_error(f"internal error: {e}")
                 session.commit()
                 return
         for f in findings:
@@ -451,7 +452,8 @@ def runner_result(result: RunnerResult, user: User = Depends(runner_user),
         audit.commit_sha = result.commit_sha[:40]
     if result.error is not None:
         audit.status = "error"
-        audit.error = result.error
+        # Written on someone else's machine by their backend's SDK.
+        audit.error = sanitize_error(result.error)
     else:
         findings = result.findings or []
         for f in findings:
