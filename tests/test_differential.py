@@ -7,10 +7,15 @@ from secaudit import (
     make_fingerprint,
     _norm_anchor,
     _norm_file,
+    AnthropicAPIBackend,
     build_diff_prompt,
+    ClaudeCodeBackend,
     classify,
     Finding,
+    iter_source_files,
     MAX_SNIPPET_CHARS,
+    OllamaBackend,
+    pack_repository,
     redact_secrets,
     verify_evidence,
 )
@@ -92,10 +97,10 @@ class TestNormAnchor:
 def _raw(category="injection", file="app.py", anchor="login", severity="high",
          title="SQL Injection", description="Use parameterized queries.",
          code_snippet='cur.execute("SELECT * FROM u WHERE n = " + name)',
-         verification_status="verified", verification_note=""):
+         verification_status="verified", verification_note="", line=None):
     return dict(category=category, file=file, anchor=anchor,
                 severity=severity, title=title, description=description,
-                code_snippet=code_snippet,
+                code_snippet=code_snippet, line=line,
                 verification_status=verification_status,
                 verification_note=verification_note)
 
@@ -303,6 +308,97 @@ class TestClassifyEvidence:
                       title="SQL Injection", description="…")
         assert old.verification_status == "unverified"
         assert old.code_snippet == ""
+
+
+class TestPackRepository:
+    """The API backends are one request: the code has to travel inside it."""
+
+    def repo(self, tmp_path):
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "auth.py").write_text(
+            "def login(user, pw):\n    return db.query('SELECT * WHERE u=' + user)\n")
+        (tmp_path / "README.md").write_text("# docs\n")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "lib.js").write_text("module.exports = 1\n")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text("[core]\n")
+        (tmp_path / "logo.png").write_bytes(b"\x89PNG\x00\x01binary")
+        return tmp_path
+
+    def test_source_files_are_included(self, tmp_path):
+        packed = pack_repository(self.repo(tmp_path))
+        assert "app/auth.py" in packed
+        assert "SELECT * WHERE u=" in packed
+
+    def test_dependencies_and_vcs_are_skipped(self, tmp_path):
+        packed = pack_repository(self.repo(tmp_path))
+        assert "node_modules" not in packed
+        assert "module.exports" not in packed
+        assert "[core]" not in packed
+
+    def test_binaries_are_not_pasted_in(self, tmp_path):
+        assert "PNG" not in pack_repository(self.repo(tmp_path))
+
+    def test_lines_are_numbered_for_reference(self, tmp_path):
+        packed = pack_repository(self.repo(tmp_path))
+        assert "    1| def login(user, pw):" in packed
+
+    def test_security_relevant_files_come_first(self, tmp_path):
+        d = self.repo(tmp_path)
+        (d / "zzz_utils.py").write_text("x = 1\n")
+        names = [str(p.relative_to(d)) for p in iter_source_files(d)]
+        assert names.index("app/auth.py") < names.index("zzz_utils.py")
+
+    def test_the_budget_is_respected(self, tmp_path):
+        d = self.repo(tmp_path)
+        (d / "huge.py").write_text("y = 2\n" * 5000)
+        packed = pack_repository(d, budget=800)
+        assert len(packed) < 4000
+        assert "did not fit" in packed
+
+    def test_what_was_left_out_is_named(self, tmp_path):
+        d = self.repo(tmp_path)
+        (d / "huge.py").write_text("y = 2\n" * 5000)
+        packed = pack_repository(d, budget=800)
+        assert "you have NOT seen these" in packed
+
+    def test_an_empty_checkout_says_so(self, tmp_path):
+        assert "no readable source files" in pack_repository(tmp_path)
+
+    def test_an_agent_backend_is_not_handed_the_code(self, tmp_path):
+        backend = ClaudeCodeBackend()
+        assert backend.prepare(self.repo(tmp_path), "PROMPT") == "PROMPT"
+
+    def test_a_single_request_backend_is(self, tmp_path):
+        backend = AnthropicAPIBackend()
+        prepared = backend.prepare(self.repo(tmp_path), "PROMPT")
+        assert prepared.startswith("PROMPT")
+        assert "app/auth.py" in prepared
+
+    def test_a_local_model_gets_a_smaller_share(self):
+        assert OllamaBackend().context_chars < AnthropicAPIBackend().context_chars
+
+
+class TestFindingLine:
+    def test_a_reported_line_is_kept(self):
+        _, findings = classify([_raw(line=42)], saved={})
+        assert findings[0].line == 42
+
+    def test_a_missing_line_is_none(self):
+        raw = _raw()
+        raw.pop("line", None)
+        _, findings = classify([raw], saved={})
+        assert findings[0].line is None
+
+    def test_a_nonsense_line_is_none(self):
+        _, findings = classify([_raw(line="somewhere")], saved={})
+        assert findings[0].line is None
+
+    def test_the_line_stays_out_of_the_fingerprint(self):
+        """Code moves down a file; the finding is still the same finding."""
+        _, one = classify([_raw(line=10)], saved={})
+        _, two = classify([_raw(line=99)], saved={})
+        assert one[0].fingerprint == two[0].fingerprint
 
 
 class TestPromptLanguage:

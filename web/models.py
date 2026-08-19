@@ -156,8 +156,9 @@ class Finding(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     file: Mapped[str] = mapped_column(String(512), default="")
-    # The engine anchors findings to functions/classes, not line numbers,
-    # so line stays NULL for engine-produced findings.
+    # Findings are anchored by function or class, which survives a refactor;
+    # the line is a convenience on top and stays NULL when the backend could
+    # not point at one.
     line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     anchor: Mapped[str] = mapped_column(String(255), default="")
     fingerprint: Mapped[str] = mapped_column(String(16), default="")
@@ -171,6 +172,15 @@ class Finding(Base):
     verification_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     audit: Mapped[Audit] = relationship(back_populates="findings")
+
+
+def _line_number(value) -> int | None:
+    """A positive line number, or None for anything else a backend sends."""
+    try:
+        line = int(value)
+    except (TypeError, ValueError):
+        return None
+    return line if line > 0 else None
 
 
 def finding_from_dict(audit_id: str, f: dict) -> Finding:
@@ -196,7 +206,9 @@ def finding_from_dict(audit_id: str, f: dict) -> Finding:
         title=str(f.get("title") or "")[:255],
         description=str(f.get("description") or ""),
         file=file,
-        line=None,
+        # The engine used to anchor findings by function or class only. With
+        # the excerpt line-numbered, a backend can point at a line as well.
+        line=_line_number(f.get("line")),
         anchor=str(f.get("anchor") or "")[:255],
         fingerprint=str(f.get("fingerprint") or "")[:16],
         code_snippet=snippet or None,

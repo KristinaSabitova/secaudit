@@ -254,6 +254,22 @@ Todo lo que llegue como verificado sin fichero o sin snippet se degrada a
 `unverified` antes de guardarse, así que la garantía no depende de que el
 modelo se porte bien. `?verified_only=true` deja fuera los no verificados.
 
+### Cómo llega el código al modelo
+
+`claude-code` es un agente: se ejecuta con el checkout como directorio de
+trabajo y abre los ficheros él mismo. Los demás backends son una sola petición
+HTTP y no pueden abrir nada, así que el repositorio se empaqueta dentro de esa
+petición — el árbol de ficheros y luego el contenido de todos los que quepan en
+el presupuesto, con las líneas numeradas para que un hallazgo pueda señalar
+una. Entran primero los ficheros cuya ruta sugiere superficie de ataque (auth,
+sesiones, rutas, consultas, subidas, configuración…), y lo que no cupo se
+nombra en el prompt para que el modelo pueda decir que no lo vio en vez de
+inventarse algo sobre él.
+
+`SECAUDIT_CONTEXT_CHARS` fija el presupuesto (por defecto 200000 caracteres,
+unos 50k tokens; ollama recibe la cuarta parte). Más presupuesto cubre más de
+un repositorio grande y cuesta más por auditoría.
+
 ### Idioma
 
 Los hallazgos los escribe el propio backend en el idioma pedido — no hay una

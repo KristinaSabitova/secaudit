@@ -82,6 +82,9 @@ class Finding:
     suppression_reason: str = ""
     # Evidence the finding is anchored to real audited code, not to the
     # generic description of its category. See verify_evidence().
+    # line is where the snippet starts; it is deliberately kept out of the
+    # fingerprint, so a finding survives the code moving down the file.
+    line: int | None = None
     code_snippet: str = ""
     verification_status: str = UNVERIFIED
     verification_note: str = ""
@@ -224,6 +227,10 @@ def classify(raw_findings: list, saved: dict) -> tuple:
         seen.add(fp)
 
         status, note = verify_evidence(raw)
+        try:
+            line = int(raw["line"]) if raw.get("line") is not None else None
+        except (TypeError, ValueError):
+            line = None
         finding = Finding(
             fingerprint=fp,
             id=_make_id(fp),
@@ -233,6 +240,7 @@ def classify(raw_findings: list, saved: dict) -> tuple:
             category=cat,
             title=str(raw.get("title", "")).strip(),
             description=str(raw.get("description", "")).strip(),
+            line=line,
             code_snippet=str(raw.get("code_snippet") or "").strip()[:MAX_SNIPPET_CHARS],
             verification_status=status,
             verification_note=note,
@@ -489,12 +497,168 @@ def load_config() -> dict:
     return _parse_toml(_CONFIG_FILE.read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# Packing the repository into a prompt
+#
+# Only claude-code explores a checkout itself: it is an agent running with the
+# project as its working directory. The API backends are a single request, so
+# unless the code travels inside that request the model is being asked to audit
+# a repository it cannot see — and answers from imagination. Everything below
+# exists to put the code in front of it.
+# ---------------------------------------------------------------------------
+
+_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "env",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist",
+    "build", "target", "vendor", ".next", ".nuxt", ".gradle", "coverage",
+    "site-packages", ".terraform", ".idea", ".vscode",
+}
+
+_SOURCE_SUFFIXES = {
+    ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte",
+    ".go", ".rb", ".php", ".java", ".kt", ".cs", ".rs", ".c", ".h", ".cc",
+    ".cpp", ".hpp", ".scala", ".ex", ".exs", ".pl", ".sh", ".bash", ".zsh",
+    ".sql", ".graphql", ".proto", ".html", ".htm", ".ejs", ".erb", ".jinja",
+    ".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".tf", ".env",
+}
+
+# Files worth reading whatever they are called.
+_SOURCE_NAMES = {
+    "dockerfile", "docker-compose.yml", "makefile", "procfile", "nginx.conf",
+    ".env.example", "requirements.txt", "package.json", "gemfile", "go.mod",
+    "cargo.toml", "pom.xml", ".htaccess",
+}
+
+# Where the attack surface usually is. These files go in first, so that a
+# budget that cannot hold the whole repository still holds the parts that
+# matter for a security audit.
+_PRIORITY_HINTS = (
+    "auth", "login", "signin", "signup", "session", "token", "jwt", "password",
+    "user", "account", "admin", "permission", "role", "acl", "middleware",
+    "route", "router", "controller", "handler", "view", "api", "endpoint",
+    "query", "sql", "db", "database", "model", "upload", "file", "payment",
+    "config", "settings", "security", "crypt", "secret", "cors", "csrf",
+)
+
+MAX_CONTEXT_CHARS = 200_000     # roughly 50k tokens of source
+MAX_FILE_CHARS = 60_000         # one enormous file must not eat the budget
+
+
+def _priority(rel_path: str) -> int:
+    lowered = rel_path.lower()
+    return 0 if any(hint in lowered for hint in _PRIORITY_HINTS) else 1
+
+
+def _is_source(path: Path) -> bool:
+    name = path.name.lower()
+    return (name in _SOURCE_NAMES or path.suffix.lower() in _SOURCE_SUFFIXES
+            or name.startswith("dockerfile"))
+
+
+def iter_source_files(project: Path) -> list[Path]:
+    """Every readable source file in the checkout, most security-relevant first."""
+    found = []
+    for path in project.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if any(part in _SKIP_DIRS for part in path.relative_to(project).parts[:-1]):
+            continue
+        if _is_source(path):
+            found.append(path)
+    return sorted(found, key=lambda p: (_priority(str(p.relative_to(project))),
+                                        str(p.relative_to(project))))
+
+
+def _read_text(path: Path) -> str | None:
+    """File contents, or None if it is binary or unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return None
+    return text if "\x00" not in text else None
+
+
+def pack_repository(project: Path, budget: int = MAX_CONTEXT_CHARS) -> str:
+    """The checkout as text the model can quote from, within a size budget.
+
+    Lines are numbered so a finding can point at one, and every file that did
+    not fit is named at the end — a model that knows what it was not shown can
+    say so instead of guessing about it.
+    """
+    files = iter_source_files(project)
+    if not files:
+        return ("REPOSITORY CONTENTS:\n(no readable source files were found in "
+                "this checkout)\n")
+
+    included, omitted, spent = [], [], 0
+    for path in files:
+        rel = str(path.relative_to(project))
+        text = _read_text(path)
+        if text is None:
+            omitted.append(f"{rel} (not text)")
+            continue
+        truncated = len(text) > MAX_FILE_CHARS
+        text = text[:MAX_FILE_CHARS]
+        numbered = "\n".join(f"{i:5d}| {line}"
+                             for i, line in enumerate(text.splitlines(), 1))
+        block = (f"--- {rel} ---\n{numbered}\n"
+                 + (f"[truncated at {MAX_FILE_CHARS} characters]\n" if truncated else ""))
+        if spent + len(block) > budget:
+            omitted.append(f"{rel} (did not fit)")
+            continue
+        included.append(block)
+        spent += len(block)
+
+    tree = "\n".join(f"  {p.relative_to(project)}" for p in files)
+    parts = [
+        "REPOSITORY CONTENTS:",
+        f"The checkout holds {len(files)} source file(s):",
+        tree,
+        "",
+        "Below is the content of the files that fit, with line numbers added "
+        "for reference. Quote from these when you report evidence — the line "
+        "numbers are not part of the file itself.",
+        "",
+        "\n".join(included),
+    ]
+    if omitted:
+        parts += [
+            "FILES NOT INCLUDED BELOW — you have NOT seen these, so do not "
+            "report findings in them as verified:",
+            "\n".join(f"  {name}" for name in omitted),
+        ]
+    return "\n".join(parts) + "\n"
+
+
+def with_repository(prompt: str, project: Path, budget: int | None = None) -> str:
+    return f"{prompt}\n{pack_repository(project, budget or MAX_CONTEXT_CHARS)}"
+
+
 class AuditBackend:
+    # An agent reads the checkout itself; a single-request backend does not,
+    # and must be handed the code inside the prompt.
+    needs_repository_in_prompt = True
+    context_chars = MAX_CONTEXT_CHARS
+
     def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
         raise NotImplementedError
 
+    def prepare(self, project: Path, prompt: str) -> str:
+        """The prompt this backend should be run with.
+
+        Called once by whoever drives the audit, never from run(): a backend
+        that forgot to call it would silently audit a repository it cannot
+        see, which is the failure this whole mechanism exists to prevent.
+        """
+        if not self.needs_repository_in_prompt:
+            return prompt
+        return with_repository(prompt, project, self.context_chars)
+
 
 class ClaudeCodeBackend(AuditBackend):
+    # It runs with the project as its working directory and opens files itself.
+    needs_repository_in_prompt = False
+
     def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
         exe = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
         if not exe:
@@ -519,8 +683,9 @@ class ClaudeCodeBackend(AuditBackend):
 class AnthropicAPIBackend(AuditBackend):
     DEFAULT_MODEL = "claude-sonnet-4-6"
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, context_chars: int | None = None):
         self.model = model or self.DEFAULT_MODEL
+        self.context_chars = context_chars or MAX_CONTEXT_CHARS
 
     def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -560,8 +725,9 @@ class AnthropicAPIBackend(AuditBackend):
 class OpenAIBackend(AuditBackend):
     DEFAULT_MODEL = "gpt-4o"
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, context_chars: int | None = None):
         self.model = model or self.DEFAULT_MODEL
+        self.context_chars = context_chars or MAX_CONTEXT_CHARS
 
     def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
         api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -600,9 +766,12 @@ class OllamaBackend(AuditBackend):
     DEFAULT_MODEL = "llama3"
     DEFAULT_URL = "http://localhost:11434"
 
-    def __init__(self, model: str | None = None, base_url: str | None = None):
+    def __init__(self, model: str | None = None, base_url: str | None = None,
+                 context_chars: int | None = None):
         self.model = model or self.DEFAULT_MODEL
         self.base_url = (base_url or self.DEFAULT_URL).rstrip("/")
+        # A local model usually has a much smaller window than a hosted one.
+        self.context_chars = context_chars or MAX_CONTEXT_CHARS // 4
 
     def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
         payload = json.dumps({
@@ -647,12 +816,15 @@ def select_backend(flag: str | None, config: dict | None = None) -> AuditBackend
         sys.exit(f"error: unknown backend '{name}'. Valid: {valid}")
     model = config.get("model") or None
     ollama_url = config.get("ollama_url") or None
+    # How much of the repository a single-request backend may be handed.
+    context_chars = config.get("context_chars")
+    context_chars = int(context_chars) if context_chars else None
     cls = _BACKENDS[name]
     if name == "ollama":
-        return cls(model=model, base_url=ollama_url)
+        return cls(model=model, base_url=ollama_url, context_chars=context_chars)
     if name == "claude-code":
         return cls()
-    return cls(model=model)
+    return cls(model=model, context_chars=context_chars)
 
 # ---------------------------------------------------------------------------
 # Prompt builders
@@ -707,8 +879,12 @@ Each element must have exactly these fields:
   "anchor":    function name, class name, or a brief code fragment — NO line numbers
   "code_snippet": the offending code copied VERBATIM from that file, at most 15
                lines. Copy it exactly as it appears — never paraphrase, retype
-               from memory, or write illustrative code. Leave it "" only when
-               you truly have none, and then say so in "verification_note".
+               from memory, or write illustrative code. Do NOT include the line
+               numbers shown in the excerpt; they are a reading aid, not part
+               of the file. Leave it "" only when you truly have none, and then
+               say so in "verification_note".
+  "line":      the line number the snippet starts at, as shown in the excerpt,
+               or null if you cannot point at one
   "severity":  critical | high | medium | low | info
   "title":     short title (one line)
   "description": risk explanation and concrete fix; for secrets findings do NOT
@@ -717,8 +893,9 @@ Each element must have exactly these fields:
   "verification_note": why it is unverified; "" when verified
 
 EVIDENCE — THIS IS NOT OPTIONAL:
-Every finding must be anchored to code you actually read in THIS repository.
-- Mark a finding "verified" only if "file" names a real file you opened and
+Every finding must be anchored to code from THIS repository — the code you were
+given below, or the files you opened yourself if you can.
+- Mark a finding "verified" only if "file" names a file you actually have and
   "code_snippet" is the real code from it. Verified means: a reader can open
   that file, find that code, and see the flaw.
 - If you looked for a class of problem and could not find matching code, you
@@ -851,7 +1028,8 @@ def print_findings(findings: list, show_all: bool = False) -> None:
             label = STATUS_LABEL.get(f.status, f.status.upper().ljust(11))
             print(f"\n{label} [{SEVERITY_LABEL.get(f.severity, f.severity.upper())}] "
                   f"[{f.id}] {f.title}")
-            print(f"  File    : {f.file or '(project-wide)'}")
+            location = f"{f.file}:{f.line}" if f.file and f.line else f.file
+            print(f"  File    : {location or '(project-wide)'}")
             print(f"  Anchor  : {f.anchor or '—'}")
             print(f"  Category: {f.category}")
             if f.verification_status == VERIFIED:
@@ -917,6 +1095,7 @@ def run_oneshot(args, project: Path, backend: AuditBackend) -> None:
     mode = "report" if args.report_only else "fix"
     prompt = build_oneshot_prompt(args.stack, args.scope, mode,
                                   getattr(args, "language", "en"))
+    prompt = backend.prepare(project, prompt)
     if args.print_prompt:
         print(prompt)
         return
@@ -935,6 +1114,7 @@ def run_oneshot(args, project: Path, backend: AuditBackend) -> None:
 def run_differential(args, project: Path, backend: AuditBackend, files=None) -> None:
     prompt = build_diff_prompt(args.stack, args.scope, files,
                                getattr(args, "language", "en"))
+    prompt = backend.prepare(project, prompt)
     if args.print_prompt:
         print(prompt)
         return

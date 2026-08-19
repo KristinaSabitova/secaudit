@@ -39,6 +39,9 @@ services:
       SECAUDIT_TIMEOUT: ${SECAUDIT_TIMEOUT:-1800}
       # Only applies to webhook audits: dashboard audits carry their own.
       SECAUDIT_DEFAULT_LANGUAGE: ${SECAUDIT_DEFAULT_LANGUAGE:-en}
+      # How much source travels in one request to an API backend. Raising it
+      # audits more of a large repository and costs more per audit.
+      SECAUDIT_CONTEXT_CHARS: ${SECAUDIT_CONTEXT_CHARS:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
     # http://host.docker.internal:11434.
     extra_hosts:

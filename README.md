@@ -251,6 +251,21 @@ Anything reported as verified without a file or a snippet is downgraded to
 `unverified` before it is stored, so the guarantee does not depend on the model
 behaving. `?verified_only=true` leaves the unverified ones out entirely.
 
+### How the code reaches the model
+
+`claude-code` is an agent: it runs with the checkout as its working directory
+and opens files itself. Every other backend is a single HTTP request and can
+open nothing, so the repository is packed into that request — the file tree,
+then the contents of as many files as the budget allows, line-numbered so a
+finding can point at a line. The files whose paths suggest attack surface
+(auth, session, routes, queries, uploads, config…) go in first, and whatever
+did not fit is named in the prompt so the model can say it was not shown that
+file instead of guessing about it.
+
+`SECAUDIT_CONTEXT_CHARS` sets the budget (default 200000 characters, about 50k
+tokens; ollama gets a quarter of it). A larger budget covers more of a big
+repository and costs more per audit.
+
 ### Language
 
 Findings are written in the requested language by the backend itself — there is

@@ -343,7 +343,8 @@ function findingNode(finding) {
   if (!verified) head.append(node("span", "badge-unverified", t("findings.unverified")));
   item.append(head);
 
-  const where = [finding.file, finding.anchor, categoryLabel(finding.category)]
+  const at = finding.line ? `${finding.file}:${finding.line}` : finding.file;
+  const where = [at, finding.anchor, categoryLabel(finding.category)]
     .filter(Boolean);
   if (where.length) item.append(node("div", "finding-where", where.join("  ·  ")));
   // The snippet is code from an audited third-party repo: textContent only.

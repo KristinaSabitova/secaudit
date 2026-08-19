@@ -57,7 +57,7 @@ FAKE_FINDINGS = [
      "severity": "critical", "title": "SQL injection in get_user",
      "description": "Query is built by string concatenation; use bound parameters.",
      "code_snippet": 'return cur.execute("SELECT * FROM users WHERE name = \'" + name)',
-     "verification_status": "verified", "verification_note": ""},
+     "line": 4, "verification_status": "verified", "verification_note": ""},
     {"category": "secrets", "file": "app.py", "anchor": "API_KEY",
      "severity": "high", "title": "Hardcoded API key",
      "description": "Credential committed in app.py; move it to an env var.",
@@ -76,8 +76,12 @@ UNVERIFIED_FINDING = {
 }
 
 
-class FakeBackend:
-    """Stands in for the LLM backend: returns canned JSON findings."""
+class FakeBackend(web_engine.engine.AuditBackend):
+    """Stands in for the LLM backend: returns canned JSON findings.
+
+    It inherits AuditBackend so it is handed the repository the way a real
+    single-request backend is, rather than quietly skipping that step.
+    """
     def __init__(self, output=None):
         self.output = output if output is not None else json.dumps(FAKE_FINDINGS)
         self.prompts = []
@@ -1275,6 +1279,32 @@ class TestFindingVerification:
         assert finding["file"] == "app.py"
         assert finding["anchor"] == "get_user"
         assert "SELECT * FROM users" in finding["code_snippet"]
+
+    def test_a_reported_line_reaches_the_api(self, client, signed_in,
+                                             clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
+        assert finding["line"] == 4
+
+    def test_a_finding_without_a_line_keeps_null(self, client, signed_in,
+                                                 clone_from_sample, monkeypatch):
+        audit_id = self.run_audit_returning(client, monkeypatch,
+                                            [UNVERIFIED_FINDING])
+        assert client.get(
+            f"/api/audits/{audit_id}").json()["findings"][0]["line"] is None
+
+    def test_the_backend_is_handed_the_repository(self, client, signed_in,
+                                                  clone_from_sample,
+                                                  backend_prompts):
+        """The API backends cannot open files, so the code goes in the prompt."""
+        client.post("/api/audits",
+                    json={"repo_url": "https://github.com/acme/sample"})
+        prompt = backend_prompts[0]
+        assert "REPOSITORY CONTENTS" in prompt
+        assert "app.py" in prompt
+        assert "def get_user(cur, name):" in prompt
 
     def test_a_finding_without_evidence_is_unverified(self, client, signed_in,
                                                       clone_from_sample,

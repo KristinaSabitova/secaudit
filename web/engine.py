@@ -30,6 +30,8 @@ _ENV_CONFIG = {
     "SECAUDIT_BACKEND": "backend",
     "SECAUDIT_MODEL": "model",
     "SECAUDIT_OLLAMA_URL": "ollama_url",
+    # How much source a single-request backend may be handed per audit.
+    "SECAUDIT_CONTEXT_CHARS": "context_chars",
 }
 
 
@@ -90,6 +92,8 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> list[dict
     try:
         backend = engine.select_backend(None, config)
         prompt = engine.build_diff_prompt(None, "all", None, language)
+        # Hands the checkout to a backend that cannot open files itself.
+        prompt = backend.prepare(project, prompt)
         raw_output = backend.run(project, prompt, timeout=timeout)
     except SystemExit as e:  # the engine reports failures via sys.exit()
         raise AuditError(sanitize_error(str(e.code)) if e.code
