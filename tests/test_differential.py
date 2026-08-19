@@ -349,6 +349,14 @@ class TestPackRepository:
         names = [str(p.relative_to(d)) for p in iter_source_files(d)]
         assert names.index("app/auth.py") < names.index("zzz_utils.py")
 
+    def test_entry_points_come_before_everything(self, tmp_path):
+        """main.ts wires up the middleware; no keyword in its path says so."""
+        d = self.repo(tmp_path)
+        (d / "src").mkdir()
+        (d / "src" / "main.ts").write_text("app.enableCors()\n")
+        names = [str(p.relative_to(d)) for p in iter_source_files(d)]
+        assert names.index("src/main.ts") < names.index("app/auth.py")
+
     def test_the_budget_is_respected(self, tmp_path):
         d = self.repo(tmp_path)
         (d / "huge.py").write_text("y = 2\n" * 5000)

@@ -45,7 +45,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # ---------------------------------------------------------------------------
 # Finding schema
@@ -544,9 +544,17 @@ MAX_CONTEXT_CHARS = 200_000     # roughly 50k tokens of source
 MAX_FILE_CHARS = 60_000         # one enormous file must not eat the budget
 
 
+# Entry points wire up the middleware — CORS, headers, sessions, body parsing —
+# so they carry security decisions no keyword in their path would reveal.
+_ENTRY_POINT_STEMS = {"main", "app", "server", "index", "wsgi", "asgi",
+                      "settings", "urls", "routes"}
+
+
 def _priority(rel_path: str) -> int:
     lowered = rel_path.lower()
-    return 0 if any(hint in lowered for hint in _PRIORITY_HINTS) else 1
+    if PurePosixPath(lowered).stem in _ENTRY_POINT_STEMS:
+        return 0
+    return 1 if any(hint in lowered for hint in _PRIORITY_HINTS) else 2
 
 
 def _is_source(path: Path) -> bool:
