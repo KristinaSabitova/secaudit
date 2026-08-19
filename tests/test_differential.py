@@ -7,9 +7,12 @@ from secaudit import (
     make_fingerprint,
     _norm_anchor,
     _norm_file,
+    build_diff_prompt,
     classify,
     Finding,
+    MAX_SNIPPET_CHARS,
     redact_secrets,
+    verify_evidence,
 )
 
 
@@ -87,9 +90,14 @@ class TestNormAnchor:
 # ---------------------------------------------------------------------------
 
 def _raw(category="injection", file="app.py", anchor="login", severity="high",
-         title="SQL Injection", description="Use parameterized queries."):
+         title="SQL Injection", description="Use parameterized queries.",
+         code_snippet='cur.execute("SELECT * FROM u WHERE n = " + name)',
+         verification_status="verified", verification_note=""):
     return dict(category=category, file=file, anchor=anchor,
-                severity=severity, title=title, description=description)
+                severity=severity, title=title, description=description,
+                code_snippet=code_snippet,
+                verification_status=verification_status,
+                verification_note=verification_note)
 
 
 def _finding(fp, status="persisting", **kwargs):
@@ -205,6 +213,113 @@ class TestRedactSecrets:
     def test_redaction_deterministic(self):
         text = "secret=abc12345xyz"
         assert redact_secrets(text) == redact_secrets(text)
+
+
+# ---------------------------------------------------------------------------
+# Evidence behind a finding
+# ---------------------------------------------------------------------------
+
+class TestVerifyEvidence:
+    def test_file_plus_snippet_is_verified(self):
+        status, note = verify_evidence(_raw())
+        assert status == "verified"
+        assert note == ""
+
+    def test_no_snippet_is_unverified(self):
+        status, note = verify_evidence(_raw(code_snippet=""))
+        assert status == "unverified"
+        assert "code evidence" in note
+
+    def test_no_file_is_unverified(self):
+        status, note = verify_evidence(_raw(file=""))
+        assert status == "unverified"
+        assert "file" in note
+
+    def test_the_model_saying_unverified_is_believed(self):
+        status, note = verify_evidence(_raw(
+            verification_status="unverified",
+            verification_note="no matching code found for the pattern"))
+        assert status == "unverified"
+        assert note == "no matching code found for the pattern"
+
+    def test_an_unverified_finding_keeps_a_reason_even_when_none_is_given(self):
+        _, note = verify_evidence(_raw(verification_status="unverified",
+                                       verification_note=""))
+        assert note
+
+    def test_an_unknown_status_is_not_taken_as_verified(self):
+        status, note = verify_evidence(_raw(verification_status="probably"))
+        assert status == "unverified"
+        assert "probably" in note
+
+    def test_a_missing_status_field_is_not_verified(self):
+        raw = _raw()
+        del raw["verification_status"]
+        assert verify_evidence(raw)[0] == "unverified"
+
+
+class TestClassifyEvidence:
+    def test_the_snippet_survives_classification(self):
+        _, findings = classify([_raw()], saved={})
+        assert "SELECT * FROM u" in findings[0].code_snippet
+        assert findings[0].verification_status == "verified"
+
+    def test_a_generic_finding_is_kept_but_marked(self):
+        """A category description with nothing behind it is not confirmed."""
+        generic = _raw(category="csrf", file="", anchor="", code_snippet="",
+                       title="CSRF protection",
+                       description="State-changing endpoints need a token.")
+        _, findings = classify([generic], saved={})
+        assert findings[0].verification_status == "unverified"
+        assert findings[0].verification_note
+        assert findings[0].title == "CSRF protection"      # reported, not dropped
+
+    def test_a_secret_in_a_snippet_is_redacted(self):
+        raw = _raw(category="secrets", anchor="API_KEY",
+                   code_snippet='API_KEY = "ghp_abcdefghijklmnopqrstuvwxyz"')
+        _, findings = classify([raw], saved={})
+        assert "ghp_abcdefghijklmnopqrstuvwxyz" not in findings[0].code_snippet
+        assert "REDACTED" in findings[0].code_snippet
+
+    def test_a_snippet_in_any_category_is_redacted(self):
+        raw = _raw(code_snippet='conn = connect(password="hunter2000000")')
+        _, findings = classify([raw], saved={})
+        assert "hunter2000000" not in findings[0].code_snippet
+
+    def test_an_oversized_snippet_is_capped(self):
+        _, findings = classify([_raw(code_snippet="x" * 9000)], saved={})
+        assert len(findings[0].code_snippet) == MAX_SNIPPET_CHARS
+
+    def test_evidence_does_not_change_the_fingerprint(self):
+        """Snippets move as code is reformatted; the finding's identity must not."""
+        _, one = classify([_raw(code_snippet="a = 1")], saved={})
+        _, two = classify([_raw(code_snippet="a = 1  # reformatted")], saved={})
+        assert one[0].fingerprint == two[0].fingerprint
+
+    def test_state_from_before_this_field_still_loads(self):
+        """Findings saved by an older version have no verification fields."""
+        old = Finding(fingerprint="f" * 16, id="f" * 8, file="app.py",
+                      anchor="login", severity="high", category="injection",
+                      title="SQL Injection", description="…")
+        assert old.verification_status == "unverified"
+        assert old.code_snippet == ""
+
+
+class TestPromptLanguage:
+    def test_english_is_the_default(self):
+        assert "Spanish" not in build_diff_prompt(None, "all", None)
+
+    def test_spanish_is_requested_explicitly(self):
+        prompt = build_diff_prompt(None, "all", None, "es")
+        assert "Spanish (castellano)" in prompt
+        assert '"title", "description"' in prompt
+
+    def test_code_is_never_translated(self):
+        prompt = build_diff_prompt(None, "all", None, "es")
+        assert "never translated" in prompt
+
+    def test_an_unknown_language_falls_back_to_english(self):
+        assert "Spanish" not in build_diff_prompt(None, "all", None, "fr")
 
 
 if __name__ == "__main__":

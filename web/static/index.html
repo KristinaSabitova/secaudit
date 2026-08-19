@@ -12,73 +12,83 @@
     <div class="header-right">
       <div id="health" class="health" data-state="unknown">checking&hellip;</div>
       <span id="whoami" class="muted" hidden></span>
+      <label class="sr-only" for="lang" data-i18n="lang.label">language</label>
+      <select id="lang" class="ghost lang-select">
+        <option value="en">English</option>
+        <option value="es">Castellano</option>
+      </select>
       <button id="settings-toggle" class="ghost" type="button"
-              aria-expanded="false" hidden>backend</button>
-      <button id="logout" class="ghost" type="button" hidden>sign out</button>
+              aria-expanded="false" hidden data-i18n="nav.backend">backend</button>
+      <button id="logout" class="ghost" type="button" hidden
+              data-i18n="nav.signout">sign out</button>
     </div>
   </header>
 
   <main>
     <section class="pane" id="signin" hidden>
-      <h2>sign in</h2>
-      <p class="signin-lead">
+      <h2 data-i18n="signin.title">sign in</h2>
+      <p class="signin-lead" data-i18n="signin.lead">
         secaudit audits GitHub repositories with the model of your choice.
         Sign in to bring your own API key &mdash; your key and your audits
         stay yours, and nobody else on this instance can see either.
       </p>
       <p>
-        <a class="button-link" id="signin-link" href="/api/auth/login">
+        <a class="button-link" id="signin-link" href="/api/auth/login"
+           data-i18n="signin.button">
           sign in with GitHub
         </a>
       </p>
-      <p id="signin-disabled" class="muted" hidden>
+      <p id="signin-disabled" class="muted" hidden data-i18n="signin.disabled">
         Sign-in is not configured on this instance yet.
       </p>
     </section>
 
     <div id="app" hidden>
       <section class="pane" id="settings" hidden>
-        <h2>audit backend</h2>
-        <p class="muted settings-intro">
+        <h2 data-i18n="settings.title">audit backend</h2>
+        <p class="muted settings-intro" data-i18n="settings.intro">
           Paste an API key and secaudit works with it. The key is encrypted
           before it is stored and is never sent back to this page.
         </p>
         <form id="settings-form" autocomplete="off">
           <div class="field">
-            <label for="api-key">api key</label>
+            <label for="api-key" data-i18n="settings.apikey">api key</label>
             <input id="api-key" type="password" spellcheck="false"
                    placeholder="sk-ant-… or sk-…">
           </div>
           <div class="field">
-            <label for="backend">backend</label>
+            <label for="backend" data-i18n="settings.backend">backend</label>
             <select id="backend">
-              <option value="">detect from the key</option>
+              <option value="" data-i18n="settings.detect">detect from the key</option>
               <option value="anthropic-api">anthropic-api</option>
               <option value="openai-api">openai-api</option>
-              <option value="ollama">ollama (free, local)</option>
-              <option value="claude-code">claude-code (local binary)</option>
+              <option value="ollama" data-i18n="settings.ollama">ollama (free, local)</option>
+              <option value="claude-code" data-i18n="settings.claudecode">claude-code (local binary)</option>
             </select>
           </div>
           <div class="field">
-            <label for="model">model <span class="muted">(optional)</span></label>
-            <input id="model" spellcheck="false" placeholder="backend default">
+            <label for="model"><span data-i18n="settings.model">model</span>
+              <span class="muted" data-i18n="settings.optional">(optional)</span></label>
+            <input id="model" spellcheck="false" data-i18n-placeholder="settings.modelph"
+                   placeholder="backend default">
           </div>
           <div class="field" id="ollama-field" hidden>
-            <label for="ollama-url">ollama url</label>
+            <label for="ollama-url" data-i18n="settings.ollamaurl">ollama url</label>
             <input id="ollama-url" spellcheck="false"
                    placeholder="http://host.docker.internal:11434">
           </div>
           <div class="settings-actions">
-            <button type="submit">save</button>
-            <button type="button" id="clear-key" class="ghost">remove key</button>
+            <button type="submit" data-i18n="settings.save">save</button>
+            <button type="button" id="clear-key" class="ghost"
+                    data-i18n="settings.removekey">remove key</button>
           </div>
         </form>
         <p id="settings-error" class="error" hidden></p>
         <p id="settings-state" class="muted"></p>
 
         <div id="runner" hidden>
-          <h3>run audits on your own machine</h3>
-          <p class="muted settings-intro">
+          <h3 data-i18n="runner.title">run audits on your own machine</h3>
+          <p class="muted settings-intro" data-i18n="runner.intro">
             The <code>claude-code</code> backend runs a program signed in on a
             machine, which this server is not. Audits you queue are left waiting
             for a runner on your computer to pick them up — see
@@ -86,31 +96,38 @@
             your machine.
           </p>
           <div class="settings-actions">
-            <button type="button" id="runner-token">create runner token</button>
-            <button type="button" id="runner-revoke" class="ghost">revoke</button>
+            <button type="button" id="runner-token"
+                    data-i18n="runner.create">create runner token</button>
+            <button type="button" id="runner-revoke" class="ghost"
+                    data-i18n="runner.revoke">revoke</button>
           </div>
           <p id="runner-shown" class="muted" hidden></p>
         </div>
       </section>
 
       <form id="audit-form" autocomplete="off">
-        <label class="sr-only" for="repo-url">repository</label>
+        <label class="sr-only" for="repo-url" data-i18n="audit.repo">repository</label>
         <input id="repo-url" name="repo-url" type="text" spellcheck="false"
                placeholder="https://github.com/owner/repo" required>
-        <button type="submit">run audit</button>
+        <button type="submit" data-i18n="audit.run">run audit</button>
       </form>
       <p id="form-error" class="error" hidden></p>
 
       <div class="panes">
         <section class="pane" id="audits-pane">
-          <h2>audits <span id="audit-count" class="muted"></span></h2>
+          <h2><span data-i18n="audits.title">audits</span>
+            <span id="audit-count" class="muted"></span></h2>
           <ul id="audit-list"></ul>
-          <p id="audits-empty" class="muted">no audits yet</p>
+          <p id="audits-empty" class="muted" data-i18n="audits.empty">no audits yet</p>
         </section>
 
         <section class="pane" id="detail-pane">
-          <h2>findings</h2>
-          <p id="detail-empty" class="muted">select an audit</p>
+          <h2><span data-i18n="findings.title">findings</span></h2>
+          <label class="verified-filter">
+            <input type="checkbox" id="verified-only">
+            <span data-i18n="findings.verifiedonly">only findings backed by code</span>
+          </label>
+          <p id="detail-empty" class="muted" data-i18n="findings.select">select an audit</p>
           <div id="detail" hidden></div>
         </section>
       </div>

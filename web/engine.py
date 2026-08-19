@@ -52,9 +52,10 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> list[dict
 
     Everything else goes through run_audit(), which isolates the credentials.
     """
+    language = config.get("language") or engine.LANGUAGES[0]
     try:
         backend = engine.select_backend(None, config)
-        prompt = engine.build_diff_prompt(None, "all", None)
+        prompt = engine.build_diff_prompt(None, "all", None, language)
         raw_output = backend.run(project, prompt, timeout=timeout)
     except SystemExit as e:  # the engine reports failures via sys.exit()
         raise AuditError(str(e.code) if e.code else "engine aborted") from e

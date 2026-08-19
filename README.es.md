@@ -231,11 +231,45 @@ Luego abre <http://127.0.0.1:8000>.
 | `POST /api/audits` | encola la auditoría de un repositorio (202 con el registro pendiente) |
 | `GET /api/audits` | todas las auditorías, de más reciente a más antigua, con recuentos por severidad |
 | `GET /api/audits/{id}` | una auditoría con sus hallazgos |
+| `GET /api/audits/{id}?verified_only=true` | solo los hallazgos respaldados por código |
 | `POST /api/webhook/github` | entregas de push firmadas por GitHub |
 | `GET /api/health` | disponibilidad de git, la base de datos y el backend |
 
 Las auditorías corren en segundo plano: el endpoint responde al momento y el
 registro pasa de `pending` a `running` y termina en `done` o `error`.
+
+### Evidencia detrás de un hallazgo
+
+Cada hallazgo dice si está anclado a código realmente auditado:
+
+- `verification_status: "verified"` viene con `file`, `anchor` y un
+  `code_snippet` copiado del repositorio. Abres el fichero, encuentras el
+  código y ves el fallo.
+- `verification_status: "unverified"` es un hallazgo que el motor no pudo atar
+  a ningún código. Se reporta igualmente, con el motivo en
+  `verification_note`, pero nunca se presenta como confirmado. Repetir lo que
+  significa una categoría no es un hallazgo, y el prompt lo prohíbe.
+
+Todo lo que llegue como verificado sin fichero o sin snippet se degrada a
+`unverified` antes de guardarse, así que la garantía no depende de que el
+modelo se porte bien. `?verified_only=true` deja fuera los no verificados.
+
+### Idioma
+
+Los hallazgos los escribe el propio backend en el idioma pedido — no hay una
+segunda pasada de traducción:
+
+```bash
+curl -X POST /api/audits -H 'Content-Type: application/json' \
+     -d '{"repo_url": "https://github.com/owner/repo", "language": "es"}'
+```
+
+`language` es `"en"` (por defecto) o `"es"`; cualquier otro valor da 400. El
+panel envía el idioma en el que se está mostrando, y su selector cambia entre
+castellano e inglés. Las auditorías de webhook no tienen a quién preguntar, así
+que siguen `SECAUDIT_DEFAULT_LANGUAGE`. En la CLI es `--language es`. Solo se
+traduce la prosa: rutas, identificadores, categorías y snippets se conservan tal
+como aparecen en el código.
 
 Define `GITHUB_WEBHOOK_SECRET` para habilitar el webhook — sin esa variable el
 endpoint rechaza toda entrega con 503 en lugar de aceptarlas sin verificar.

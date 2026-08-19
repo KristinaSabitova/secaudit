@@ -61,6 +61,13 @@ SEVERITY_LABEL = {
 }
 
 
+VERIFIED = "verified"
+UNVERIFIED = "unverified"
+
+# A snippet is evidence, not a file dump: enough to see the flaw, no more.
+MAX_SNIPPET_CHARS = 2000
+
+
 @dataclass
 class Finding:
     fingerprint: str       # stable 16-char hex hash
@@ -73,6 +80,33 @@ class Finding:
     description: str
     status: str = "new"    # new/fixed/regressed/persisting/accepted
     suppression_reason: str = ""
+    # Evidence the finding is anchored to real audited code, not to the
+    # generic description of its category. See verify_evidence().
+    code_snippet: str = ""
+    verification_status: str = UNVERIFIED
+    verification_note: str = ""
+
+
+def verify_evidence(raw: dict) -> tuple[str, str]:
+    """Decide whether a raw finding is backed by evidence from the repository.
+
+    A finding only counts as verified when the model reported both where it is
+    and the code that shows it. Anything else — a category description dressed
+    up as a finding, a plausible-looking path with nothing behind it — is kept,
+    but labelled unverified with the reason, rather than presented as confirmed.
+    """
+    claimed = str(raw.get("verification_status") or "").strip().lower()
+    note = str(raw.get("verification_note") or "").strip()
+    if not str(raw.get("file") or "").strip():
+        return UNVERIFIED, note or "no file reported for this finding"
+    if not str(raw.get("code_snippet") or "").strip():
+        return UNVERIFIED, note or "no code evidence reported for this finding"
+    if claimed == UNVERIFIED:
+        # The model said it could not find matching code; take it at its word.
+        return UNVERIFIED, note or "reported as unverified by the audit backend"
+    if claimed != VERIFIED:
+        return UNVERIFIED, note or f"unrecognised verification status '{claimed}'"
+    return VERIFIED, note
 
 # ---------------------------------------------------------------------------
 # Fingerprinting
@@ -120,6 +154,10 @@ def _sanitize(finding: Finding) -> Finding:
     if finding.category == "secrets":
         finding.description = redact_secrets(finding.description)
         finding.anchor = redact_secrets(finding.anchor)
+    # A snippet is copied verbatim out of the audited repository, so it can
+    # carry a live credential whatever the category says it is.
+    if finding.code_snippet:
+        finding.code_snippet = redact_secrets(finding.code_snippet)
     return finding
 
 # ---------------------------------------------------------------------------
@@ -185,6 +223,7 @@ def classify(raw_findings: list, saved: dict) -> tuple:
         fp = make_fingerprint(cat, fpath, anchor)
         seen.add(fp)
 
+        status, note = verify_evidence(raw)
         finding = Finding(
             fingerprint=fp,
             id=_make_id(fp),
@@ -194,6 +233,9 @@ def classify(raw_findings: list, saved: dict) -> tuple:
             category=cat,
             title=str(raw.get("title", "")).strip(),
             description=str(raw.get("description", "")).strip(),
+            code_snippet=str(raw.get("code_snippet") or "").strip()[:MAX_SNIPPET_CHARS],
+            verification_status=status,
+            verification_note=note,
         )
         finding = _sanitize(finding)
 
@@ -663,11 +705,51 @@ Each element must have exactly these fields:
                client_security/other
   "file":      relative path from project root (empty string if not file-specific)
   "anchor":    function name, class name, or a brief code fragment — NO line numbers
+  "code_snippet": the offending code copied VERBATIM from that file, at most 15
+               lines. Copy it exactly as it appears — never paraphrase, retype
+               from memory, or write illustrative code. Leave it "" only when
+               you truly have none, and then say so in "verification_note".
   "severity":  critical | high | medium | low | info
   "title":     short title (one line)
   "description": risk explanation and concrete fix; for secrets findings do NOT
                  include the secret value itself, only its type and location
+  "verification_status": "verified" | "unverified"
+  "verification_note": why it is unverified; "" when verified
+
+EVIDENCE — THIS IS NOT OPTIONAL:
+Every finding must be anchored to code you actually read in THIS repository.
+- Mark a finding "verified" only if "file" names a real file you opened and
+  "code_snippet" is the real code from it. Verified means: a reader can open
+  that file, find that code, and see the flaw.
+- If you looked for a class of problem and could not find matching code, you
+  may still report it, but you MUST mark it "unverified" and explain in
+  "verification_note" what you searched for and did not find (for example:
+  "no CSRF-relevant state-changing handler found in this codebase").
+- It is FORBIDDEN to return the generic description of a category (injection,
+  authz, csrf, client_security, and the rest of the checklist above) as if it
+  were a confirmed finding. A restatement of what the category means is not a
+  finding. Never invent a file path, a function name or a snippet to make a
+  finding look grounded — reporting nothing is better, and an honest
+  "unverified" is better still.
 If no findings, output: []
+"""
+
+# The audited code, its paths and identifiers are quoted as they are; only the
+# prose written for the reader is translated.
+LANGUAGES = ("en", "es")
+LANGUAGE_NAME = {"en": "English", "es": "Spanish (castellano)"}
+
+
+def language_instruction(language: str) -> str:
+    if language not in LANGUAGES or language == "en":
+        return ""
+    return f"""\
+LANGUAGE:
+Write "title", "description" and "verification_note" in \
+{LANGUAGE_NAME[language]}. Keep every other field exactly as specified above and
+in its original form: "category" and "severity" stay the English enum values,
+and "file", "anchor" and "code_snippet" are copied from the source code, so they
+are never translated. Do not translate identifiers, paths or code.
 """
 
 REPORT_ONLY = ("Do NOT modify any files. Only report findings and the fix you "
@@ -676,7 +758,7 @@ APPLY_FIXES = ("Apply critical and high fixes directly. List medium/low and any 
                "fix needing my decision before touching it.")
 
 
-def build_oneshot_prompt(stack, scope, mode):
+def build_oneshot_prompt(stack, scope, mode, language="en"):
     parts = ["You are performing a defensive security audit of a web "
              "application I own. Work systematically.\n"]
     if stack:
@@ -687,10 +769,13 @@ def build_oneshot_prompt(stack, scope, mode):
         parts.append(FRONTEND_CHECKS)
     instr = REPORT_ONLY if mode == "report" else APPLY_FIXES
     parts.append(DELIVERY_FREE.format(mode_instruction=instr))
+    if language in LANGUAGES and language != "en":
+        parts.append(f"Write the report in {LANGUAGE_NAME[language]}. Do not "
+                     f"translate identifiers, paths or code.\n")
     return "\n".join(parts)
 
 
-def build_diff_prompt(stack, scope, files):
+def build_diff_prompt(stack, scope, files, language="en"):
     parts = ["You are performing a defensive security audit of a web "
              "application I own.\n"]
     if stack:
@@ -703,6 +788,9 @@ def build_diff_prompt(stack, scope, files):
     if scope in ("all", "frontend"):
         parts.append(FRONTEND_CHECKS)
     parts.append(DELIVERY_JSON)
+    instruction = language_instruction(language)
+    if instruction:
+        parts.append(instruction)
     return "\n".join(parts)
 
 # ---------------------------------------------------------------------------
@@ -766,6 +854,11 @@ def print_findings(findings: list, show_all: bool = False) -> None:
             print(f"  File    : {f.file or '(project-wide)'}")
             print(f"  Anchor  : {f.anchor or '—'}")
             print(f"  Category: {f.category}")
+            if f.verification_status == VERIFIED:
+                for line in f.code_snippet.splitlines():
+                    print(f"  │ {line}")
+            else:
+                print(f"  [UNVERIFIED] {f.verification_note or 'no code evidence'}")
             print(f"  {f.description}")
 
     counts = {s: sum(1 for f in visible if f.severity == s) for s in SEVERITIES}
@@ -822,7 +915,8 @@ def cmd_show_suppressed(project: Path) -> None:
 
 def run_oneshot(args, project: Path, backend: AuditBackend) -> None:
     mode = "report" if args.report_only else "fix"
-    prompt = build_oneshot_prompt(args.stack, args.scope, mode)
+    prompt = build_oneshot_prompt(args.stack, args.scope, mode,
+                                  getattr(args, "language", "en"))
     if args.print_prompt:
         print(prompt)
         return
@@ -839,7 +933,8 @@ def run_oneshot(args, project: Path, backend: AuditBackend) -> None:
 
 
 def run_differential(args, project: Path, backend: AuditBackend, files=None) -> None:
-    prompt = build_diff_prompt(args.stack, args.scope, files)
+    prompt = build_diff_prompt(args.stack, args.scope, files,
+                               getattr(args, "language", "en"))
     if args.print_prompt:
         print(prompt)
         return
@@ -873,8 +968,11 @@ def run_differential(args, project: Path, backend: AuditBackend, files=None) -> 
             if not args.all and f.status not in ("new", "regressed"):
                 continue
             lines.append(f"\n## [{f.status.upper()}] {f.title}\n")
+            evidence = (f"\n```\n{f.code_snippet}\n```\n"
+                        if f.verification_status == VERIFIED and f.code_snippet
+                        else f"- Unverified: {f.verification_note or 'no code evidence'}\n")
             lines.append(f"- Severity: {f.severity}\n- File: {f.file}\n"
-                         f"- Anchor: {f.anchor}\n\n{f.description}\n")
+                         f"- Anchor: {f.anchor}\n{evidence}\n{f.description}\n")
         args.output.write_text("\n".join(lines), encoding="utf-8")
         print(f"[+] Report written to {args.output}", file=sys.stderr)
 
@@ -916,6 +1014,8 @@ def main() -> None:
                    help="path to audit, or a registered alias (see 'projects add')")
     p.add_argument("--stack", help='tech stack hint, e.g. "Django + Vue"')
     p.add_argument("--scope", choices=["all", "backend", "frontend"], default="all")
+    p.add_argument("--language", choices=list(LANGUAGES), default="en",
+                   help="language the findings are written in")
 
     # One-shot flags (backward compatible)
     p.add_argument("--report-only", action="store_true",

@@ -228,11 +228,45 @@ Then open <http://127.0.0.1:8000>.
 | `POST /api/audits` | queue an audit of a repository (202 with the pending record) |
 | `GET /api/audits` | every audit, newest first, with severity counts |
 | `GET /api/audits/{id}` | one audit including its findings |
+| `GET /api/audits/{id}?verified_only=true` | only the findings backed by code |
 | `POST /api/webhook/github` | signed push deliveries from GitHub |
 | `GET /api/health` | git, database, and backend readiness |
 
 Audits run as background tasks: the endpoint answers immediately and the record
 moves from `pending` through `running` to `done` or `error`.
+
+### Evidence behind a finding
+
+Every finding says whether it is anchored to code that was actually audited:
+
+- `verification_status: "verified"` comes with `file`, `anchor` and a
+  `code_snippet` copied from the repository. Open the file, find the code, see
+  the flaw.
+- `verification_status: "unverified"` is a finding the engine could not tie to
+  any code. It is still reported, with `verification_note` saying why, and is
+  never presented as confirmed. Restating what a category means is not a
+  finding, and the prompt forbids it.
+
+Anything reported as verified without a file or a snippet is downgraded to
+`unverified` before it is stored, so the guarantee does not depend on the model
+behaving. `?verified_only=true` leaves the unverified ones out entirely.
+
+### Language
+
+Findings are written in the requested language by the backend itself — there is
+no translation pass afterwards:
+
+```bash
+curl -X POST /api/audits -H 'Content-Type: application/json' \
+     -d '{"repo_url": "https://github.com/owner/repo", "language": "es"}'
+```
+
+`language` is `"en"` (default) or `"es"`; anything else is a 400. The dashboard
+sends the language it is displayed in, and its own selector switches between
+English and Spanish. Webhook audits have no caller to ask, so they follow
+`SECAUDIT_DEFAULT_LANGUAGE`. The CLI takes the same choice as `--language es`.
+Only prose is translated: paths, identifiers, categories and snippets are kept
+as they appear in the code.
 
 Set `GITHUB_WEBHOOK_SECRET` to enable the webhook — without it the endpoint
 refuses every delivery with 503 rather than accepting unverified ones.

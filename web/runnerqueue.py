@@ -86,4 +86,5 @@ def claim_next(session: Session, user: User) -> Audit | None:
 
 
 def to_dict(audit: Audit) -> dict:
-    return {"id": audit.id, "repo_url": audit.repo_url, "branch": audit.branch}
+    return {"id": audit.id, "repo_url": audit.repo_url, "branch": audit.branch,
+            "language": audit.language}

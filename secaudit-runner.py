@@ -69,7 +69,8 @@ def run_one(server: str, token: str, job: dict, timeout: int) -> None:
         try:
             result["commit_sha"] = clone_repo(job["repo_url"], dest,
                                               branch=job.get("branch"))
-            config = backend_config({"backend": "claude-code"})
+            config = backend_config({"backend": "claude-code",
+                                     "language": job.get("language") or "en"})
             result["findings"] = run_audit_in_process(dest, config, timeout)
         except (CloneError, AuditError) as e:
             result["error"] = str(e)

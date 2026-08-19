@@ -20,7 +20,8 @@ from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
 from .engine import AuditError, backend_config, backend_status, run_audit
 from .gitclone import CloneError, clone_repo, validate_repo_url
-from .models import Audit, User, audit_to_dict, finding_from_dict, summarize
+from .models import (LANGUAGES, Audit, User, audit_to_dict, finding_from_dict,
+                     summarize)
 from .settings import SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
@@ -67,6 +68,9 @@ app = FastAPI(title="secaudit web", version="0.2.0", lifespan=lifespan)
 
 class AuditRequest(BaseModel):
     repo_url: str
+    # The findings are written in this language by the backend itself; there is
+    # no translation pass afterwards.
+    language: str = "en"
 
 
 class SettingsRequest(BaseModel):
@@ -96,6 +100,9 @@ def execute_audit(audit_id: str) -> None:
         owner = audit.user_id     # None for webhook audits: the instance default
         try:
             config = backend_config(settings_store.config_overrides(session, owner))
+            # Travels with the rest of the engine config into the audit
+            # process, which builds the prompt from it.
+            config["language"] = audit.language
             credentials = settings_store.credentials(session, owner)
         except SecretsUnavailable as e:
             audit.status = "error"
@@ -135,14 +142,15 @@ def execute_audit(audit_id: str) -> None:
 
 def queue_audit(session: Session, background_tasks: BackgroundTasks, repo_url: str,
                 trigger: str, branch: str | None = None,
-                commit_sha: str | None = None, user_id: int | None = None) -> Audit:
+                commit_sha: str | None = None, user_id: int | None = None,
+                language: str = "en") -> Audit:
     """Record a pending audit and hand it to a background worker.
 
     commit_sha is what the caller announced; the worker replaces it with the
     sha it actually checked out.
     """
     audit = Audit(repo_url=repo_url, branch=branch, trigger=trigger,
-                  commit_sha=commit_sha, user_id=user_id)
+                  commit_sha=commit_sha, user_id=user_id, language=language)
     session.add(audit)
     session.commit()
     background_tasks.add_task(execute_audit, audit.id)
@@ -252,9 +260,14 @@ def create_audit(req: AuditRequest, background_tasks: BackgroundTasks,
         url = validate_repo_url(req.repo_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    language = (req.language or "en").lower()
+    if language not in LANGUAGES:
+        raise HTTPException(status_code=400,
+                            detail=f"unsupported language '{req.language}'. "
+                                   f"Valid: {', '.join(LANGUAGES)}")
 
     audit = queue_audit(session, background_tasks, url, "manual",
-                        user_id=user.id)
+                        user_id=user.id, language=language)
     return audit_to_dict(audit)
 
 
@@ -291,8 +304,11 @@ async def github_webhook(request: Request, response: Response,
         response.status_code = 200
         return {"status": "ignored", "reason": "push does not update a branch"}
 
+    # Nobody picks a language for a webhook audit, so the instance sets one.
+    language = os.environ.get("SECAUDIT_DEFAULT_LANGUAGE", "en").lower()
     audit = queue_audit(session, background_tasks, push["repo_url"], "webhook",
-                        branch=push["branch"], commit_sha=push["sha"])
+                        branch=push["branch"], commit_sha=push["sha"],
+                        language=language if language in LANGUAGES else "en")
     return audit_to_dict(audit)
 
 
@@ -306,14 +322,21 @@ def list_audits(user: User = Depends(require_user),
 
 
 @app.get("/api/audits/{audit_id}")
-def get_audit(audit_id: str, user: User = Depends(require_user),
+def get_audit(audit_id: str, verified_only: bool = False,
+              user: User = Depends(require_user),
               session: Session = Depends(db_session)):
+    """One audit and its findings.
+
+    verified_only=true lists only the findings anchored to code in the audited
+    repository, leaving out the ones the engine could not evidence.
+    """
     audit = session.get(Audit, audit_id)
     # Someone else's audit reads as absent rather than forbidden, so the
     # response does not confirm that the id exists.
     if audit is None or not (user.is_admin or audit.user_id == user.id):
         raise HTTPException(status_code=404, detail="audit not found")
-    return audit_to_dict(audit, include_findings=True)
+    return audit_to_dict(audit, include_findings=True,
+                         verified_only=verified_only)
 
 
 @app.delete("/api/audits/{audit_id}", status_code=204)

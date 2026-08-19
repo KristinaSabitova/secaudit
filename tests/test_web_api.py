@@ -55,20 +55,50 @@ def clean_backend_env(monkeypatch):
 FAKE_FINDINGS = [
     {"category": "injection", "file": "app.py", "anchor": "get_user",
      "severity": "critical", "title": "SQL injection in get_user",
-     "description": "Query is built by string concatenation; use bound parameters."},
+     "description": "Query is built by string concatenation; use bound parameters.",
+     "code_snippet": 'return cur.execute("SELECT * FROM users WHERE name = \'" + name)',
+     "verification_status": "verified", "verification_note": ""},
     {"category": "secrets", "file": "app.py", "anchor": "API_KEY",
      "severity": "high", "title": "Hardcoded API key",
-     "description": "Credential committed in app.py; move it to an env var."},
+     "description": "Credential committed in app.py; move it to an env var.",
+     "code_snippet": 'API_KEY = "sk-test-000000000000"',
+     "verification_status": "verified", "verification_note": ""},
 ]
+
+# A finding the engine could not anchor to any code: reported, but never as if
+# it were confirmed.
+UNVERIFIED_FINDING = {
+    "category": "csrf", "file": "", "anchor": "",
+    "severity": "medium", "title": "No CSRF protection found",
+    "description": "State-changing endpoints should carry a CSRF token.",
+    "code_snippet": "", "verification_status": "unverified",
+    "verification_note": "no state-changing handler found in this codebase",
+}
 
 
 class FakeBackend:
     """Stands in for the LLM backend: returns canned JSON findings."""
     def __init__(self, output=None):
         self.output = output if output is not None else json.dumps(FAKE_FINDINGS)
+        self.prompts = []
 
     def run(self, project, prompt, timeout=3600):
+        self.prompts.append(prompt)
         return self.output
+
+
+@pytest.fixture
+def backend_prompts(monkeypatch):
+    """Capture the prompts the engine builds, as the backend receives them."""
+    prompts = []
+
+    def select(flag, config=None):
+        backend = FakeBackend()
+        backend.prompts = prompts
+        return backend
+
+    monkeypatch.setattr(web_engine.engine, "select_backend", select)
+    return prompts
 
 
 @pytest.fixture
@@ -1221,6 +1251,170 @@ class TestStaticFrontend:
 
     def test_unknown_path_is_404(self, client, signed_in):
         assert client.get("/nope.html").status_code == 404
+
+
+class TestFindingVerification:
+    """A finding is only presented as confirmed when it carries evidence."""
+
+    def run_audit_returning(self, client, monkeypatch, findings):
+        monkeypatch.setattr(
+            web_engine.engine, "select_backend",
+            lambda flag, config=None: FakeBackend(json.dumps(findings)),
+        )
+        return client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+
+    def test_a_finding_with_evidence_is_verified(self, client, signed_in,
+                                                 clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
+        assert finding["verification_status"] == "verified"
+        assert finding["file"] == "app.py"
+        assert finding["anchor"] == "get_user"
+        assert "SELECT * FROM users" in finding["code_snippet"]
+
+    def test_a_finding_without_evidence_is_unverified(self, client, signed_in,
+                                                      clone_from_sample,
+                                                      monkeypatch):
+        audit_id = self.run_audit_returning(client, monkeypatch,
+                                            [UNVERIFIED_FINDING])
+        finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
+        assert finding["verification_status"] == "unverified"
+        assert "no state-changing handler" in finding["verification_note"]
+        assert "code_snippet" not in finding
+
+    def test_a_generic_finding_claiming_to_be_verified_is_degraded(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        """The category description dressed up as a confirmed finding."""
+        generic = dict(UNVERIFIED_FINDING, verification_status="verified",
+                       verification_note="", file="app.py")
+        audit_id = self.run_audit_returning(client, monkeypatch, [generic])
+        finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
+        assert finding["verification_status"] == "unverified"
+        assert "code evidence" in finding["verification_note"]
+
+    def test_a_verified_finding_without_a_file_is_degraded(self, client,
+                                                           signed_in,
+                                                           clone_from_sample,
+                                                           monkeypatch):
+        floating = dict(FAKE_FINDINGS[0], file="")
+        audit_id = self.run_audit_returning(client, monkeypatch, [floating])
+        finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
+        assert finding["verification_status"] == "unverified"
+
+    def test_a_runner_cannot_report_a_verified_finding_without_evidence(self):
+        """The rule is enforced at storage, not only inside the engine."""
+        stored = web_models.finding_from_dict("abc", {
+            "severity": "high", "title": "Trust me", "file": "app.py",
+            "verification_status": "verified",
+        })
+        assert stored.verification_status == "unverified"
+        assert stored.code_snippet is None
+
+    def test_a_secret_in_a_snippet_is_redacted_before_storage(self, client,
+                                                              signed_in,
+                                                              clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        findings = client.get(f"/api/audits/{audit_id}").json()["findings"]
+        secret = next(f for f in findings if f["category"] == "secrets")
+        assert "sk-test-000000000000" not in secret["code_snippet"]
+        assert "REDACTED" in secret["code_snippet"]
+
+    def test_verified_only_filters_the_findings(self, client, signed_in,
+                                                clone_from_sample, monkeypatch):
+        audit_id = self.run_audit_returning(
+            client, monkeypatch, [FAKE_FINDINGS[0], UNVERIFIED_FINDING])
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert len(detail["findings"]) == 2
+        assert detail["verified_count"] == 1
+
+        filtered = client.get(f"/api/audits/{audit_id}?verified_only=true").json()
+        assert len(filtered["findings"]) == 1
+        assert filtered["findings"][0]["verification_status"] == "verified"
+        # The count still describes the whole audit, not the filtered list.
+        assert filtered["verified_count"] == 1
+        assert sum(filtered["summary"].values()) == 2
+
+    def test_the_prompt_demands_evidence_and_forbids_generic_findings(self):
+        prompt = web_engine.engine.build_diff_prompt(None, "all", None)
+        assert "code_snippet" in prompt
+        assert "verification_status" in prompt
+        assert "VERBATIM" in prompt
+        assert "FORBIDDEN" in prompt
+
+
+class TestAuditLanguage:
+    def test_english_by_default(self, client, signed_in, clone_from_sample):
+        audit = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()
+        assert audit["language"] == "en"
+
+    def test_spanish_is_recorded_and_returned(self, client, signed_in,
+                                              clone_from_sample):
+        audit = client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample", "language": "es",
+        }).json()
+        assert audit["language"] == "es"
+        assert client.get(f"/api/audits/{audit['id']}").json()["language"] == "es"
+
+        session = web_db.get_session()
+        stored = session.get(web_models.Audit, audit["id"])
+        assert stored.language == "es"
+        session.close()
+
+    def test_a_spanish_audit_asks_the_backend_for_spanish(self, client, signed_in,
+                                                          clone_from_sample,
+                                                          backend_prompts):
+        client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample", "language": "es",
+        })
+        assert len(backend_prompts) == 1
+        prompt = backend_prompts[0]
+        assert "Spanish (castellano)" in prompt
+        # Only the prose is translated; the evidence is quoted as it is.
+        assert "code_snippet" in prompt
+        assert "never translated" in prompt
+
+    def test_an_english_audit_carries_no_language_instruction(self, client,
+                                                              signed_in,
+                                                              clone_from_sample,
+                                                              backend_prompts):
+        client.post("/api/audits",
+                    json={"repo_url": "https://github.com/acme/sample"})
+        assert "Spanish" not in backend_prompts[0]
+
+    def test_an_unsupported_language_is_refused(self, client, signed_in):
+        r = client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample", "language": "fr",
+        })
+        assert r.status_code == 400
+        assert "fr" in r.json()["detail"]
+        assert stored_audits() == []
+
+    def test_a_runner_is_told_which_language_to_audit_in(self, client, signed_in,
+                                                         master_key,
+                                                         clone_from_sample):
+        client.put("/api/settings", json={"backend": "claude-code"})
+        client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample", "language": "es",
+        })
+        token = client.post("/api/runner/token").json()["token"]
+        job = client.post("/api/runner/claim",
+                          headers={"Authorization": f"Bearer {token}"}).json()
+        assert job["language"] == "es"
+
+    def test_a_webhook_audit_uses_the_instance_default(self, client, monkeypatch,
+                                                       webhook_secret,
+                                                       clone_from_sample):
+        monkeypatch.setenv("SECAUDIT_DEFAULT_LANGUAGE", "es")
+        audit = deliver(client, push_payload()).json()
+        assert audit["language"] == "es"
 
 
 class TestHealth:

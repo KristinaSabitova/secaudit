@@ -37,6 +37,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SECAUDIT_TIMEOUT: ${SECAUDIT_TIMEOUT:-1800}
+      # Only applies to webhook audits: dashboard audits carry their own.
+      SECAUDIT_DEFAULT_LANGUAGE: ${SECAUDIT_DEFAULT_LANGUAGE:-en}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
     # http://host.docker.internal:11434.
     extra_hosts:

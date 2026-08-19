@@ -358,6 +358,56 @@ button.ghost:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+/* ---------- evidence ---------- */
+
+/* A finding with no code behind it is dimmed, never dressed up as confirmed. */
+.finding-unverified { opacity: .82; }
+
+.badge-unverified {
+  padding: .05rem .4rem;
+  border: 1px dashed var(--muted);
+  border-radius: 2px;
+  color: var(--muted);
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.finding-snippet {
+  margin: .5rem 0 0;
+  padding: .55rem .7rem;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 3px 3px 0;
+  background: var(--panel-alt);
+  font-size: .8rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.finding-note {
+  margin-top: .4rem;
+  font-size: .78rem;
+  overflow-wrap: anywhere;
+}
+
+.verified-filter {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin-bottom: .6rem;
+  color: var(--muted);
+  font-size: .8rem;
+  cursor: pointer;
+}
+
+.verified-count { margin: 0 0 .6rem; font-size: .8rem; }
+
+.lang-select {
+  padding: .25rem .4rem;
+  font: inherit;
+  font-size: .8rem;
+}
+
 /* ---------- sign-in ---------- */
 
 #signin { max-width: 46rem; }
