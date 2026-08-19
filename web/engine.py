@@ -32,6 +32,8 @@ _ENV_CONFIG = {
     "SECAUDIT_OLLAMA_URL": "ollama_url",
     # How much source a single-request backend may be handed per audit.
     "SECAUDIT_CONTEXT_CHARS": "context_chars",
+    # Room the backend has to write the findings in.
+    "SECAUDIT_MAX_OUTPUT_TOKENS": "max_output_tokens",
 }
 
 
@@ -101,6 +103,14 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> list[dict
 
     raw = engine.extract_json_findings(raw_output)
     if raw is engine._PARSE_FAILED:
+        # Distinguish the two ways this happens, because the fix differs: a
+        # cut-off answer needs more room, anything else is the backend not
+        # answering in the requested format at all.
+        if raw_output.lstrip().startswith("[") or '"category"' in raw_output:
+            raise AuditError(
+                "the backend's answer was cut off before it could be read as "
+                "findings — raise SECAUDIT_MAX_OUTPUT_TOKENS or audit a "
+                "smaller scope")
         raise AuditError("backend output was not parseable as JSON findings")
     # classify() with empty saved state: builds Finding objects, redacts
     # secrets and computes fingerprints without touching CLI state files.

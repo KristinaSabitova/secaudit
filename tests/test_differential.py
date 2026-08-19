@@ -17,7 +17,10 @@ from secaudit import (
     OllamaBackend,
     pack_repository,
     redact_secrets,
+    select_backend,
     verify_evidence,
+    extract_json_findings,
+    _PARSE_FAILED,
 )
 
 
@@ -407,6 +410,52 @@ class TestFindingLine:
         _, one = classify([_raw(line=10)], saved={})
         _, two = classify([_raw(line=99)], saved={})
         assert one[0].fingerprint == two[0].fingerprint
+
+
+class TestTruncatedResponse:
+    """A model that runs out of output tokens stops mid-finding."""
+
+    WHOLE = ('[{"category":"injection","file":"a.py","title":"one"},'
+             '{"category":"xss","file":"b.js","title":"two"}]')
+
+    def test_a_complete_response_is_unaffected(self):
+        assert len(extract_json_findings(self.WHOLE)) == 2
+
+    def test_complete_findings_survive_a_cut(self):
+        cut = self.WHOLE[:self.WHOLE.index('{"category":"xss"') + 30]
+        found = extract_json_findings(cut)
+        assert found is not _PARSE_FAILED
+        assert [f["title"] for f in found] == ["one"]
+
+    def test_a_cut_inside_a_string_does_not_break_the_rest(self):
+        cut = '[{"file":"a.py","title":"done"},{"file":"b.py","title":"half'
+        assert [f["title"] for f in extract_json_findings(cut)] == ["done"]
+
+    def test_braces_inside_strings_are_not_structure(self):
+        text = '[{"title":"use {} to format","file":"a.py"}]'
+        assert extract_json_findings(text)[0]["title"] == "use {} to format"
+
+    def test_an_escaped_quote_does_not_end_the_string(self):
+        text = r'[{"title":"say \"hi\"","file":"a.py"}]'
+        assert extract_json_findings(text)[0]["title"] == 'say "hi"'
+
+    def test_prose_with_no_findings_still_fails(self):
+        assert extract_json_findings("I could not audit this") is _PARSE_FAILED
+
+    def test_nothing_salvageable_still_fails(self):
+        assert extract_json_findings('[{"category":"inj') is _PARSE_FAILED
+
+
+class TestOutputBudget:
+    def test_the_default_leaves_room_for_real_findings(self):
+        """8k was cutting the list off mid-finding once snippets were added."""
+        assert AnthropicAPIBackend().max_output_tokens >= 32_000
+
+    def test_it_is_configurable(self):
+        backend = select_backend("anthropic-api",
+                                 {"backend": "anthropic-api",
+                                  "max_output_tokens": "9000"})
+        assert backend.max_output_tokens == 9000
 
 
 class TestPromptLanguage:

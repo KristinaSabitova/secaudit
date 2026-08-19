@@ -543,6 +543,12 @@ _PRIORITY_HINTS = (
 MAX_CONTEXT_CHARS = 200_000     # roughly 50k tokens of source
 MAX_FILE_CHARS = 60_000         # one enormous file must not eat the budget
 
+# Room for the findings themselves. Each one now carries a snippet and a full
+# explanation, so a repository with real problems needs considerably more than
+# the 8k this used to be: at 8k the list was cut off mid-finding and the whole
+# response stopped being parseable.
+MAX_OUTPUT_TOKENS = 32_000
+
 
 # Entry points wire up the middleware — CORS, headers, sessions, body parsing —
 # so they carry security decisions no keyword in their path would reveal.
@@ -691,9 +697,11 @@ class ClaudeCodeBackend(AuditBackend):
 class AnthropicAPIBackend(AuditBackend):
     DEFAULT_MODEL = "claude-sonnet-4-6"
 
-    def __init__(self, model: str | None = None, context_chars: int | None = None):
+    def __init__(self, model: str | None = None, context_chars: int | None = None,
+                 max_output_tokens: int | None = None):
         self.model = model or self.DEFAULT_MODEL
         self.context_chars = context_chars or MAX_CONTEXT_CHARS
+        self.max_output_tokens = max_output_tokens or MAX_OUTPUT_TOKENS
 
     def run(self, project: Path, prompt: str, timeout: int = 3600) -> str:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -705,7 +713,7 @@ class AnthropicAPIBackend(AuditBackend):
             )
         payload = json.dumps({
             "model": self.model,
-            "max_tokens": 8192,
+            "max_tokens": self.max_output_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }).encode()
         req = urllib.request.Request(
@@ -722,6 +730,14 @@ class AnthropicAPIBackend(AuditBackend):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
+            if data.get("stop_reason") == "max_tokens":
+                # The findings list is cut off mid-item. Say so here: further
+                # down it is only an unparseable string, and the reason for it
+                # is not recoverable from the text.
+                print(f"[!] the model reached its {self.max_output_tokens}-token "
+                      f"output limit; the answer is truncated. Raise "
+                      f"SECAUDIT_MAX_OUTPUT_TOKENS or audit a smaller scope.",
+                      file=sys.stderr)
             return data["content"][0]["text"]
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
@@ -827,11 +843,16 @@ def select_backend(flag: str | None, config: dict | None = None) -> AuditBackend
     # How much of the repository a single-request backend may be handed.
     context_chars = config.get("context_chars")
     context_chars = int(context_chars) if context_chars else None
+    max_output = config.get("max_output_tokens")
+    max_output = int(max_output) if max_output else None
     cls = _BACKENDS[name]
     if name == "ollama":
         return cls(model=model, base_url=ollama_url, context_chars=context_chars)
     if name == "claude-code":
         return cls()
+    if name == "anthropic-api":
+        return cls(model=model, context_chars=context_chars,
+                   max_output_tokens=max_output)
     return cls(model=model, context_chars=context_chars)
 
 # ---------------------------------------------------------------------------
@@ -985,6 +1006,49 @@ def build_diff_prompt(stack, scope, files, language="en"):
 _PARSE_FAILED = object()  # sentinel: could not parse JSON at all
 
 
+def salvage_findings(text: str) -> list | None:
+    """The complete objects in an array that was cut off mid-item.
+
+    A model that runs out of output tokens stops in the middle of a finding,
+    which makes the whole array unparseable. The findings that did arrive are
+    still perfectly good, and losing all of them because the last one was
+    truncated is the worst possible outcome.
+    """
+    start = text.find("[")
+    if start == -1:
+        return None
+    objects: list = []
+    buf: list[str] = []
+    depth = 0
+    in_string = escaped = False
+    for ch in text[start + 1:]:
+        if depth:
+            buf.append(ch)
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                buf = ["{"]
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    objects.append(json.loads("".join(buf)))
+                except json.JSONDecodeError:
+                    pass
+                buf = []
+    return objects or None
+
+
 def extract_json_findings(text: str):
     """Return parsed list, empty list [], or _PARSE_FAILED sentinel."""
     cleaned = re.sub(r'```json\s*', '', text)
@@ -1001,6 +1065,12 @@ def extract_json_findings(text: str):
             return json.loads(m.group())
         except json.JSONDecodeError:
             pass
+    # Nothing parses as a whole: keep whatever complete findings are in there.
+    salvaged = salvage_findings(cleaned)
+    if salvaged is not None:
+        print(f"[!] recovered {len(salvaged)} finding(s) from a truncated "
+              f"response", file=sys.stderr)
+        return salvaged
     return _PARSE_FAILED
 
 # ---------------------------------------------------------------------------
