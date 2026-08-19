@@ -1230,6 +1230,27 @@ class TestStaticFrontend:
     def test_assets_are_served(self, client, path):
         assert client.get(path).status_code == 200
 
+    @pytest.mark.parametrize("path,content_type", [
+        ("/favicon.svg", "image/svg+xml"),
+        ("/favicon.ico", "image/"),
+        ("/favicon-32x32.png", "image/png"),
+        ("/favicon-16x16.png", "image/png"),
+        ("/apple-touch-icon.png", "image/png"),
+    ])
+    def test_favicons_are_served(self, client, path, content_type):
+        """The static mount serves these; no route is registered for them."""
+        r = client.get(path)
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith(content_type)
+        assert len(r.content) > 200
+
+    def test_the_page_declares_every_favicon_it_ships(self):
+        html = (ROOT / "web" / "static" / "index.html").read_text()
+        for name in ("favicon.svg", "favicon.ico", "favicon-32x32.png",
+                     "favicon-16x16.png", "apple-touch-icon.png"):
+            assert f'href="/{name}"' in html, f"{name} is shipped but not linked"
+            assert (ROOT / "web" / "static" / name).exists()
+
     def test_ui_loads_no_external_resources(self):
         """The UI must work offline behind TLS: no CDNs, no remote fonts.
 
