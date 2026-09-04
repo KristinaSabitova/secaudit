@@ -222,6 +222,36 @@ class TestRedactSecrets:
         text = "secret=abc12345xyz"
         assert redact_secrets(text) == redact_secrets(text)
 
+    def test_env_style_value_redacted(self):
+        text = "- JWT_SECRET=translog-secret-key-2026"
+        result = redact_secrets(text)
+        assert "translog-secret-key-2026" not in result
+        assert "JWT_SECRET=" in result          # the name still says what it is
+
+    def test_a_read_of_a_secret_is_not_a_secret(self):
+        """`token = localStorage.getItem(...)` is code, not a credential.
+
+        Redacting it used to destroy the very finding that was pointing at
+        localStorage, which is the thing worth reading.
+        """
+        text = "const token = localStorage.getItem('token');"
+        assert redact_secrets(text) == text
+
+    def test_a_member_access_is_never_redacted(self):
+        for text in ("const token = req.headers.authorization;",
+                     "secretOrKey: config.get<string>('JWT_SECRET') || '',",
+                     "this.password = await bcrypt.hash(dto.password, 10);",
+                     "export const authInterceptor: HttpInterceptorFn=(req)=>{"):
+            assert redact_secrets(text) == text, text
+
+    def test_a_hardcoded_jwt_is_masked_whole(self):
+        # Dots are part of the value inside quotes, so it is not cut at the
+        # first separator and left half-readable.
+        text = 'token: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF123"'
+        result = redact_secrets(text)
+        assert "eyJ" not in result
+        assert result.count("REDACTED") == 1
+
 
 # ---------------------------------------------------------------------------
 # Evidence behind a finding

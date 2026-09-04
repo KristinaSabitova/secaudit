@@ -137,17 +137,42 @@ def _make_id(fingerprint: str) -> str:
 # Secret redaction
 # ---------------------------------------------------------------------------
 
+_SECRET_WORD = r'(?:api[_\-]?key|token|password|secret|credential|auth)'
+
+
+def _mask(value: str) -> str:
+    return f"[REDACTED:{hashlib.sha256(value.encode()).hexdigest()[:6]}]"
+
+
 def redact_secrets(text: str) -> str:
-    """Redact secret values in text; keep type + short hash hint."""
+    """Redact secret values in text; keep type + short hash hint.
+
+    A keyword names a secret, but what follows it is only sometimes one:
+    `const token = localStorage.getItem(...)` is code, and redacting the word
+    localStorage destroys the very finding that was pointing at it. So the two
+    shapes a written secret actually takes are matched separately — a quoted
+    literal, and a bare value in an env or compose file — and neither of them
+    can continue into a member access or a call, which is what tells a
+    credential apart from an expression being read.
+    """
+    # A quoted literal. Dots belong inside the quotes, so a hardcoded JWT is
+    # masked whole instead of being cut at its first separator.
     text = re.sub(
-        r'(?i)((?:api[_\-]?key|token|password|secret|credential|auth)\s*[:=\'"` ]+)'
-        r'([A-Za-z0-9+/=_\-]{8,})',
-        lambda m: m.group(1) + f"[REDACTED:{hashlib.sha256(m.group(2).encode()).hexdigest()[:6]}]",
+        rf'(?i)({_SECRET_WORD}[\s:=]*)([\'"`])([A-Za-z0-9+/=_\-.]{{8,}})\2',
+        lambda m: m.group(1) + m.group(2) + _mask(m.group(3)) + m.group(2),
+        text,
+    )
+    # A bare value, as in a .env or a docker-compose file. It has to run to a
+    # delimiter: the lookahead is what refuses `token = localStorage.getItem`,
+    # and refuses it at every length, so no shorter prefix matches either.
+    text = re.sub(
+        rf'(?i)({_SECRET_WORD}[\s:=]+)([A-Za-z0-9+/=_\-]{{8,}})(?![\w.(\[])',
+        lambda m: m.group(1) + _mask(m.group(2)),
         text,
     )
     text = re.sub(
         r'((?:sk-|pk-|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_\-]{10,})',
-        lambda m: f"[REDACTED:{hashlib.sha256(m.group(1).encode()).hexdigest()[:6]}]",
+        lambda m: _mask(m.group(1)),
         text,
     )
     return text
