@@ -66,19 +66,34 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
 
 5. Add the server block to the proxy's nginx config.
 
-   **Only the webhook path is published.** The dashboard and the rest of the
-   API have no authentication, so nothing but `/api/webhook/github` — which
-   authenticates every request by HMAC signature — is reachable from the
-   internet. See [Reaching the dashboard](#reaching-the-dashboard) below.
-
    The proxy is itself a container on `PROXY_NETWORK`, which the app joins, so
    it reaches the app by container name. It must **not** use `127.0.0.1`: that
    is the proxy container's own loopback, not the host's.
 
+   Two things below are easy to get wrong and both are security controls:
+
+   * **`add_header` replaces, it does not accumulate.** A single `add_header`
+     in this `server` block discards every header inherited from `http {}`.
+     Whatever the set is, repeat it here in full.
+   * **Rate limits belong on the dashboard too, not only on the webhook.** A
+     `POST /api/audits` makes this server clone a repository and start an
+     audit process, so writes are limited far more tightly than reads.
+
    ```nginx
    # At http level, next to the other upstreams:
    upstream secaudit { server secaudit-app:8000; }
+
    limit_req_zone $binary_remote_addr zone=secaudit_hook:1m rate=30r/m;
+   # The dashboard polls every few seconds, so reads are loose; writes are the
+   # ones that cost this server a clone and an audit, so they are keyed
+   # separately and left empty (= not counted) for the read methods.
+   map $request_method $secaudit_write_key {
+       default   $binary_remote_addr;
+       GET       "";
+       HEAD      "";
+   }
+   limit_req_zone $secaudit_write_key zone=secaudit_write:1m rate=12r/m;
+   limit_req_zone $binary_remote_addr zone=secaudit_web:1m  rate=240r/m;
 
    server {
        listen 443 ssl;
@@ -89,7 +104,21 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
        ssl_certificate_key /etc/letsencrypt/live/secaudit.<domain>/privkey.pem;
        ssl_protocols TLSv1.2 TLSv1.3;
 
-       add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+       # The whole set, repeated here on purpose: one add_header in this block
+       # drops everything inherited from http {}. The dashboard is served
+       # entirely from web/static — no CDN, no remote fonts, no inline script
+       # or style, and fetches only to /api on this same origin — so 'self' is
+       # the whole policy.
+       add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+       add_header X-Frame-Options "SAMEORIGIN" always;
+       add_header X-Content-Type-Options "nosniff" always;
+       add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+       add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+       add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'" always;
+
+       # GitHub splits large deliveries, but a push with many commits still
+       # goes past nginx's default 1m.
+       client_max_body_size 5m;
 
        location = /api/webhook/github {
            limit_req zone=secaudit_hook burst=10 nodelay;
@@ -98,11 +127,30 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
            proxy_set_header X-Real-IP $remote_addr;
            proxy_set_header X-Forwarded-For $remote_addr;
            proxy_set_header X-Forwarded-Proto $scheme;
+           proxy_read_timeout 30s;
        }
 
-       location / { return 404; }
+       location / {
+           limit_req zone=secaudit_web   burst=60 nodelay;
+           limit_req zone=secaudit_write burst=5  nodelay;
+           proxy_pass http://secaudit;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $remote_addr;
+           proxy_set_header X-Forwarded-Proto $scheme;
+           proxy_read_timeout 60s;
+       }
    }
    ```
+
+   `X-Forwarded-Proto` is not decoration: without it the app sees plain HTTP
+   from the proxy and issues the session cookie without the `Secure` flag. Set
+   `SECAUDIT_PUBLIC_URL` as well, so neither that flag nor the OAuth callback
+   is derived from a header the client sends.
+
+   To publish only the webhook and keep the dashboard off the internet, replace
+   the `location /` block above with `return 404;` and reach the dashboard over
+   an SSH tunnel instead — see [Reaching the dashboard](#reaching-the-dashboard).
 
    Validate before reloading, so a typo cannot take the other sites down:
 
@@ -110,8 +158,12 @@ browser ──HTTPS──> reverse proxy ──> 127.0.0.1:8811 ──> app ─�
    docker exec <proxy container> nginx -t && docker exec <proxy container> nginx -s reload
    ```
 
-   If you later want the dashboard reachable from a browser anywhere, add HTTP
-   basic auth to the `location /` block rather than opening it up.
+   Verify the headers actually arrive, on a 200 and on a 404 — an `add_header`
+   in the wrong block is silent:
+
+   ```sh
+   curl -sSI https://secaudit.<domain>/ | grep -i -E 'content-security|x-frame|nosniff'
+   ```
 
 ## Subsequent deploys
 
