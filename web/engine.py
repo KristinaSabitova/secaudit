@@ -25,8 +25,27 @@ class AuditError(Exception):
     """The engine could not produce findings."""
 
 
-# Credentials an audit process must never inherit: it gets only its own.
-_CREDENTIAL_VARS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+# Everything the audit process is given, and nothing else. This was a denylist
+# of the two API-key variables, which meant the rest of the server's
+# environment travelled with it: SECAUDIT_SECRET_KEY, the master key that
+# decrypts every user's stored credential, DATABASE_URL with the database
+# password, and the OAuth and webhook secrets. That process runs the engine
+# over a repository a caller chose, and with the claude-code backend it runs an
+# agent with that untrusted checkout as its working directory. A denylist only
+# withholds the leaks somebody thought to name, so the rule is inverted: the
+# child starts from nothing and is handed what the engine actually reads.
+_ENV_ALLOWLIST = (
+    # Enough of an environment to start a Python process and find a binary.
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+    "SYSTEMROOT", "TEMP", "TMP",                 # Windows needs these to spawn
+    # Read by the engine itself (secaudit.py).
+    "SHELL", "CLAUDE_BIN",
+    # Engine configuration. Not secret, and the config also travels in the
+    # request, but the child reads the environment for anything the caller
+    # left unset.
+    "SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
+    "SECAUDIT_CONTEXT_CHARS", "SECAUDIT_MAX_OUTPUT_TOKENS", "SECAUDIT_TIMEOUT",
+)
 
 # Every backend option the CLI reads from its config file must also be
 # settable through the environment: a container has no config file.
@@ -139,9 +158,10 @@ def run_audit(project: Path, config: dict | None = None,
         "config": config if config is not None else backend_config(),
         "timeout": timeout,
     })
-    # Strip every credential the parent happens to hold, then add only this
-    # audit's own — inheriting the parent's would defeat the isolation.
-    env = {k: v for k, v in os.environ.items() if k not in _CREDENTIAL_VARS}
+    # Build the child's environment from nothing: it gets what the engine
+    # reads and this audit's own credentials, and no other secret the server
+    # happens to be holding.
+    env = {name: os.environ[name] for name in _ENV_ALLOWLIST if name in os.environ}
     env.update(credentials or {})
 
     try:

@@ -954,6 +954,63 @@ class TestPerUserIsolation:
 class TestCredentialIsolation:
     """The audit runs in its own process so keys cannot cross between users."""
 
+    def _captured_env(self, tmp_path, monkeypatch):
+        """The environment run_audit would hand the audit process."""
+        seen = {}
+
+        class Result:
+            stdout = json.dumps({"findings": []})
+            stderr = ""
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs["env"])
+            return Result()
+
+        monkeypatch.setattr(web_engine.subprocess, "run", fake_run)
+        web_engine.run_audit(tmp_path, {"backend": "anthropic-api"},
+                             credentials={"ANTHROPIC_API_KEY": "sk-ant-mine"})
+        return seen
+
+    def test_the_servers_own_secrets_do_not_reach_the_audit(self, tmp_path,
+                                                            monkeypatch):
+        """An audit of this repository caught these riding along.
+
+        The audit process runs the engine over a repository the caller chose,
+        and with the claude-code backend it runs an agent inside that untrusted
+        checkout. The master key decrypts every user\'s stored credential and
+        DATABASE_URL carries the database password: neither has any business
+        being there.
+        """
+        monkeypatch.setenv("SECAUDIT_SECRET_KEY", "the-master-key")
+        monkeypatch.setenv("DATABASE_URL", "postgresql://secaudit:pw@db/secaudit")
+        monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "oauth-secret")
+        monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "webhook-secret")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-but-present")
+
+        env = self._captured_env(tmp_path, monkeypatch)
+
+        for name in ("SECAUDIT_SECRET_KEY", "DATABASE_URL",
+                     "GITHUB_OAUTH_CLIENT_SECRET", "GITHUB_WEBHOOK_SECRET",
+                     "AWS_SECRET_ACCESS_KEY"):
+            assert name not in env
+        assert "the-master-key" not in json.dumps(env)
+
+    def test_the_audit_still_gets_what_the_engine_reads(self, tmp_path,
+                                                        monkeypatch):
+        """Withholding the secrets must not leave the child unable to run."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        env = self._captured_env(tmp_path, monkeypatch)
+        assert env["PATH"] == "/usr/bin"
+        assert env["HOME"] == str(tmp_path)          # the engine\'s config lives here
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant-mine"
+
+    def test_the_allowlist_is_not_a_denylist(self, tmp_path, monkeypatch):
+        """A new secret in the server\'s environment must not leak by default."""
+        monkeypatch.setenv("SOME_FUTURE_SECRET", "leaked")
+        assert "SOME_FUTURE_SECRET" not in self._captured_env(tmp_path, monkeypatch)
+
     def test_the_parents_key_is_not_inherited(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-belongs-to-someone-else")
         with pytest.raises(web_engine.AuditError) as excinfo:
