@@ -297,6 +297,78 @@ class TestVerifyEvidence:
         assert verify_evidence(raw)[0] == "unverified"
 
 
+class TestInfraAbsenceIsNotEvidence:
+    """A control the repository cannot see cannot be reported as absent.
+
+    Both cases below are verbatim from an audit of secaudit's own checkout:
+    the six security headers and the rate limiting are applied by the nginx in
+    front of the app, which is configured on the server. The audit reported
+    both as verified findings, quoting files that merely do not mention them.
+    Telling the model not to was not enough — it lowered the severity and kept
+    them verified — so this does not depend on the model at all.
+    """
+
+    def headers_finding(self, **kw):
+        kw.setdefault("code_snippet", "<!doctype html>")
+        return _raw(category="csp", file="web/static/index.html",
+                    anchor="<head>",
+                    title="Ausencia de cabeceras de seguridad HTTP", **kw)
+
+    def rate_limit_finding(self, **kw):
+        kw.setdefault("code_snippet", "app = FastAPI()")
+        return _raw(category="rate_limiting", file="web/main.py",
+                    anchor="bootstrap",
+                    title="Sin limitación de tasa", **kw)
+
+    def test_headers_are_unverified_when_the_proxy_is_not_in_the_repo(self):
+        status, note = verify_evidence(self.headers_finding(),
+                                       server_config_present=False)
+        assert status == "unverified"
+        assert "reverse proxy" in note
+
+    def test_rate_limiting_is_unverified_too(self):
+        status, _ = verify_evidence(self.rate_limit_finding(),
+                                    server_config_present=False)
+        assert status == "unverified"
+
+    def test_the_finding_is_kept_not_dropped(self):
+        _, findings = classify([self.headers_finding()], saved={},
+                               server_config_present=False)
+        assert len(findings) == 1
+        assert findings[0].verification_status == "unverified"
+        assert findings[0].title == "Ausencia de cabeceras de seguridad HTTP"
+
+    def test_a_repo_that_ships_its_proxy_keeps_the_finding_verified(self):
+        """transLog ships frontend/nginx.conf; its header gaps are real."""
+        status, _ = verify_evidence(self.headers_finding(),
+                                    server_config_present=True)
+        assert status == "verified"
+
+    def test_a_snippet_that_shows_the_control_is_left_alone(self):
+        """Present-but-wrong is a real finding, not an absence claim."""
+        for snippet in ("app.use(helmet({contentSecurityPolicy: false}))",
+                        "add_header Content-Security-Policy \"default-src *\";"):
+            status, _ = verify_evidence(
+                self.headers_finding(code_snippet=snippet),
+                server_config_present=False)
+            assert status == "verified", snippet
+
+    def test_a_configured_limiter_is_left_alone(self):
+        status, _ = verify_evidence(
+            self.rate_limit_finding(code_snippet="limit_req zone=w burst=5;"),
+            server_config_present=False)
+        assert status == "verified"
+
+    def test_other_categories_are_never_touched(self):
+        """Only proxy-provided controls; an injection finding is code, always."""
+        status, _ = verify_evidence(_raw(), server_config_present=False)
+        assert status == "verified"
+
+    def test_the_default_changes_nothing(self):
+        # A caller without repo context must behave exactly as before.
+        assert verify_evidence(self.headers_finding())[0] == "verified"
+
+
 class TestClassifyEvidence:
     def test_the_snippet_survives_classification(self):
         _, findings = classify([_raw()], saved={})

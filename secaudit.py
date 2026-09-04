@@ -90,13 +90,60 @@ class Finding:
     verification_note: str = ""
 
 
-def verify_evidence(raw: dict) -> tuple[str, str]:
+# Controls a reverse proxy, CDN or gateway usually applies rather than the
+# application code. The markers are how a snippet would show the control being
+# configured — in any of these layers — if it were configured at all.
+_INFRA_CONTROL_MARKERS = {
+    "csp": ("content-security-policy", "contentsecuritypolicy", "csp",
+            "helmet", "add_header", "setheader", "set_header", "strict-transport",
+            "hsts", "x-frame-options", "x-content-type-options",
+            "referrer-policy", "permissions-policy", "secure_headers"),
+    "rate_limiting": ("limit_req", "limit_conn", "limiter", "ratelimit",
+                      "rate_limit", "rate-limit", "throttle", "slowdown",
+                      "token_bucket", "leaky"),
+}
+
+INFRA_ABSENCE_NOTE = (
+    "the control reported missing here is normally applied by a reverse proxy, "
+    "CDN or hosting platform, and this repository contains no such "
+    "configuration — code that does not mention it is not evidence that it is "
+    "absent"
+)
+
+
+def claims_absent_infra_control(raw: dict) -> bool:
+    """Whether a finding says a proxy-provided control is missing.
+
+    True when the category is one of those controls and the evidence offered
+    does not mention it anywhere. That combination is the tell: the snippet is
+    then simply a piece of code that happens not to talk about the thing being
+    called missing, which is what every file in the repository looks like.
+
+    A snippet that does show the control — a helmet() call, an add_header, a
+    limiter — is a real finding about it being wrong, and is left alone.
+    """
+    markers = _INFRA_CONTROL_MARKERS.get(
+        str(raw.get("category") or "").strip().lower())
+    if markers is None:
+        return False
+    evidence = (f"{raw.get('code_snippet') or ''} "
+                f"{raw.get('anchor') or ''} "
+                f"{raw.get('file') or ''}").lower()
+    return not any(marker in evidence for marker in markers)
+
+
+def verify_evidence(raw: dict, server_config_present: bool = True) -> tuple[str, str]:
     """Decide whether a raw finding is backed by evidence from the repository.
 
     A finding only counts as verified when the model reported both where it is
     and the code that shows it. Anything else — a category description dressed
     up as a finding, a plausible-looking path with nothing behind it — is kept,
     but labelled unverified with the reason, rather than presented as confirmed.
+
+    server_config_present says whether the checkout carries the layer that
+    serves the app. When it does not, a claim that a proxy-provided control is
+    missing cannot be verified from here, whatever the model asserted. It
+    defaults to True so that a caller without that context changes nothing.
     """
     claimed = str(raw.get("verification_status") or "").strip().lower()
     note = str(raw.get("verification_note") or "").strip()
@@ -109,6 +156,11 @@ def verify_evidence(raw: dict) -> tuple[str, str]:
         return UNVERIFIED, note or "reported as unverified by the audit backend"
     if claimed != VERIFIED:
         return UNVERIFIED, note or f"unrecognised verification status '{claimed}'"
+    if not server_config_present and claims_absent_infra_control(raw):
+        # The prompt asks for this too, but asking is not enforcing: the model
+        # answered a previous audit by lowering the severity and keeping the
+        # finding verified. This is the part that does not depend on it.
+        return UNVERIFIED, INFRA_ABSENCE_NOTE
     return VERIFIED, note
 
 # ---------------------------------------------------------------------------
@@ -234,10 +286,14 @@ def save_state(project_id: str, findings: dict) -> None:
 # Classification
 # ---------------------------------------------------------------------------
 
-def classify(raw_findings: list, saved: dict) -> tuple:
+def classify(raw_findings: list, saved: dict,
+             server_config_present: bool = True) -> tuple:
     """
     raw_findings: list of dicts from LLM JSON output
     saved: dict[fingerprint -> Finding] from state
+    server_config_present: whether the checkout carries the layer that serves
+        the app; False downgrades claims that a proxy-provided control is
+        missing. See verify_evidence().
 
     Returns (updated_state, all_findings_list).
     """
@@ -251,7 +307,7 @@ def classify(raw_findings: list, saved: dict) -> tuple:
         fp = make_fingerprint(cat, fpath, anchor)
         seen.add(fp)
 
-        status, note = verify_evidence(raw)
+        status, note = verify_evidence(raw, server_config_present)
         try:
             line = int(raw["line"]) if raw.get("line") is not None else None
         except (TypeError, ValueError):
@@ -609,6 +665,12 @@ def has_server_config(rel_paths) -> bool:
         if any(hint in lowered for hint in _SERVER_CONFIG_HINTS):
             return True
     return False
+
+
+def project_has_server_config(project: Path) -> bool:
+    """has_server_config for a checkout on disk."""
+    return has_server_config(p.relative_to(project)
+                             for p in iter_source_files(project))
 
 
 NO_SERVER_CONFIG_NOTICE = """\
@@ -1285,7 +1347,8 @@ def run_differential(args, project: Path, backend: AuditBackend, files=None) -> 
 
     pid = get_project_id(project)
     saved = load_state(pid)
-    updated_state, all_findings = classify(raw_findings, saved)
+    updated_state, all_findings = classify(
+        raw_findings, saved, project_has_server_config(project))
     save_state(pid, updated_state)
 
     if args.json:

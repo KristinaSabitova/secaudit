@@ -114,7 +114,10 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> list[dict
         raise AuditError("backend output was not parseable as JSON findings")
     # classify() with empty saved state: builds Finding objects, redacts
     # secrets and computes fingerprints without touching CLI state files.
-    _, findings = engine.classify(raw, {})
+    # The checkout decides whether a proxy-provided control can be judged
+    # missing from here at all.
+    _, findings = engine.classify(
+        raw, {}, engine.project_has_server_config(project))
     return [asdict(f) for f in findings]
 
 
