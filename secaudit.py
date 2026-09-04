@@ -581,6 +581,46 @@ _ENTRY_POINT_STEMS = {"main", "app", "server", "index", "wsgi", "asgi",
                       "settings", "urls", "routes"}
 
 
+# Where a reverse proxy, web server or hosting platform applies the controls
+# that no application file can show: security headers, HSTS, CSP, rate
+# limiting, TLS, WAF rules. A Dockerfile or a compose file is deliberately not
+# on this list — it wires services together, it does not set headers.
+_SERVER_CONFIG_NAMES = {
+    "nginx.conf", "httpd.conf", "apache2.conf", ".htaccess", "caddyfile",
+    "haproxy.cfg", "traefik.yml", "traefik.toml", "vercel.json",
+    "netlify.toml", "fly.toml", "render.yaml", "web.config",
+}
+_SERVER_CONFIG_HINTS = ("nginx", "apache", "caddy", "haproxy", "traefik",
+                        "ingress", "cloudfront")
+
+
+def has_server_config(rel_paths) -> bool:
+    """Whether the checkout carries the layer that actually serves the app.
+
+    When it does not, the absence of a header or a rate limit from the code
+    proves nothing: it may well be applied in front of the application, by
+    something this repository never contains. Erring towards True is the safe
+    direction — it leaves the audit's judgement alone.
+    """
+    for rel in rel_paths:
+        lowered = str(rel).lower()
+        if PurePosixPath(lowered).name in _SERVER_CONFIG_NAMES:
+            return True
+        if any(hint in lowered for hint in _SERVER_CONFIG_HINTS):
+            return True
+    return False
+
+
+NO_SERVER_CONFIG_NOTICE = """\
+NO WEB SERVER OR REVERSE PROXY CONFIGURATION IS PRESENT IN THIS CHECKOUT.
+Controls normally applied at that layer — security headers, HSTS, CSP,
+X-Frame-Options, rate limiting, TLS termination, WAF rules — cannot be assessed
+from this repository. They may already be configured in a proxy, a CDN, an API
+gateway or the hosting platform, none of which are here. Report the absence of
+any such control as "unverified", and say in the note that the serving layer is
+outside this repository."""
+
+
 def _priority(rel_path: str) -> int:
     lowered = rel_path.lower()
     if PurePosixPath(lowered).stem in _ENTRY_POINT_STEMS:
@@ -648,12 +688,17 @@ def pack_repository(project: Path, budget: int = MAX_CONTEXT_CHARS) -> str:
         included.append(block)
         spent += len(block)
 
-    tree = "\n".join(f"  {p.relative_to(project)}" for p in files)
+    relatives = [p.relative_to(project) for p in files]
+    tree = "\n".join(f"  {rel}" for rel in relatives)
     parts = [
         "REPOSITORY CONTENTS:",
         f"The checkout holds {len(files)} source file(s):",
         tree,
         "",
+    ]
+    if not has_server_config(relatives):
+        parts += [NO_SERVER_CONFIG_NOTICE, ""]
+    parts += [
         "Below is the content of the files that fit, with line numbers added "
         "for reference. Quote from these when you report evidence — the line "
         "numbers are not part of the file itself.",
@@ -956,6 +1001,14 @@ given below, or the files you opened yourself if you can.
   may still report it, but you MUST mark it "unverified" and explain in
   "verification_note" what you searched for and did not find (for example:
   "no CSRF-relevant state-changing handler found in this codebase").
+- Absence is not evidence. A snippet can show that something IS there; it can
+  never show that something is NOT. So a finding whose substance is "X is
+  missing" — no CSP, no security headers, no rate limiting, no TLS, no WAF —
+  may be "verified" only when the snippet shows the very place that control is
+  configured and shows it wrong or incomplete. Quoting a file that merely does
+  not mention X is not evidence: X may be applied by a reverse proxy, a CDN, an
+  API gateway or the hosting platform, none of which need be in this
+  repository. When you cannot see that layer, mark it "unverified" and say so.
 - It is FORBIDDEN to return the generic description of a category (injection,
   authz, csrf, client_security, and the rest of the checklist above) as if it
   were a confirmed finding. A restatement of what the category means is not a

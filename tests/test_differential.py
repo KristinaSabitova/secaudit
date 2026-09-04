@@ -16,6 +16,7 @@ from secaudit import (
     MAX_SNIPPET_CHARS,
     OllamaBackend,
     pack_repository,
+    has_server_config,
     redact_secrets,
     select_backend,
     verify_evidence,
@@ -406,6 +407,24 @@ class TestPackRepository:
     def test_an_empty_checkout_says_so(self, tmp_path):
         assert "no readable source files" in pack_repository(tmp_path)
 
+    def test_a_checkout_without_a_serving_layer_says_so(self, tmp_path):
+        """Absence of a header proves nothing when the proxy is not in the repo.
+
+        secaudit's own repository is exactly this shape: nginx sets the six
+        security headers on the VPS, and an audit of the checkout alone
+        reported them as missing.
+        """
+        packed = pack_repository(self.repo(tmp_path))
+        assert "NO WEB SERVER OR REVERSE PROXY CONFIGURATION" in packed
+        assert "outside this repository" in packed
+
+    def test_a_checkout_that_ships_its_proxy_is_left_alone(self, tmp_path):
+        d = self.repo(tmp_path)
+        (d / "frontend").mkdir()
+        (d / "frontend" / "nginx.conf").write_text("server{ listen 80; }\n")
+        packed = pack_repository(d)
+        assert "NO WEB SERVER OR REVERSE PROXY CONFIGURATION" not in packed
+
     def test_an_agent_backend_is_not_handed_the_code(self, tmp_path):
         backend = ClaudeCodeBackend()
         assert backend.prepare(self.repo(tmp_path), "PROMPT") == "PROMPT"
@@ -418,6 +437,28 @@ class TestPackRepository:
 
     def test_a_local_model_gets_a_smaller_share(self):
         assert OllamaBackend().context_chars < AnthropicAPIBackend().context_chars
+
+
+class TestHasServerConfig:
+    """Whether the checkout carries the layer that serves the app."""
+
+    def test_a_proxy_config_counts(self):
+        for path in ("nginx.conf", "frontend/nginx.conf", "Caddyfile",
+                     "conf/httpd.conf", "public/.htaccess", "web.config",
+                     "deploy/traefik.toml", "k8s/ingress.yaml", "vercel.json"):
+            assert has_server_config([path]), path
+
+    def test_a_plain_application_repo_does_not(self):
+        assert not has_server_config(
+            ["web/main.py", "web/static/index.html", "README.md"])
+
+    def test_compose_and_dockerfile_do_not_count(self):
+        # They wire services together; they do not set a single header.
+        assert not has_server_config(["Dockerfile", "docker-compose.yml"])
+
+    def test_one_config_among_many_files_is_enough(self):
+        assert has_server_config(
+            ["a.py", "b.py", "frontend/nginx.conf", "c.py"])
 
 
 class TestFindingLine:
