@@ -1,0 +1,5 @@
+# The MCP server (mcp_server/) only. Deliberately not in requirements.txt:
+# the Dockerfile installs that one, and the MCP server does not run on the
+# server — it speaks stdio and is started by the MCP client on your machine.
+mcp>=2.1
+httpx>=0.27

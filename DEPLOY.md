@@ -194,6 +194,11 @@ control. Nothing but the findings leaves your machine.
    ./secaudit-runner.py https://secaudit.<domain>
    ```
 
+That token is also what the MCP server authenticates with (see the README): it
+stands in for a browser session on the API, so it reaches everything that
+account can reach, not just the runner endpoints. **delete runner token**
+revokes it for both.
+
 It polls every 15 seconds and audits only what belongs to your account; an
 admin's runner also takes the ones a webhook queued, which belong to nobody.
 A claim that goes stale (the machine slept, the process was killed) is handed

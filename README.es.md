@@ -223,16 +223,18 @@ edita a mano en el servidor; su `.env` es el único fichero que vive solo ahí.
 Ya en marcha, la máquina de Hetzner publica un único punto de entrada. nginx
 termina el TLS e impone HSTS, y reenvía a la aplicación FastAPI por la red
 interna de Compose: el puerto propio de la aplicación está atado a loopback, así
-que el proxy es la única vía de entrada. Por ahí llegan dos tipos de llamante:
-un navegador en <https://secaudit.ksabitova.dev> y las entregas de push firmadas
-con HMAC de GitHub a `POST /api/webhook/github`. Los dos acaban en el mismo
-motor, que clona el repositorio, habla con el backend LLM que esa cuenta haya
-configurado y guarda sus hallazgos en PostgreSQL.
+que el proxy es la única vía de entrada. Por ahí llegan tres tipos de llamante:
+un navegador en <https://secaudit.ksabitova.dev>, las entregas de push firmadas
+con HMAC de GitHub a `POST /api/webhook/github`, y el servidor MCP con un token
+de servicio. Los tres acaban en el mismo motor, que clona el repositorio, habla
+con el backend LLM que esa cuenta haya configurado y guarda sus hallazgos en
+PostgreSQL.
 
 ```mermaid
 flowchart LR
     subgraph local["Puesto de trabajo local"]
         ide["Cursor / VS Code<br/>secaudit.py · web/"]
+        mcpsrv["Servidor MCP<br/>mcp_server/server.py"]
     end
 
     subgraph github["GitHub"]
@@ -264,6 +266,7 @@ flowchart LR
 
     browser -->|"HTTPS · secaudit.ksabitova.dev"| nginx
     repo -->|"POST /api/webhook/github<br/>push firmado con HMAC"| nginx
+    mcpsrv -->|"HTTPS · token de servicio Bearer"| nginx
 
     nginx -->|"http://secaudit-app:8000"| api
     api --> engine
@@ -357,6 +360,72 @@ castellano e inglés. Las auditorías de webhook no tienen a quién preguntar, a
 que siguen `SECAUDIT_DEFAULT_LANGUAGE`. En la CLI es `--language es`. Solo se
 traduce la prosa: rutas, identificadores, categorías y snippets se conservan tal
 como aparecen en el código.
+
+### Servidor MCP
+
+`mcp_server/` expone una instancia desplegada a un cliente MCP, de modo que
+Claude puede lanzar auditorías y leer hallazgos sin salir de la conversación. Es
+un envoltorio y nada más: cada tool es una llamada a un endpoint de la tabla de
+arriba, y el motor, la cola y la base de datos se quedan detrás de la API.
+
+```bash
+pip install -r requirements-mcp.txt
+```
+
+Se autentica con un **token de servicio**, no con la clave BYOK que cada usuario
+introduce en el panel. Emite uno en el panel de backend con **create runner
+token** — el mismo token que usa un runner, mostrado una sola vez y guardado
+solo como hash SHA-256. Tiene la misma autoridad que una sesión de navegador
+para esa cuenta, así que trátalo como una credencial del mismo peso; **delete
+runner token** lo revoca.
+
+| Variable | Por defecto | Para qué sirve |
+| --- | --- | --- |
+| `SECAUDIT_API_URL` | `https://secaudit.ksabitova.dev` | la instancia con la que habla |
+| `SECAUDIT_MCP_TOKEN` | — | el token de servicio, enviado como `Authorization: Bearer` |
+
+Para registrarlo en **Claude Desktop**, añade esto a
+`~/Library/Application Support/Claude/claude_desktop_config.json` (en Windows,
+`%APPDATA%\Claude\claude_desktop_config.json`) y reinicia la aplicación:
+
+```json
+{
+  "mcpServers": {
+    "secaudit": {
+      "command": "python3",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/ruta/a/secaudit",
+      "env": {
+        "SECAUDIT_API_URL": "https://secaudit.ksabitova.dev",
+        "SECAUDIT_MCP_TOKEN": "tu-token-de-servicio"
+      }
+    }
+  }
+}
+```
+
+En **Claude Code**, desde la raíz del repositorio:
+
+```bash
+claude mcp add secaudit \
+  --env SECAUDIT_API_URL=https://secaudit.ksabitova.dev \
+  --env SECAUDIT_MCP_TOKEN=tu-token-de-servicio \
+  -- python3 -m mcp_server.server
+```
+
+| Tool | Llama a | Qué hace |
+| --- | --- | --- |
+| `launch_audit(repo_url, language)` | `POST /api/audits` | encola una auditoría y devuelve el id que hay que sondear |
+| `get_audit(audit_id, verified_only)` | `GET /api/audits/{id}` | la auditoría y sus hallazgos, con la evidencia de cada uno |
+| `list_audits(limit)` | `GET /api/audits` | auditorías recientes, de más nueva a más antigua |
+| `check_health()` | `GET /api/health` | si la instancia está en pie; no necesita token |
+| `get_backend_status()` | `GET /api/settings` | el backend con el que correrán las auditorías de esta cuenta; nunca la clave |
+
+Aquí las auditorías también son asíncronas: `launch_audit` responde `pending` y
+es `get_audit` quien acaba devolviendo los hallazgos. Las tools informan de un
+fallo como texto legible en vez de lanzar una excepción, así que un token
+revocado o una instancia inalcanzable llegan como algo sobre lo que el modelo
+puede actuar.
 
 Define `GITHUB_WEBHOOK_SECRET` para habilitar el webhook — sin esa variable el
 endpoint rechaza toda entrega con 503 en lugar de aceptarlas sin verificar.

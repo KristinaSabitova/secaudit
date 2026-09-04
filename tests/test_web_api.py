@@ -560,6 +560,83 @@ class TestRunnerQueue:
         assert r.status_code == 409
 
 
+class TestServiceTokenAuth:
+    """A service token stands in for the session cookie, for the MCP server."""
+
+    def bearer(self, token):
+        return {"Authorization": f"Bearer {token}"}
+
+    def issue(self, client, signed_in):
+        token = client.post("/api/runner/token").json()["token"]
+        client.cookies.clear()          # from here on, only the token speaks
+        return token
+
+    def test_it_reads_audits_without_a_cookie(self, client, signed_in,
+                                              clone_from_sample):
+        client.post("/api/audits",
+                    json={"repo_url": "https://github.com/acme/sample"})
+        token = self.issue(client, signed_in)
+
+        listed = client.get("/api/audits", headers=self.bearer(token))
+        assert listed.status_code == 200
+        assert len(listed.json()) == 1
+
+        audit_id = listed.json()[0]["id"]
+        one = client.get(f"/api/audits/{audit_id}", headers=self.bearer(token))
+        assert one.status_code == 200
+        assert "findings" in one.json()
+
+    def test_it_queues_an_audit(self, client, signed_in, clone_from_sample):
+        token = self.issue(client, signed_in)
+        r = client.post("/api/audits", headers=self.bearer(token),
+                        json={"repo_url": "https://github.com/acme/sample"})
+        assert r.status_code == 202
+        assert r.json()["repo_url"] == "https://github.com/acme/sample.git"
+
+    def test_it_reads_settings_but_never_the_key(self, client, signed_in,
+                                                 master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-secret"})
+        token = self.issue(client, signed_in)
+
+        body = client.get("/api/settings", headers=self.bearer(token)).json()
+        assert body["api_key_set"] is True
+        assert "sk-ant-secret" not in json.dumps(body)
+
+    def test_the_audits_it_sees_are_the_issuing_account_s(self, client,
+                                                          signed_in,
+                                                          clone_from_sample):
+        # signed_in is the admin, so use a second, ordinary account.
+        client.post("/api/audits",
+                    json={"repo_url": "https://github.com/acme/sample"})
+        sign_in(client, github_id=7, login="other")
+        token = self.issue(client, signed_in)
+
+        listed = client.get("/api/audits", headers=self.bearer(token)).json()
+        assert listed == []
+
+    def test_an_invalid_token_is_still_refused(self, client):
+        assert client.get("/api/audits",
+                          headers=self.bearer("nope")).status_code == 401
+
+    def test_a_revoked_token_stops_reading_audits(self, client, signed_in):
+        token = client.post("/api/runner/token").json()["token"]
+        client.delete("/api/runner/token")
+        client.cookies.clear()
+        assert client.get("/api/audits",
+                          headers=self.bearer(token)).status_code == 401
+
+    def test_no_header_behaves_exactly_as_before(self, client):
+        assert client.get("/api/audits").status_code == 401
+        assert client.get("/api/me").json()["user"] is None
+
+    def test_a_malformed_header_is_not_a_way_in(self, client, signed_in):
+        token = self.issue(client, signed_in)
+        for header in ({"Authorization": token},
+                       {"Authorization": f"Basic {token}"},
+                       {"Authorization": "Bearer "}):
+            assert client.get("/api/audits", headers=header).status_code == 401
+
+
 class TestDeleteAudit:
     def test_the_owner_can_delete_and_findings_go_too(self, client, signed_in,
                                                       clone_from_sample):

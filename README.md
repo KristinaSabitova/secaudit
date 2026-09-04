@@ -220,16 +220,17 @@ server is edited by hand; its `.env` is the only file that lives only there.
 Once running, the Hetzner box publishes a single public entry point. nginx
 terminates TLS and enforces HSTS, then forwards to the FastAPI app on the
 internal Compose network — the app's own port is bound to loopback, so the
-proxy is the only way in. Two kinds of caller arrive through it: a browser on
-<https://secaudit.ksabitova.dev> and GitHub's HMAC-signed push deliveries to
-`POST /api/webhook/github`. Both end up at the same engine, which clones the
-repository, talks to whichever LLM backend that account configured, and stores
-its findings in PostgreSQL.
+proxy is the only way in. Three kinds of caller arrive through it: a browser on
+<https://secaudit.ksabitova.dev>, GitHub's HMAC-signed push deliveries to
+`POST /api/webhook/github`, and the MCP server with a service token. All three
+end up at the same engine, which clones the repository, talks to whichever LLM
+backend that account configured, and stores its findings in PostgreSQL.
 
 ```mermaid
 flowchart LR
     subgraph local["Local workstation"]
         ide["Cursor / VS Code<br/>secaudit.py · web/"]
+        mcpsrv["MCP server<br/>mcp_server/server.py"]
     end
 
     subgraph github["GitHub"]
@@ -261,6 +262,7 @@ flowchart LR
 
     browser -->|"HTTPS · secaudit.ksabitova.dev"| nginx
     repo -->|"POST /api/webhook/github<br/>HMAC-signed push"| nginx
+    mcpsrv -->|"HTTPS · Bearer service token"| nginx
 
     nginx -->|"http://secaudit-app:8000"| api
     api --> engine
@@ -352,6 +354,70 @@ English and Spanish. Webhook audits have no caller to ask, so they follow
 `SECAUDIT_DEFAULT_LANGUAGE`. The CLI takes the same choice as `--language es`.
 Only prose is translated: paths, identifiers, categories and snippets are kept
 as they appear in the code.
+
+### MCP server
+
+`mcp_server/` exposes a deployed instance to an MCP client, so Claude can
+launch audits and read findings without leaving the conversation. It is a thin
+wrapper and nothing more: every tool is one call to an endpoint from the table
+above, and the engine, the queue and the database stay behind the API.
+
+```bash
+pip install -r requirements-mcp.txt
+```
+
+It authenticates with a **service token**, not with the BYOK API key each user
+enters in the dashboard. Issue one in the backend panel with **create runner
+token** — the same token a runner uses, shown once and stored only as a SHA-256
+hash. It carries the same authority as a browser session for that account, so
+treat it as a credential of the same weight; **delete runner token** revokes it.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECAUDIT_API_URL` | `https://secaudit.ksabitova.dev` | the instance to talk to |
+| `SECAUDIT_MCP_TOKEN` | — | the service token, sent as `Authorization: Bearer` |
+
+Register it in **Claude Desktop** by adding this to
+`~/Library/Application Support/Claude/claude_desktop_config.json` (on Windows,
+`%APPDATA%\Claude\claude_desktop_config.json`) and restarting the app:
+
+```json
+{
+  "mcpServers": {
+    "secaudit": {
+      "command": "python3",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/path/to/secaudit",
+      "env": {
+        "SECAUDIT_API_URL": "https://secaudit.ksabitova.dev",
+        "SECAUDIT_MCP_TOKEN": "your-service-token"
+      }
+    }
+  }
+}
+```
+
+In **Claude Code**, from the repository root:
+
+```bash
+claude mcp add secaudit \
+  --env SECAUDIT_API_URL=https://secaudit.ksabitova.dev \
+  --env SECAUDIT_MCP_TOKEN=your-service-token \
+  -- python3 -m mcp_server.server
+```
+
+| Tool | Calls | What it does |
+| --- | --- | --- |
+| `launch_audit(repo_url, language)` | `POST /api/audits` | queues an audit and returns the id to poll |
+| `get_audit(audit_id, verified_only)` | `GET /api/audits/{id}` | the audit and its findings, with the evidence behind each |
+| `list_audits(limit)` | `GET /api/audits` | recent audits, newest first |
+| `check_health()` | `GET /api/health` | whether the instance is up; needs no token |
+| `get_backend_status()` | `GET /api/settings` | the backend this account's audits run with; never the key |
+
+Audits are asynchronous here too: `launch_audit` answers `pending` and
+`get_audit` is what eventually returns findings. The tools report a failure as
+readable text rather than raising, so a revoked token or an unreachable
+instance comes back as something the model can act on.
 
 Set `GITHUB_WEBHOOK_SECRET` to enable the webhook — without it the endpoint
 refuses every delivery with 503 rather than accepting unverified ones.

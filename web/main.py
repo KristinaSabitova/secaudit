@@ -179,12 +179,34 @@ def redirect_uri(request: Request) -> str:
     return f"{public_url(request)}/api/auth/callback"
 
 
+def bearer_token(authorization: str | None) -> str | None:
+    """The token out of an Authorization header, if it carries one.
+
+    'Bearer' with nothing after it is a malformed header, not a token: it has
+    to read as absent rather than raise on the missing second half.
+    """
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    return token.strip() or None
+
+
 def current_user(session: Session = Depends(db_session),
-                 secaudit_session: str | None = Cookie(default=None)) -> User | None:
+                 secaudit_session: str | None = Cookie(default=None),
+                 authorization: str | None = Header(default=None)) -> User | None:
     owner = auth.single_user(session)
     if owner is not None:
         return owner
-    return auth.user_for_token(session, secaudit_session)
+    user = auth.user_for_token(session, secaudit_session)
+    if user is not None:
+        return user
+    # A service token — a runner, the MCP server — stands in for the cookie:
+    # it names the same account and is stored only as a hash. It therefore
+    # carries the same authority as a browser session, so it is a credential
+    # of the same weight and not a lesser, runner-only one.
+    return runnerqueue.user_for_token(session, bearer_token(authorization))
 
 
 def require_user(user: User | None = Depends(current_user)) -> User:
@@ -406,10 +428,7 @@ class RunnerResult(BaseModel):
 
 def runner_user(session: Session = Depends(db_session),
                 authorization: str | None = Header(default=None)) -> User:
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split(None, 1)[1].strip()
-    user = runnerqueue.user_for_token(session, token)
+    user = runnerqueue.user_for_token(session, bearer_token(authorization))
     if user is None:
         raise HTTPException(status_code=401, detail="invalid runner token")
     return user
