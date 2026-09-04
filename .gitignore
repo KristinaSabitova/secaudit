@@ -11,3 +11,4 @@ build/
 !.env.example
 *.secret
 secaudit-web.db
+.DS_Store
