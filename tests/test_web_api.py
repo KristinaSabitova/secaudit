@@ -49,6 +49,10 @@ def clean_backend_env(monkeypatch):
                  web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
                  web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV):
         monkeypatch.delenv(name, raising=False)
+    # Signing in is now closed unless the instance says otherwise, so the tests
+    # that are not about the guest list run against an instance that is open on
+    # purpose. TestGuestList covers the default.
+    monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, web_auth.OPEN_REGISTRATION)
     monkeypatch.setattr(web_engine.engine, "load_config", dict)
 
 
@@ -169,8 +173,9 @@ def sign_in(client, github_id=4242, login="kris", name="Kris"):
 
 
 @pytest.fixture
-def signed_in(client):
-    """The first account to sign in, which administers the instance."""
+def signed_in(client, monkeypatch):
+    """The account this instance names as its administrator."""
+    monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
     return sign_in(client)
 
 
@@ -420,16 +425,57 @@ class TestSignIn:
                        follow_redirects=False)
         assert r.status_code == 400
 
-    def test_the_first_account_administers_the_instance(self, client):
+    def test_arriving_first_does_not_administer_the_instance(self, client):
+        """An audit of this repository caught the first arrival becoming admin.
+
+        On a reachable instance that is a race a stranger wins by signing in
+        before the owner, and an admin reads every user\'s audits.
+        """
         first = sign_in(client, github_id=1, login="first")
         second = sign_in(client, github_id=2, login="second")
-        assert first.is_admin is True
+        assert first.is_admin is False
         assert second.is_admin is False
+
+    def test_the_admin_is_named_even_after_others_signed_in(self, client,
+                                                            monkeypatch):
+        sign_in(client, github_id=1, login="first")
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
+        assert sign_in(client, github_id=2, login="kris").is_admin is True
+
+    def test_a_demoted_login_loses_administration(self, client, monkeypatch):
+        """is_admin is recomputed on every sign-in, so it tracks the variable."""
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
+        assert sign_in(client, github_id=1, login="kris").is_admin is True
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "someone-else")
+        assert sign_in(client, github_id=1, login="kris").is_admin is False
 
     def test_the_named_account_administers_the_instance(self, client, monkeypatch):
         monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
         assert sign_in(client, github_id=1, login="someone").is_admin is False
         assert sign_in(client, github_id=2, login="kris").is_admin is True
+
+
+class TestStartupConfig:
+    """An instance that can be signed into has to say who administers it."""
+
+    def test_boot_fails_when_no_administrator_is_named(self, monkeypatch):
+        monkeypatch.setenv(web_auth.CLIENT_ID_ENV, "id")
+        monkeypatch.setenv(web_auth.CLIENT_SECRET_ENV, "secret")
+        monkeypatch.delenv(web_auth.ADMIN_LOGIN_ENV, raising=False)
+        with pytest.raises(RuntimeError) as excinfo:
+            web_auth.check_startup_config()
+        assert web_auth.ADMIN_LOGIN_ENV in str(excinfo.value)
+
+    def test_boot_is_fine_once_one_is_named(self, monkeypatch):
+        monkeypatch.setenv(web_auth.CLIENT_ID_ENV, "id")
+        monkeypatch.setenv(web_auth.CLIENT_SECRET_ENV, "secret")
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "kris")
+        web_auth.check_startup_config()
+
+    def test_an_instance_without_sign_in_is_not_asked_for_one(self, monkeypatch):
+        """No OAuth app means nobody reaches upsert_user at all."""
+        monkeypatch.delenv(web_auth.ADMIN_LOGIN_ENV, raising=False)
+        web_auth.check_startup_config()
 
 
 class TestSingleUserMode:
@@ -544,8 +590,9 @@ class TestRunnerQueue:
                            headers=self.bearer(token)).json()["id"] == audit_id
 
     def test_a_runner_sees_only_its_owners_audits(self, client, master_key,
-                                                  clone_from_sample):
-        sign_in(client, github_id=1, login="admin")          # first: admin
+                                                  clone_from_sample, monkeypatch):
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "admin")
+        sign_in(client, github_id=1, login="admin")
         sign_in(client, github_id=2, login="other")
         self.queue_claude_code_audit(client, master_key, clone_from_sample)
         other_token = client.post("/api/runner/token").json()["token"]
@@ -695,8 +742,9 @@ class TestDeleteAudit:
         assert len(stored_audits()) == 1        # still there
 
     def test_an_admin_can_delete_any_audit(self, client, webhook_secret,
-                                           clone_from_sample):
-        sign_in(client, github_id=1, login="admin")          # first: admin
+                                           clone_from_sample, monkeypatch):
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "admin")
+        sign_in(client, github_id=1, login="admin")
         audit_id = deliver(client, push_payload()).json()["id"]
         assert client.delete(f"/api/audits/{audit_id}").status_code == 204
         assert stored_audits() == []
@@ -714,10 +762,36 @@ class TestDeleteAudit:
 
 
 class TestGuestList:
-    """Empty guest list means anyone with a GitHub account may sign in."""
+    """An empty guest list closes the instance; opening it is a choice."""
 
-    def test_anyone_may_sign_in_by_default(self, client):
+    def test_nobody_may_sign_in_by_default(self, client, monkeypatch):
+        """An audit of this repository caught the unset variable meaning "anyone".
+
+        Forgetting to configure a guest list should not be what publishes the
+        instance, so an empty one now admits nobody.
+        """
+        monkeypatch.delenv(web_auth.ALLOWED_LOGINS_ENV, raising=False)
         assert web_auth.allowed_logins() == set()
+        assert web_auth.registration_is_open() is False
+        with pytest.raises(web_auth.NotInvited):
+            sign_in(client, github_id=9, login="stranger")
+
+    def test_the_closed_message_does_not_describe_the_instance(self, client,
+                                                               monkeypatch):
+        """It is served to a stranger, so it says nothing about the guest list."""
+        monkeypatch.delenv(web_auth.ALLOWED_LOGINS_ENV, raising=False)
+        with pytest.raises(web_auth.NotInvited) as excinfo:
+            sign_in(client, github_id=9, login="stranger")
+        assert web_auth.ALLOWED_LOGINS_ENV not in str(excinfo.value)
+
+    def test_registration_opens_only_on_purpose(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV,
+                           web_auth.OPEN_REGISTRATION)
+        assert web_auth.registration_is_open() is True
+        assert sign_in(client, github_id=9, login="stranger").login == "stranger"
+
+    def test_a_wildcard_among_names_still_opens_it(self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris, *")
         assert sign_in(client, github_id=9, login="stranger").login == "stranger"
 
     def test_only_invited_logins_may_sign_in(self, client, monkeypatch):
@@ -726,6 +800,16 @@ class TestGuestList:
         assert sign_in(client, github_id=2, login="someone-else")
         with pytest.raises(web_auth.NotInvited):
             sign_in(client, github_id=3, login="stranger")
+
+    def test_a_closed_instance_refuses_the_callback(self, client, monkeypatch):
+        monkeypatch.delenv(web_auth.ALLOWED_LOGINS_ENV, raising=False)
+        monkeypatch.setenv(web_auth.CLIENT_ID_ENV, "id")
+        monkeypatch.setenv(web_auth.CLIENT_SECRET_ENV, "secret")
+        monkeypatch.setattr(web_auth, "exchange_code",
+                            lambda code, uri: {"id": 7, "login": "stranger"})
+        client.cookies.set(web_main.OAUTH_STATE_COOKIE, "s")
+        r = client.get("/api/auth/callback?code=c&state=s", follow_redirects=False)
+        assert r.status_code == 403
 
     def test_an_uninvited_callback_is_403(self, client, monkeypatch):
         monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris")
@@ -751,8 +835,9 @@ class TestPerUserIsolation:
         assert client.get(f"/api/audits/{mine['id']}").status_code == 404
 
     def test_an_admin_sees_every_audit(self, client, webhook_secret,
-                                       clone_from_sample):
-        sign_in(client, github_id=1, login="admin")          # first, so admin
+                                       clone_from_sample, monkeypatch):
+        monkeypatch.setenv(web_auth.ADMIN_LOGIN_ENV, "admin")
+        sign_in(client, github_id=1, login="admin")
         sign_in(client, github_id=2, login="other")
         client.post("/api/audits", json={"repo_url": "https://github.com/acme/sample"})
         deliver(client, push_payload())                      # owned by nobody

@@ -1,5 +1,6 @@
 """FastAPI app exposing the secaudit engine over HTTP."""
 
+import logging
 import os
 import secrets
 import shutil
@@ -34,6 +35,8 @@ from .webhook import (
     webhook_secret,
 )
 
+log = logging.getLogger(__name__)
+
 INTERRUPTED = "interrupted: the service restarted while this audit was running"
 BACKENDS = ("anthropic-api", "openai-api", "ollama", "claude-code")
 
@@ -60,6 +63,13 @@ def fail_interrupted_audits() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    auth.check_startup_config()
+    if auth.is_configured() and not auth.allowed_logins():
+        log.warning(
+            "%s is empty, so no GitHub account can sign in. Name the logins "
+            "allowed, or set it to '%s' to accept anyone on purpose.",
+            auth.ALLOWED_LOGINS_ENV, auth.OPEN_REGISTRATION,
+        )
     fail_interrupted_audits()
     yield
 

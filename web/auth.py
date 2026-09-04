@@ -23,6 +23,10 @@ CLIENT_ID_ENV = "GITHUB_OAUTH_CLIENT_ID"
 CLIENT_SECRET_ENV = "GITHUB_OAUTH_CLIENT_SECRET"
 ADMIN_LOGIN_ENV = "SECAUDIT_ADMIN_GITHUB_LOGIN"
 ALLOWED_LOGINS_ENV = "SECAUDIT_ALLOWED_GITHUB_LOGINS"
+# The one value of ALLOWED_LOGINS_ENV that opens the instance to any GitHub
+# account. Spelling it out is deliberate: an unset variable now closes the
+# instance, so nobody opens it to the world by forgetting to set something.
+OPEN_REGISTRATION = "*"
 # Names the sole owner of a personal instance, which then needs no sign-in.
 # Only safe while the app is bound to loopback: it authenticates nobody.
 SINGLE_USER_ENV = "SECAUDIT_SINGLE_USER"
@@ -60,14 +64,30 @@ def _credentials() -> tuple[str, str]:
 
 
 def allowed_logins() -> set[str]:
-    """GitHub logins allowed to sign in. Empty means anyone may."""
+    """GitHub logins allowed to sign in. Empty means nobody may."""
     raw = os.environ.get(ALLOWED_LOGINS_ENV, "")
     return {name.strip().lower() for name in raw.split(",") if name.strip()}
 
 
+def registration_is_open() -> bool:
+    """Whether this instance accepts any GitHub account, by explicit choice."""
+    return OPEN_REGISTRATION in allowed_logins()
+
+
 def check_invited(login: str) -> None:
+    """Refuse an account this instance has not been told to admit.
+
+    An unset guest list used to mean "anyone", which made an open instance the
+    result of not configuring one. It now means "nobody": whoever may sign in
+    is named, or OPEN_REGISTRATION is set to say the instance is public on
+    purpose. The message stays vague because it is served to a stranger.
+    """
     allowed = allowed_logins()
-    if allowed and login.lower() not in allowed:
+    if not allowed:
+        raise NotInvited("this instance is not accepting sign-ins")
+    if OPEN_REGISTRATION in allowed:
+        return
+    if login.lower() not in allowed:
         raise NotInvited(f"{login} is not on this instance\'s guest list")
 
 
@@ -77,6 +97,24 @@ def is_configured() -> bool:
         return True
     except AuthUnavailable:
         return False
+
+
+def check_startup_config() -> None:
+    """Refuse to boot on a configuration that would authorise the wrong people.
+
+    Both of the defaults this guards used to be silent. No administrator named
+    meant the first account to arrive became one; an empty guest list meant
+    everyone. They fail closed now, and an instance with sign-in enabled has to
+    say out loud who runs it.
+    """
+    if not is_configured():
+        return          # sign-in is off entirely, so nobody reaches upsert_user
+    if not os.environ.get(ADMIN_LOGIN_ENV, "").strip():
+        raise RuntimeError(
+            f"{ADMIN_LOGIN_ENV} is not set. Name the GitHub login that "
+            "administers this instance: it is no longer granted to whoever "
+            "signs in first."
+        )
 
 
 def authorize_url(state: str, redirect_uri: str) -> str:
@@ -149,13 +187,13 @@ def upsert_user(session: Session, profile: dict) -> User:
     user.name = str(profile.get("name") or "")[:200] or None
     user.avatar_url = str(profile.get("avatar_url") or "")[:512] or None
 
-    # The account named in the environment administers the instance; so does
-    # the very first account to sign in, so a fresh install is never locked out.
+    # Only the account named in the environment administers the instance.
+    # This used to fall back to "the first account to sign in", which on a
+    # reachable instance is a race a stranger wins by signing in before the
+    # owner does — and an admin reads every user's audits. Bootstrapping an
+    # administrator is an out-of-band act now, never a matter of arriving first.
     admin_login = os.environ.get(ADMIN_LOGIN_ENV, "").strip().lower()
-    if admin_login:
-        user.is_admin = user.login.lower() == admin_login
-    elif session.scalar(select(User).where(User.is_admin.is_(True))) is None:
-        user.is_admin = True
+    user.is_admin = bool(admin_login) and user.login.lower() == admin_login
 
     session.commit()
     return user
