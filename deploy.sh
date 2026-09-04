@@ -5,7 +5,9 @@
 #   ./deploy.sh --check         # connectivity and prerequisites only, no changes
 #   ./deploy.sh --tunnel        # forward the dashboard to this machine over SSH
 #
-# The server's .env is never touched: it holds the secrets and lives only there.
+# The sync deletes whatever is not here, so anything the server is meant to
+# keep has to be excluded below. The .env holds the secrets and lives only
+# there; backups/ is where a dump taken before a migration can safely sit.
 set -euo pipefail
 
 HOST="${SECAUDIT_SSH_HOST:?set SECAUDIT_SSH_HOST, e.g. kris@vps.example.com}"
@@ -38,6 +40,7 @@ rsync -az --delete \
   --exclude '.venv/' \
   --exclude '.env' \
   --exclude '*.db' \
+  --exclude 'backups/' \
   -e "ssh -i $KEY" \
   ./ "$HOST:$REMOTE_DIR/"
 
