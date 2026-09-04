@@ -209,6 +209,76 @@ secaudit.py baseline .
 secaudit.py baseline /path/to/project
 ```
 
+## Architecture and deployment
+
+Development happens on a local machine and reaches production in two separate
+directions: code goes to GitHub with `git push`, and a release goes to the
+server with `./deploy.sh`, which rsyncs the working tree over SSH — an RSA key
+pair, no passwords — and rebuilds the Compose stack there. Nothing on the
+server is edited by hand; its `.env` is the only file that lives only there.
+
+Once running, the Hetzner box publishes a single public entry point. nginx
+terminates TLS and enforces HSTS, then forwards to the FastAPI app on the
+internal Compose network — the app's own port is bound to loopback, so the
+proxy is the only way in. Two kinds of caller arrive through it: a browser on
+<https://secaudit.ksabitova.dev> and GitHub's HMAC-signed push deliveries to
+`POST /api/webhook/github`. Both end up at the same engine, which clones the
+repository, talks to whichever LLM backend that account configured, and stores
+its findings in PostgreSQL.
+
+```mermaid
+flowchart LR
+    subgraph local["Local workstation"]
+        ide["Cursor / VS Code<br/>secaudit.py · web/"]
+    end
+
+    subgraph github["GitHub"]
+        repo["Central repo<br/>KristinaSabitova/secaudit"]
+    end
+
+    browser["Browser"]
+
+    subgraph hetzner["Hetzner VPS · public IP"]
+        sshd["sshd :22<br/>RSA key pair"]
+        nginx["nginx<br/>reverse proxy · TLS + HSTS"]
+        subgraph compose["docker compose"]
+            api["FastAPI<br/>web/main.py"]
+            engine["Audit engine<br/>secaudit.py<br/>one process per audit"]
+            pg[("PostgreSQL 16")]
+        end
+    end
+
+    subgraph backends["Interchangeable LLM backends · BYOK"]
+        cc["Claude Code"]
+        anthropic["Anthropic API"]
+        openai["OpenAI API"]
+        ollama["Ollama"]
+    end
+
+    ide -->|"git push"| repo
+    ide -->|"./deploy.sh · rsync over SSH"| sshd
+    sshd -.->|"docker compose up -d --build"| compose
+
+    browser -->|"HTTPS · secaudit.ksabitova.dev"| nginx
+    repo -->|"POST /api/webhook/github<br/>HMAC-signed push"| nginx
+
+    nginx -->|"http://secaudit-app:8000"| api
+    api --> engine
+    api <--> pg
+    engine -->|"git clone"| repo
+    engine --> cc
+    engine --> anthropic
+    engine --> openai
+    engine --> ollama
+```
+
+Each audit runs in its own process: credentials reach the engine through
+environment variables, which are global to a process, so a process per audit is
+what keeps one account's key out of another's concurrent run. The four backends
+are interchangeable and every account brings its own key — the instance itself
+holds none, which is why `/api/health` can report a backend it cannot use while
+audits still run fine.
+
 ## Web app
 
 The same engine is exposed over HTTP by `web/`, with a dashboard for submitting

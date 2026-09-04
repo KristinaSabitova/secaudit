@@ -212,6 +212,77 @@ secaudit baseline .
 secaudit baseline /ruta/al/proyecto
 ```
 
+## Arquitectura y despliegue
+
+El desarrollo ocurre en la máquina local y llega a producción por dos caminos
+distintos: el código va a GitHub con `git push`, y la release va al servidor con
+`./deploy.sh`, que sincroniza el árbol de trabajo por SSH mediante rsync —un par
+de claves RSA, sin contraseñas— y reconstruye allí la pila de Compose. Nada se
+edita a mano en el servidor; su `.env` es el único fichero que vive solo ahí.
+
+Ya en marcha, la máquina de Hetzner publica un único punto de entrada. nginx
+termina el TLS e impone HSTS, y reenvía a la aplicación FastAPI por la red
+interna de Compose: el puerto propio de la aplicación está atado a loopback, así
+que el proxy es la única vía de entrada. Por ahí llegan dos tipos de llamante:
+un navegador en <https://secaudit.ksabitova.dev> y las entregas de push firmadas
+con HMAC de GitHub a `POST /api/webhook/github`. Los dos acaban en el mismo
+motor, que clona el repositorio, habla con el backend LLM que esa cuenta haya
+configurado y guarda sus hallazgos en PostgreSQL.
+
+```mermaid
+flowchart LR
+    subgraph local["Puesto de trabajo local"]
+        ide["Cursor / VS Code<br/>secaudit.py · web/"]
+    end
+
+    subgraph github["GitHub"]
+        repo["Repo central<br/>KristinaSabitova/secaudit"]
+    end
+
+    browser["Navegador"]
+
+    subgraph hetzner["VPS Hetzner · IP pública"]
+        sshd["sshd :22<br/>par de claves RSA"]
+        nginx["nginx<br/>reverse proxy · TLS + HSTS"]
+        subgraph compose["docker compose"]
+            api["FastAPI<br/>web/main.py"]
+            engine["Motor de auditoría<br/>secaudit.py<br/>un proceso por auditoría"]
+            pg[("PostgreSQL 16")]
+        end
+    end
+
+    subgraph backends["Backends LLM intercambiables · BYOK"]
+        cc["Claude Code"]
+        anthropic["Anthropic API"]
+        openai["OpenAI API"]
+        ollama["Ollama"]
+    end
+
+    ide -->|"git push"| repo
+    ide -->|"./deploy.sh · rsync por SSH"| sshd
+    sshd -.->|"docker compose up -d --build"| compose
+
+    browser -->|"HTTPS · secaudit.ksabitova.dev"| nginx
+    repo -->|"POST /api/webhook/github<br/>push firmado con HMAC"| nginx
+
+    nginx -->|"http://secaudit-app:8000"| api
+    api --> engine
+    api <--> pg
+    engine -->|"git clone"| repo
+    engine --> cc
+    engine --> anthropic
+    engine --> openai
+    engine --> ollama
+```
+
+Cada auditoría corre en su propio proceso: las credenciales llegan al motor por
+variables de entorno, que son globales al proceso, así que un proceso por
+auditoría es lo que mantiene la clave de una cuenta fuera de la ejecución
+simultánea de otra. Los cuatro backends son intercambiables y cada cuenta pone
+su propia clave —la instancia no guarda ninguna—, y por eso `/api/health` puede
+informar de un backend que él no puede usar mientras las auditorías siguen
+funcionando.
+
 ## Aplicación web
 
 `web/` expone el mismo motor por HTTP, con un panel para lanzar auditorías y
