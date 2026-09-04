@@ -24,7 +24,7 @@ from .engine import (AuditError, backend_config, backend_status, run_audit,
 from .gitclone import CloneError, clone_repo, validate_repo_url
 from .models import (LANGUAGES, Audit, User, audit_to_dict, finding_from_dict,
                      summarize)
-from .settings import SecretsUnavailable
+from .settings import InvalidOllamaURL, SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
     SIGNATURE_HEADER,
@@ -419,6 +419,10 @@ def put_settings(req: SettingsRequest, user: User = Depends(require_user),
         settings_store.save(session, user.id, backend=backend, model=req.model,
                             ollama_url=req.ollama_url, api_key=req.api_key,
                             clear_api_key=req.clear_api_key)
+    except InvalidOllamaURL as e:
+        # The server is the one that would fetch this address, so a rejected
+        # one is the caller's mistake, not a failure of the instance.
+        raise HTTPException(status_code=400, detail=str(e))
     except SecretsUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
     return settings_response(session, user.id)

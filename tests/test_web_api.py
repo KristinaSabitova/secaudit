@@ -47,7 +47,8 @@ def clean_backend_env(monkeypatch):
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
                  web_auth.ADMIN_LOGIN_ENV, web_auth.ALLOWED_LOGINS_ENV,
                  web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
-                 web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV):
+                 web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV,
+                 web_settings.ALLOWED_OLLAMA_HOSTS_ENV):
         monkeypatch.delenv(name, raising=False)
     # Signing in is now closed unless the instance says otherwise, so the tests
     # that are not about the guest list run against an instance that is open on
@@ -823,6 +824,87 @@ class TestGuestList:
         assert "guest list" in r.json()["detail"]
 
 
+class TestOllamaURLValidation:
+    """The server fetches this address, so the caller cannot pick it freely.
+
+    An audit of this repository caught ollama_url being stored unvalidated and
+    then requested by the server, which handed the caller back what it found —
+    a port scanner aimed at whatever the container can reach.
+    """
+
+    def valid(self, url):
+        return web_settings.validate_ollama_url(url)
+
+    def rejects(self, url):
+        with pytest.raises(web_settings.InvalidOllamaURL):
+            web_settings.validate_ollama_url(url)
+
+    def test_a_non_http_scheme_is_refused(self):
+        for url in ("file:///etc/passwd", "ftp://host/x", "gopher://host:70"):
+            self.rejects(url)
+
+    def test_a_url_with_credentials_or_a_path_is_refused(self):
+        self.rejects("http://user:pw@example.com:11434")
+        self.rejects("http://example.com:11434/admin")
+        self.rejects("http://example.com:11434/?x=1")
+
+    def test_an_empty_url_is_left_alone(self):
+        """Clearing the field is not an address to check."""
+        assert self.valid("") == ""
+
+    def test_a_hosted_instance_refuses_internal_addresses(self, monkeypatch):
+        monkeypatch.delenv(web_auth.SINGLE_USER_ENV, raising=False)
+        for url in ("http://127.0.0.1:11434", "http://10.0.0.5:11434",
+                    "http://192.168.1.10:11434", "http://169.254.169.254",
+                    "http://[::1]:11434"):
+            self.rejects(url)
+
+    def test_a_hosted_instance_refuses_a_host_it_cannot_resolve(self, monkeypatch):
+        monkeypatch.delenv(web_auth.SINGLE_USER_ENV, raising=False)
+        self.rejects("http://ollama:11434")
+
+    def test_an_allowlisted_host_is_accepted_however_it_resolves(self, monkeypatch):
+        """The operator naming a host is the decision; DNS does not overrule it."""
+        monkeypatch.setenv(web_settings.ALLOWED_OLLAMA_HOSTS_ENV, "ollama, gpu-box")
+        assert self.valid("http://ollama:11434") == "http://ollama:11434"
+        assert self.valid("http://gpu-box:11434/") == "http://gpu-box:11434"
+        self.rejects("http://somewhere-else:11434")
+
+    def test_a_personal_instance_may_reach_its_own_machine(self, monkeypatch):
+        """The free backend runs on loopback; a personal instance must keep it.
+
+        Its operator and its only user are the same person, so there is nobody
+        to pivot away from.
+        """
+        monkeypatch.setenv(web_auth.SINGLE_USER_ENV, "kris")
+        assert self.valid("http://localhost:11434") == "http://localhost:11434"
+        assert self.valid("http://host.docker.internal:11434")
+
+    def test_the_shape_is_checked_even_on_a_personal_instance(self, monkeypatch):
+        monkeypatch.setenv(web_auth.SINGLE_USER_ENV, "kris")
+        self.rejects("file:///etc/passwd")
+
+    def test_the_api_refuses_to_store_one(self, client, signed_in, master_key):
+        r = client.put("/api/settings",
+                       json={"backend": "ollama",
+                             "ollama_url": "http://169.254.169.254"})
+        assert r.status_code == 400
+        assert client.get("/api/settings").json()["ollama_url"] is None
+
+    def test_an_unreachable_probe_does_not_describe_the_failure(self, monkeypatch):
+        """Refused, timed out and filtered must read the same to the caller."""
+        monkeypatch.setenv("SECAUDIT_BACKEND", "ollama")
+        monkeypatch.setenv("SECAUDIT_OLLAMA_URL", "http://nope:11434")
+
+        def boom(url, timeout=None):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(web_engine.urllib.request, "urlopen", boom)
+        detail = web_engine.backend_status()["detail"]
+        assert "connection refused" not in detail
+        assert "http://nope:11434" in detail
+
+
 class TestPerUserIsolation:
     def test_audits_are_not_visible_to_other_users(self, client, clone_from_sample):
         sign_in(client, github_id=1, login="first")
@@ -951,6 +1033,9 @@ class TestStoredSettings:
 
     def test_settings_override_the_environment(self, client, signed_in, master_key, monkeypatch):
         monkeypatch.setenv("SECAUDIT_BACKEND", "claude-code")
+        # A container name on the compose network is exactly the address a
+        # hosted instance has to be told about; see TestOllamaURLValidation.
+        monkeypatch.setenv(web_settings.ALLOWED_OLLAMA_HOSTS_ENV, "ollama")
         client.put("/api/settings", json={"backend": "ollama",
                                           "ollama_url": "http://ollama:11434"})
         assert client.get("/api/settings").json()["backend_status"]["name"] == "ollama"

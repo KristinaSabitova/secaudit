@@ -1,6 +1,7 @@
 """Thin wrapper around the CLI engine (secaudit.py, imported unmodified)."""
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import secaudit as engine
+
+
+log = logging.getLogger(__name__)
 
 
 class AuditError(Exception):
@@ -179,7 +183,11 @@ def _ollama_ready(config: dict) -> tuple[bool, str | None]:
                                     timeout=OLLAMA_PROBE_TIMEOUT) as resp:
             models = [m.get("name", "") for m in json.loads(resp.read()).get("models", [])]
     except Exception as e:
-        return False, f"cannot reach Ollama at {base}: {e}"
+        # Whether the connection was refused, timed out or was filtered tells a
+        # caller who chose this address what is listening behind the server.
+        # The operator gets that detail in the log; the API gets none of it.
+        log.info("Ollama probe of %s failed: %s", base, e)
+        return False, f"cannot reach Ollama at {base}"
     if not models:
         return False, f"Ollama at {base} has no models pulled"
     if not any(m == want or m.split(":")[0] == want.split(":")[0] for m in models):
