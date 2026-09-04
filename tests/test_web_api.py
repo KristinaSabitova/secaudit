@@ -160,10 +160,10 @@ def sign_in(client, github_id=4242, login="kris", name="Kris"):
     session = web_db.get_session()
     user = web_auth.upsert_user(session, {"id": github_id, "login": login,
                                           "name": name})
-    record = web_auth.start_session(session, user)
+    token = web_auth.start_session(session, user)
     user_id, is_admin = user.id, user.is_admin
     session.close()
-    client.cookies.set(web_auth.COOKIE_NAME, record.token)
+    client.cookies.set(web_auth.COOKIE_NAME, token)
     user.id, user.is_admin = user_id, is_admin
     return user
 
@@ -374,6 +374,37 @@ class TestSignIn:
         session.commit()
         session.close()
         assert client.get("/api/settings").status_code == 401
+
+    def test_the_session_token_is_stored_hashed(self, client):
+        """A session cookie grants the account; the table must not hand it out.
+
+        An audit of this repository caught user_sessions keeping the cookie
+        verbatim while runner tokens were already hashed.
+        """
+        session = web_db.get_session()
+        user = web_auth.upsert_user(session, {"id": 99, "login": "kris"})
+        token = web_auth.start_session(session, user)
+        stored = session.scalars(select(web_models.UserSession)).one().token
+        session.close()
+
+        assert stored != token
+        assert stored == web_auth.hash_token(token)
+        assert len(stored) == 64
+
+    def test_a_hashed_token_read_from_the_table_does_not_authenticate(self, client):
+        """Reading the table must not be enough to impersonate anybody."""
+        session = web_db.get_session()
+        user = web_auth.upsert_user(session, {"id": 98, "login": "kris"})
+        web_auth.start_session(session, user)
+        stored = session.scalars(select(web_models.UserSession)).one().token
+        session.close()
+
+        client.cookies.set(web_auth.COOKIE_NAME, stored)
+        assert client.get("/api/settings").status_code == 401
+
+    def test_sessions_and_runner_tokens_hash_the_same_way(self):
+        # One rule for every bearer credential, so neither can drift.
+        assert web_runnerqueue.hash_token is web_auth.hash_token
 
     def test_login_is_503_without_an_oauth_app(self, client):
         r = client.get("/api/auth/login", follow_redirects=False)
@@ -941,6 +972,80 @@ class TestMigration:
         con.close()
         assert {"audits", "findings", "alembic_version"} <= tables
         assert "branch" in columns          # added by revision 0002
+
+    def _alembic(self, db_file, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args], cwd=ROOT, text=True,
+            capture_output=True,
+            env={**os.environ, "DATABASE_URL": f"sqlite:///{db_file}"},
+        )
+
+    def test_0008_hashes_existing_sessions_without_signing_anyone_out(self, tmp_path):
+        """The cookies already in people's browsers have to keep working.
+
+        The browser presents the same token as before; only what the table
+        holds changes, so the lookup hashes it and still matches.
+        """
+        db_file = tmp_path / "mig.db"
+        assert self._alembic(db_file, "upgrade", "0007").returncode == 0
+
+        con = sqlite3.connect(db_file)
+        con.execute("INSERT INTO users (id, github_id, login, is_admin, "
+                    "created_at) VALUES (1, 'gh1', 'kris', 1, "
+                    "'2026-09-01 00:00:00')")
+        con.execute("INSERT INTO user_sessions (token, user_id, created_at, "
+                    "expires_at) VALUES ('plaintext-cookie-value', 1, "
+                    "'2026-09-01 00:00:00', '2099-01-01 00:00:00')")
+        con.commit()
+        con.close()
+
+        r = self._alembic(db_file, "upgrade", "head")
+        assert r.returncode == 0, r.stderr
+
+        con = sqlite3.connect(db_file)
+        stored = con.execute("SELECT token FROM user_sessions").fetchone()[0]
+        con.close()
+        assert stored == web_auth.hash_token("plaintext-cookie-value")
+        assert "plaintext-cookie-value" != stored
+
+        # The real test: the untouched cookie still resolves to its account.
+        monkey = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = f"sqlite:///{db_file}"
+        try:
+            web_db.reset_engine()
+            session = web_db.get_session()
+            user = web_auth.user_for_token(session, "plaintext-cookie-value")
+            assert user is not None and user.login == "kris"
+            session.close()
+        finally:
+            if monkey is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = monkey
+            web_db.reset_engine()
+
+    def test_0008_is_safe_to_run_twice(self, tmp_path):
+        """Re-hashing an already hashed row would log that person out."""
+        db_file = tmp_path / "mig.db"
+        assert self._alembic(db_file, "upgrade", "0007").returncode == 0
+        con = sqlite3.connect(db_file)
+        con.execute("INSERT INTO users (id, github_id, login, is_admin, "
+                    "created_at) VALUES (1, 'gh1', 'kris', 1, "
+                    "'2026-09-01 00:00:00')")
+        con.execute("INSERT INTO user_sessions (token, user_id, created_at, "
+                    "expires_at) VALUES ('plaintext-cookie-value', 1, "
+                    "'2026-09-01 00:00:00', '2099-01-01 00:00:00')")
+        con.commit()
+        con.close()
+
+        assert self._alembic(db_file, "upgrade", "head").returncode == 0
+        self._alembic(db_file, "stamp", "0007")
+        assert self._alembic(db_file, "upgrade", "head").returncode == 0
+
+        con = sqlite3.connect(db_file)
+        stored = con.execute("SELECT token FROM user_sessions").fetchone()[0]
+        con.close()
+        assert stored == web_auth.hash_token("plaintext-cookie-value")
 
 
 # ---------------------------------------------------------------------------

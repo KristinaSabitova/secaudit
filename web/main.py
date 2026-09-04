@@ -248,9 +248,9 @@ def auth_callback(request: Request, code: str = "", state: str = "",
         user = auth.upsert_user(session, profile)
     except NotInvited as e:
         raise HTTPException(status_code=403, detail=str(e))
-    record = auth.start_session(session, user)
+    token = auth.start_session(session, user)
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(auth.COOKIE_NAME, record.token, httponly=True,
+    response.set_cookie(auth.COOKIE_NAME, token, httponly=True,
                         samesite="lax", max_age=auth.SESSION_DAYS * 86400,
                         secure=public_url(request).startswith("https://"))
     response.delete_cookie(OAUTH_STATE_COOKIE)

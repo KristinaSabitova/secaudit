@@ -6,13 +6,13 @@ it, their audits are left queued here instead and their own runner claims them,
 audits locally, and posts the findings back.
 """
 
-import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from . import auth
 from .models import Audit, User
 
 # A claim older than this is assumed abandoned — the runner was interrupted or
@@ -22,8 +22,10 @@ CLAIM_TIMEOUT = timedelta(minutes=45)
 RUNNER_BACKEND = "claude-code"
 
 
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+# One hashing rule for every bearer credential in the app, session cookies
+# included. Re-exported here because this module's callers reach for it by
+# this name.
+hash_token = auth.hash_token
 
 
 def issue_token(session: Session, user: User) -> str:

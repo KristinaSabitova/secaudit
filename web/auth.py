@@ -5,6 +5,7 @@ repositories, and it means no password hashes, no reset emails, and no mail
 server to run.
 """
 
+import hashlib
 import json
 import os
 import secrets
@@ -179,21 +180,35 @@ def single_user(session: Session) -> User | None:
     return user
 
 
-def start_session(session: Session, user: User) -> UserSession:
+def hash_token(token: str) -> str:
+    """The stored form of a credential. Every token here is kept this way.
+
+    A session cookie is a bearer credential exactly like a runner token: it
+    grants the account to whoever holds it. Storing it verbatim would mean a
+    dump of user_sessions — a backup, a read-only replica, a SQL injection —
+    hands over every live session. The hash is enough to recognise a token
+    presented back, and useless to anyone who only reads the table.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def start_session(session: Session, user: User) -> str:
+    """Open a session and return its token. Held only by the browser after."""
+    token = secrets.token_urlsafe(32)
     record = UserSession(
-        token=secrets.token_urlsafe(32),
+        token=hash_token(token),
         user_id=user.id,
         expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS),
     )
     session.add(record)
     session.commit()
-    return record
+    return token
 
 
 def user_for_token(session: Session, token: str | None) -> User | None:
     if not token:
         return None
-    record = session.get(UserSession, token)
+    record = session.get(UserSession, hash_token(token))
     if record is None:
         return None
     expires_at = record.expires_at
@@ -209,7 +224,7 @@ def user_for_token(session: Session, token: str | None) -> User | None:
 def end_session(session: Session, token: str | None) -> None:
     if not token:
         return
-    record = session.get(UserSession, token)
+    record = session.get(UserSession, hash_token(token))
     if record is not None:
         session.delete(record)
         session.commit()
