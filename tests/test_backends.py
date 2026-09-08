@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +16,9 @@ from secaudit import (
     AnthropicAPIBackend,
     OpenAIBackend,
     OllamaBackend,
+    AUDIT_TOOLS,
+    AUDIT_DENIED_TOOLS,
+    UNTRUSTED_INPUT_NOTICE,
     _parse_toml,
     load_config,
     _CONFIG_FILE,
@@ -165,6 +169,84 @@ class TestLoadConfig:
             assert "key" not in k.lower()
             assert "token" not in k.lower()
             assert "secret" not in k.lower()
+
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCodeBackend: the agent runs inside an untrusted checkout
+# ---------------------------------------------------------------------------
+
+class TestClaudeCodeIsConfinedToReadOnlyTools:
+    """Anyone can hand secaudit a repository, and this is the backend that lets
+    an agent loose inside it. The flags below are the mitigation for the prompt
+    injection that follows from that, so they are asserted here rather than
+    left to whoever next edits the argv."""
+
+    def _argv(self, tmp_path, monkeypatch):
+        """The argv the backend actually hands to subprocess.run."""
+        monkeypatch.setenv("CLAUDE_BIN", "/fake/claude")
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["cwd"] = kwargs.get("cwd")
+            return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+        with patch("secaudit.subprocess.run", fake_run):
+            ClaudeCodeBackend().run(tmp_path, "AUDIT PROMPT")
+        return seen
+
+    def test_only_read_only_tools_are_available(self, tmp_path, monkeypatch):
+        argv = self._argv(tmp_path, monkeypatch)["cmd"]
+        assert "--tools" in argv
+        assert argv[argv.index("--tools") + 1] == "Read,Grep,Glob"
+        assert AUDIT_TOOLS == ("Read", "Grep", "Glob")
+
+    def test_the_dangerous_tools_are_denied_by_name(self, tmp_path, monkeypatch):
+        argv = self._argv(tmp_path, monkeypatch)["cmd"]
+        denied = argv[argv.index("--disallowedTools") + 1:]
+        for tool in ("Bash", "Write", "Edit", "WebFetch", "WebSearch"):
+            assert tool in denied, f"{tool} is not denied"
+        assert set(AUDIT_DENIED_TOOLS) == set(denied[:len(AUDIT_DENIED_TOOLS)])
+
+    def test_the_checkouts_own_customizations_are_ignored(self, tmp_path, monkeypatch):
+        """A CLAUDE.md or a hook in .claude/settings.json inside the audited
+        repository would otherwise reach the agent as instructions."""
+        argv = self._argv(tmp_path, monkeypatch)["cmd"]
+        assert "--safe-mode" in argv
+
+    def test_repository_content_is_declared_to_be_data(self, tmp_path, monkeypatch):
+        argv = self._argv(tmp_path, monkeypatch)["cmd"]
+        assert "--append-system-prompt" in argv
+        notice = argv[argv.index("--append-system-prompt") + 1]
+        assert notice == UNTRUSTED_INPUT_NOTICE
+        assert "never" in notice and "instructions" in notice
+
+    def test_the_prompt_still_gets_through(self, tmp_path, monkeypatch):
+        seen = self._argv(tmp_path, monkeypatch)
+        assert seen["cmd"][:3] == ["/fake/claude", "-p", "AUDIT PROMPT"]
+        assert seen["cwd"] == str(tmp_path)
+
+    def test_the_runner_gets_the_same_confinement(self, tmp_path, monkeypatch):
+        """secaudit-runner.py runs on the owner's own machine. It reaches this
+        backend through run_audit_in_process -> select_backend -> run, so it
+        must not be able to acquire a less restricted argv along the way."""
+        from web.engine import run_audit_in_process
+
+        monkeypatch.setenv("CLAUDE_BIN", "/fake/claude")
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+        with patch("secaudit.subprocess.run", fake_run):
+            run_audit_in_process(tmp_path, {"backend": "claude-code"}, 10)
+
+        assert seen["cmd"] == ClaudeCodeBackend().command("/fake/claude",
+                                                          seen["cmd"][2])
+        assert "--safe-mode" in seen["cmd"]
+        assert "Bash" not in seen["cmd"][seen["cmd"].index("--tools") + 1]
 
 
 if __name__ == "__main__":
