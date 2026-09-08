@@ -8,6 +8,11 @@
 # The sync deletes whatever is not here, so anything the server is meant to
 # keep has to be excluded below. The .env holds the secrets and lives only
 # there; backups/ is where a dump taken before a migration can safely sit.
+#
+# It also copies the working tree, not what git tracks, so .gitignore buys
+# nothing here: every exclusion has to be spelled out. .claude/ is excluded
+# for that reason — it is local tool configuration that can name hosts, paths
+# and tokens, and the server has no use for it.
 set -euo pipefail
 
 HOST="${SECAUDIT_SSH_HOST:?set SECAUDIT_SSH_HOST, e.g. kris@vps.example.com}"
@@ -39,6 +44,7 @@ rsync -az --delete \
   --exclude '.pytest_cache/' \
   --exclude '.venv/' \
   --exclude '.env' \
+  --exclude '.claude/' \
   --exclude '*.db' \
   --exclude 'backups/' \
   -e "ssh -i $KEY" \
