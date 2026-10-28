@@ -288,7 +288,8 @@ def inventory(project: Path, only=None) -> list[Entry]:
     rest of the checkout is then left out of the inventory altogether: it is
     not part of what was asked, so it is not reported as missed either.
     """
-    only = {p.replace(os.sep, "/").lstrip("./") for p in only} if only else None
+    only = ({re.sub(r"^(\./)+", "", p.replace(os.sep, "/")) for p in only}
+            if only else None)
     ignored = git_ignored(project)
     ignored_files = {p for p in ignored if not p.endswith("/")}
     ignored_dirs = tuple(p for p in ignored if p.endswith("/"))

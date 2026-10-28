@@ -354,6 +354,16 @@ Anything reported as verified without a file or a snippet is downgraded to
 `unverified` before it is stored, so the guarantee does not depend on the model
 behaving. `?verified_only=true` leaves the unverified ones out entirely.
 
+The snippet itself is checked as well, by the server, against its own checkout
+of the audited commit. It has to appear in the file it names — whitespace
+aside, nothing else: a paraphrase, an elision or code written from memory does
+not match — and within the lines that were sent to the request that reported
+it. A finding whose snippet is not there is downgraded with the reason.
+`line` and `line_end` are where the snippet was found; they are never the
+model's own claim, and stay null when the snippet could not be located. A
+secret is matched even after it has been masked in the snippet, by the hash
+the mask carries.
+
 ### How the code reaches the model
 
 No backend opens files itself, so the repository is sent as text, line-numbered

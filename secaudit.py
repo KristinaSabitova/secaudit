@@ -51,7 +51,7 @@ from pathlib import Path, PurePosixPath
 # The deterministic half of the audit lives next to this file. Run as a script,
 # this file's directory is already on sys.path; imported, it may not be.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analysis import chunking  # noqa: E402
+from analysis import chunking, evidence  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Finding schema
@@ -88,9 +88,11 @@ class Finding:
     suppression_reason: str = ""
     # Evidence the finding is anchored to real audited code, not to the
     # generic description of its category. See verify_evidence().
-    # line is where the snippet starts; it is deliberately kept out of the
-    # fingerprint, so a finding survives the code moving down the file.
+    # line and line_end are where the snippet was found in the file, by the
+    # evidence check — never the model's word for it. They are deliberately
+    # kept out of the fingerprint, so a finding survives the code moving.
     line: int | None = None
+    line_end: int | None = None
     code_snippet: str = ""
     verification_status: str = UNVERIFIED
     verification_note: str = ""
@@ -1447,6 +1449,12 @@ def run_differential(args, project: Path, backend: AuditBackend, files=None) -> 
     saved = load_state(pid)
     updated_state, all_findings = classify(
         result["findings"], saved, result["server_config_present"])
+    # Only this audit's findings: the rest of the state is from earlier ones.
+    for f in all_findings:
+        if f.status in ("new", "persisting", "regressed"):
+            for key, value in evidence.check(project, asdict(f),
+                                             result["manifest"]).items():
+                setattr(f, key, value)
     save_state(pid, updated_state)
 
     if args.json:
@@ -1465,11 +1473,14 @@ def run_differential(args, project: Path, backend: AuditBackend, files=None) -> 
             if not args.all and f.status not in ("new", "regressed"):
                 continue
             lines.append(f"\n## [{f.status.upper()}] {f.title}\n")
-            evidence = (f"\n```\n{f.code_snippet}\n```\n"
+            proof = (f"\n```\n{f.code_snippet}\n```\n"
                         if f.verification_status == VERIFIED and f.code_snippet
                         else f"- Unverified: {f.verification_note or 'no code evidence'}\n")
-            lines.append(f"- Severity: {f.severity}\n- File: {f.file}\n"
-                         f"- Anchor: {f.anchor}\n{evidence}\n{f.description}\n")
+            where = (f"{f.file}:{f.line}" + (f"-{f.line_end}" if f.line_end
+                                             and f.line_end != f.line else "")
+                     if f.line else f.file)
+            lines.append(f"- Severity: {f.severity}\n- File: {where}\n"
+                         f"- Anchor: {f.anchor}\n{proof}\n{f.description}\n")
         args.output.write_text("\n".join(lines), encoding="utf-8")
         print(f"[+] Report written to {args.output}", file=sys.stderr)
 

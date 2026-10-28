@@ -35,6 +35,9 @@ from .webhook import (
     webhook_secret,
 )
 
+# Importable once .engine has put the repository root on sys.path.
+from analysis import evidence  # noqa: E402
+
 log = logging.getLogger(__name__)
 
 INTERRUPTED = "interrupted: the service restarted while this audit was running"
@@ -131,7 +134,11 @@ def execute_audit(audit_id: str) -> None:
                                               branch=audit.branch)
                 audit.status = "running"
                 session.commit()
-                findings = run_audit(dest, config, credentials)["findings"]
+                result = run_audit(dest, config, credentials)
+                # Checked here, against this server's own checkout, not by
+                # the process that talked to the backend.
+                findings = evidence.verify_findings(
+                    dest, result["findings"], result.get("manifest"))
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))

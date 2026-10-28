@@ -360,6 +360,15 @@ Todo lo que llegue como verificado sin fichero o sin snippet se degrada a
 `unverified` antes de guardarse, así que la garantía no depende de que el
 modelo se porte bien. `?verified_only=true` deja fuera los no verificados.
 
+El propio snippet también se comprueba, en el servidor, contra su propio
+checkout del commit auditado. Tiene que aparecer en el fichero que nombra —
+salvo espacios, nada más: una paráfrasis, unos puntos suspensivos o código
+escrito de memoria no coinciden — y dentro de las líneas que se enviaron a la
+petición que lo reportó. Un hallazgo cuyo snippet no está ahí se degrada con el
+motivo. `line` y `line_end` son donde se encontró el snippet; nunca lo que dice
+el modelo, y quedan a null si no se pudo localizar. Un secreto se encuentra
+aunque ya esté enmascarado en el snippet, por el hash que lleva la máscara.
+
 ### Cómo llega el código al modelo
 
 Ningún backend abre ficheros por su cuenta, así que el repositorio se envía

@@ -65,7 +65,7 @@ FAKE_FINDINGS = [
     {"category": "injection", "file": "app.py", "anchor": "get_user",
      "severity": "critical", "title": "SQL injection in get_user",
      "description": "Query is built by string concatenation; use bound parameters.",
-     "code_snippet": 'return cur.execute("SELECT * FROM users WHERE name = \'" + name)',
+     "code_snippet": 'return cur.execute("SELECT * FROM users WHERE name = \'" + name + "\'")',
      "line": 4, "verification_status": "verified", "verification_note": ""},
     {"category": "secrets", "file": "app.py", "anchor": "API_KEY",
      "severity": "high", "title": "Hardcoded API key",
@@ -1876,6 +1876,29 @@ class TestFindingVerification:
             json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
         finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
         assert finding["line"] == 4
+
+    def test_a_snippet_that_is_not_in_the_file_is_not_verified(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        """The model's word used to be enough. It is checked against the clone."""
+        altered = dict(FAKE_FINDINGS[0], code_snippet=(
+            'return cur.execute("SELECT * FROM users WHERE id = %s", (uid,))'),
+            line=4)
+        audit_id = self.run_audit_returning(client, monkeypatch, [altered])
+        finding = client.get(f"/api/audits/{audit_id}").json()["findings"][0]
+        assert finding["verification_status"] == "unverified"
+        assert "does not appear in app.py" in finding["verification_note"]
+        assert finding["line"] is None, "the model's line is not trusted"
+
+    def test_a_redacted_secret_is_still_found_in_the_file(
+            self, client, signed_in, clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        secret = next(f for f in client.get(f"/api/audits/{audit_id}").json()["findings"]
+                      if f["category"] == "secrets")
+        assert "sk-test-000000000000" not in secret["code_snippet"]
+        assert secret["verification_status"] == "verified"
+        assert secret["line"] == 1
 
     def test_a_finding_without_a_line_keeps_null(self, client, signed_in,
                                                  clone_from_sample, monkeypatch):
