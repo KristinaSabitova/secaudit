@@ -497,9 +497,10 @@ class TestPackRepository:
         packed = pack_repository(d)
         assert "NO WEB SERVER OR REVERSE PROXY CONFIGURATION" not in packed
 
-    def test_an_agent_backend_is_not_handed_the_code(self, tmp_path):
-        backend = ClaudeCodeBackend()
-        assert backend.prepare(self.repo(tmp_path), "PROMPT") == "PROMPT"
+    def test_the_agent_backend_is_handed_the_code_too(self, tmp_path):
+        """claude-code no longer opens files: it audits what it is sent."""
+        prepared = ClaudeCodeBackend().prepare(self.repo(tmp_path), "PROMPT")
+        assert "app/auth.py" in prepared
 
     def test_a_single_request_backend_is(self, tmp_path):
         backend = AnthropicAPIBackend()
