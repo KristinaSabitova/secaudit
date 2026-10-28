@@ -824,6 +824,40 @@ class TestGuestList:
         assert "guest list" in r.json()["detail"]
 
 
+class TestGuestListRevocation:
+    """Taking a login off the guest list ends access it already had."""
+
+    def test_a_session_stops_working_when_its_login_is_removed(self, client,
+                                                               monkeypatch):
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris, guest")
+        sign_in(client, github_id=5, login="guest")
+        assert client.get("/api/audits").status_code == 200
+
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris")
+        assert client.get("/api/audits").status_code == 401
+        assert client.get("/api/me").json().get("user") is None
+
+    def test_a_runner_token_stops_working_when_its_login_is_removed(
+            self, client, monkeypatch):
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris, guest")
+        sign_in(client, github_id=5, login="guest")
+        token = client.post("/api/runner/token").json()["token"]
+        client.cookies.clear()
+        headers = {"Authorization": f"Bearer {token}"}
+        assert client.post("/api/runner/claim", headers=headers).status_code == 204
+
+        monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, "kris")
+        assert client.post("/api/runner/claim", headers=headers).status_code == 401
+        # The same token is also a service credential for the rest of the API.
+        assert client.get("/api/audits", headers=headers).status_code == 401
+
+    def test_closing_the_instance_ends_every_session(self, client, monkeypatch):
+        sign_in(client, github_id=5, login="guest")
+        assert client.get("/api/audits").status_code == 200
+        monkeypatch.delenv(web_auth.ALLOWED_LOGINS_ENV)
+        assert client.get("/api/audits").status_code == 401
+
+
 class TestOllamaURLValidation:
     """The server fetches this address, so the caller cannot pick it freely.
 

@@ -91,6 +91,20 @@ def check_invited(login: str) -> None:
         raise NotInvited(f"{login} is not on this instance\'s guest list")
 
 
+def is_invited(login: str) -> bool:
+    """Whether this account may use the instance right now.
+
+    Checked on every request, not only at sign-in: taking a login off the
+    guest list has to end that person's access then, not when a 30-day
+    session or a runner token that never expires runs out.
+    """
+    try:
+        check_invited(login)
+    except NotInvited:
+        return False
+    return True
+
+
 def is_configured() -> bool:
     try:
         _credentials()

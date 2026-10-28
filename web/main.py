@@ -210,13 +210,17 @@ def current_user(session: Session = Depends(db_session),
     if owner is not None:
         return owner
     user = auth.user_for_token(session, secaudit_session)
-    if user is not None:
-        return user
-    # A service token — a runner, the MCP server — stands in for the cookie:
-    # it names the same account and is stored only as a hash. It therefore
-    # carries the same authority as a browser session, so it is a credential
-    # of the same weight and not a lesser, runner-only one.
-    return runnerqueue.user_for_token(session, bearer_token(authorization))
+    if user is None:
+        # A service token — a runner, the MCP server — stands in for the
+        # cookie: it names the same account and is stored only as a hash. It
+        # therefore carries the same authority as a browser session, so it is
+        # a credential of the same weight and not a lesser, runner-only one.
+        user = runnerqueue.user_for_token(session, bearer_token(authorization))
+    # The guest list is what decides who may use the instance, so a credential
+    # issued before a login was taken off it stops working with it.
+    if user is not None and not auth.is_invited(user.login):
+        return None
+    return user
 
 
 def require_user(user: User | None = Depends(current_user)) -> User:
@@ -443,7 +447,7 @@ class RunnerResult(BaseModel):
 def runner_user(session: Session = Depends(db_session),
                 authorization: str | None = Header(default=None)) -> User:
     user = runnerqueue.user_for_token(session, bearer_token(authorization))
-    if user is None:
+    if user is None or not auth.is_invited(user.login):
         raise HTTPException(status_code=401, detail="invalid runner token")
     return user
 
