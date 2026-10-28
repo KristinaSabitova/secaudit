@@ -231,6 +231,8 @@ const TEXT = {
     "falsify.incomplete": "No complete hypothesis — a source and a sink — was " +
       "given, so there was nothing to refute: it stays at exists.",
     "falsify.notes": "The notes on each attempt are written by the analysis, in English.",
+    "falsify.deadcode": "No complete hypothesis was given, but none was needed " +
+      "to see that nothing can run this code.",
     "method.callgraph": "call graph",
     "method.sanitizer": "what reaches the sink",
     "method.reachability": "reachability",
@@ -478,6 +480,8 @@ const TEXT = {
     "falsify.incomplete": "No se dio una hipótesis completa —origen y " +
       "destino—, así que no había nada que refutar: se queda en «existe».",
     "falsify.notes": "Las notas de cada intento las escribe el análisis, en inglés.",
+    "falsify.deadcode": "No se dio una hipótesis completa, pero no hacía falta " +
+      "para ver que nada puede ejecutar este código.",
     "method.callgraph": "grafo de llamadas",
     "method.sanitizer": "qué llega al destino",
     "method.reachability": "alcanzabilidad",
@@ -1352,10 +1356,9 @@ function hypothesisNodes(finding) {
   dl.classList.add("facts-wide");
   parts.append(dl);
   if (!h.complete) {
-    parts.append(node("p", "muted", t("falsify.incomplete")));
-    return parts;
-  }
-  if (!isPython(finding) && finding.verification_status === "verified") {
+    parts.append(node("p", "muted", t(h.attempts && h.attempts.length
+      ? "falsify.deadcode" : "falsify.incomplete")));
+  } else if (!isPython(finding) && finding.verification_status === "verified") {
     parts.append(node("p", "muted", t("falsify.pythononly")));
   }
   if (h.attempts && h.attempts.length) {
