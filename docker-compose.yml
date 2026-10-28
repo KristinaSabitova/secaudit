@@ -45,6 +45,7 @@ services:
       # How many requests one audit may be split into; with the line above,
       # the cost ceiling of an audit.
       SECAUDIT_MAX_CHUNKS: ${SECAUDIT_MAX_CHUNKS:-}
+      SECAUDIT_MAX_REFUTATIONS: ${SECAUDIT_MAX_REFUTATIONS:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
     # http://host.docker.internal:11434.
     extra_hosts:

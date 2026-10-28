@@ -45,7 +45,7 @@ _ENV_ALLOWLIST = (
     # left unset.
     "SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
     "SECAUDIT_CONTEXT_CHARS", "SECAUDIT_MAX_OUTPUT_TOKENS", "SECAUDIT_TIMEOUT",
-    "SECAUDIT_MAX_CHUNKS",
+    "SECAUDIT_MAX_CHUNKS", "SECAUDIT_MAX_REFUTATIONS",
 )
 
 # Every backend option the CLI reads from its config file must also be
@@ -60,6 +60,8 @@ _ENV_CONFIG = {
     "SECAUDIT_MAX_OUTPUT_TOKENS": "max_output_tokens",
     # How many requests one audit may be split into: its cost ceiling.
     "SECAUDIT_MAX_CHUNKS": "max_chunks",
+    # How many findings the devil's advocate argues against: one extra request.
+    "SECAUDIT_MAX_REFUTATIONS": "max_refutations",
 }
 
 
@@ -116,7 +118,8 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
 
     Everything else goes through run_audit(), which isolates the credentials.
     Returns the findings with the coverage, the manifest of what each request
-    carried, and the tokens spent.
+    carried, and the tokens spent — the audit's and, apart, the devil's
+    advocate's, whose arguments travel attached to the findings they target.
     """
     language = config.get("language") or engine.LANGUAGES[0]
     try:
@@ -135,8 +138,15 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
     # missing from here at all.
     _, findings = engine.classify(result["findings"], {},
                                   result["server_config_present"])
+    findings = [asdict(f) for f in findings]
+    # Here because it needs the user's key, which only this process holds.
+    # Its arguments are claims: the server checks their quotes itself.
+    refutation = engine.devils_advocate(
+        project, backend, findings, language, timeout,
+        engine.max_refutations_from(config))
     return {
-        "findings": [asdict(f) for f in findings],
+        "findings": findings,
+        "refutation_usage": refutation,
         "coverage": result["coverage"],
         "coverage_summary": result["coverage_summary"],
         "manifest": result["manifest"],

@@ -51,7 +51,7 @@ from pathlib import Path, PurePosixPath
 # The deterministic half of the audit lives next to this file. Run as a script,
 # this file's directory is already on sys.path; imported, it may not be.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analysis import chunking, evidence  # noqa: E402
+from analysis import chunking, evidence, falsify  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Finding schema
@@ -99,6 +99,9 @@ class Finding:
     # The request the finding came from, when the audit was split; the
     # evidence check needs to know what that request was shown.
     chunk: int | None = None
+    # The finding stated as a refutable flow (module 2): source, sink, path,
+    # preconditions. None when the backend gave none. See analysis/falsify.py.
+    hypothesis: dict | None = None
 
 
 # Controls a reverse proxy, CDN or gateway usually applies rather than the
@@ -249,6 +252,11 @@ def _sanitize(finding: Finding) -> Finding:
     # carry a live credential whatever the category says it is.
     if finding.code_snippet:
         finding.code_snippet = redact_secrets(finding.code_snippet)
+    if finding.hypothesis:
+        for key in ("source", "sink"):
+            finding.hypothesis[key] = redact_secrets(finding.hypothesis[key])
+        for key in ("path", "preconditions"):
+            finding.hypothesis[key] = [redact_secrets(v) for v in finding.hypothesis[key]]
     return finding
 
 # ---------------------------------------------------------------------------
@@ -337,6 +345,7 @@ def classify(raw_findings: list, saved: dict,
             verification_status=status,
             verification_note=note,
             chunk=raw.get("chunk") if isinstance(raw.get("chunk"), int) else None,
+            hypothesis=falsify.normalize_hypothesis(raw.get("hypothesis")),
         )
         finding = _sanitize(finding)
 
@@ -1044,6 +1053,19 @@ Each element must have exactly these fields:
                  include the secret value itself, only its type and location
   "verification_status": "verified" | "unverified"
   "verification_note": why it is unverified; "" when verified
+  "hypothesis": the finding stated so that it can be checked and refuted, or
+               null when it is not a flow (a committed secret, a config value):
+      "source": where attacker-controlled input enters, naming the function
+                as path.py:function — e.g. "app/views.py:search —
+                request.args['q']"
+      "sink":   the dangerous use it reaches, the same way — e.g.
+                "app/db.py:find_items — cursor.execute(query)"
+      "path":   the functions in between, in call order, each as
+                path.py:function; [] when source and sink are in one function
+      "preconditions": what must hold for the attack to work — e.g.
+                "the route needs no login"; [] if nothing
+               A finding whose hypothesis you cannot state with a real source
+               and a real sink is weaker for it: say so rather than invent one.
 
 EVIDENCE — THIS IS NOT OPTIONAL:
 Every finding must be anchored to code from THIS repository — the code you were
@@ -1087,7 +1109,9 @@ Write "title", "description" and "verification_note" in \
 {LANGUAGE_NAME[language]}. Keep every other field exactly as specified above and
 in its original form: "category" and "severity" stay the English enum values,
 and "file", "anchor" and "code_snippet" are copied from the source code, so they
-are never translated. Do not translate identifiers, paths or code.
+are never translated. Do not translate identifiers, paths or code. In
+"hypothesis", write the prose in {LANGUAGE_NAME[language]} but keep every
+path.py:function reference as it is in the code.
 """
 
 REPORT_ONLY = ("Do NOT modify any files. Only report findings and the fix you "
@@ -1308,6 +1332,144 @@ def audit_repository(project: Path, backend: "AuditBackend", base_prompt: str,
         "usage": usage,
         "server_config_present": not notices,
     }
+
+# ---------------------------------------------------------------------------
+# The devil's advocate (module 2)
+# ---------------------------------------------------------------------------
+
+DEFAULT_MAX_REFUTATIONS = 8
+
+DEVIL_PROMPT = """\
+You are reviewing the findings of a security audit, and your task is the
+opposite of the auditor's: for each finding below, try to prove that it is a
+FALSE POSITIVE, from the code shown with it.
+
+{notice}
+
+A finding is false when the code shows, for instance, that the input never
+reaches the dangerous call; that it is validated, cast, escaped or passed as a
+parameter on the way; that the code is never called; or that the call is not
+dangerous in this use. Argue only from code you can quote. Do not invent code:
+every quote is looked up in the repository, and an argument whose quotes are
+not there is thrown away.
+
+Output ONLY a valid JSON array, one element per finding, with these fields:
+  "id":        the finding's id, exactly as given
+  "verdict":   "false_positive" if the quoted code shows the finding is false;
+               "holds" if you tried and could not show it false;
+               "unsure" if the code shown is not enough to tell
+  "argument":  your reasoning, briefly
+  "citations": [{{"file": "path as given", "code_snippet": "code copied
+               VERBATIM from that file, without the line numbers"}}] —
+               required for "false_positive", optional otherwise
+{language}
+FINDINGS
+"""
+
+
+def max_refutations_from(config: dict | None) -> int:
+    """How many findings the devil's advocate may argue against; 0 is none."""
+    value = (config or {}).get("max_refutations")
+    if value is None:
+        value = os.environ.get("SECAUDIT_MAX_REFUTATIONS")
+    try:
+        return max(0, int(value)) if value not in (None, "") else DEFAULT_MAX_REFUTATIONS
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_REFUTATIONS
+
+
+def _devil_block(n: int, finding: dict, code: str) -> str:
+    h = finding.get("hypothesis") or {}
+    lines = [f"### id {n}",
+             f"title: {finding.get('title', '')}",
+             f"severity: {finding.get('severity', '')}   category: {finding.get('category', '')}",
+             f"evidence: {finding.get('file', '')}:{finding.get('line') or '?'}",
+             f"description: {str(finding.get('description', ''))[:800]}",
+             f"claimed source: {h.get('source', '')}",
+             f"claimed sink: {h.get('sink', '')}"]
+    if h.get("path"):
+        lines.append("claimed path: " + " -> ".join(h["path"]))
+    if h.get("preconditions"):
+        lines.append("preconditions: " + "; ".join(h["preconditions"]))
+    lines.append("code:")
+    lines.append(code or "(no code could be shown for this finding)")
+    return "\n".join(lines) + "\n"
+
+
+def devils_advocate(project: Path, backend: "AuditBackend", findings: list[dict],
+                    language: str = "en", timeout: int = 3600,
+                    limit: int = DEFAULT_MAX_REFUTATIONS) -> dict:
+    """Ask the backend to argue each strong finding false, in one request.
+
+    Only findings worth refuting are sent: reported as verified, with a snippet
+    that really is in the checkout, and with a complete hypothesis — the most
+    severe first, at most limit of them. The answer is attached to each finding
+    as "devil_advocate"; it is a claim like any other, and its quotes are
+    checked later against the code (analysis/falsify.check_devil). Returns
+    what the request cost and how many findings it carried.
+    """
+    usage = {"input_tokens": 0, "output_tokens": 0, "requested": 0}
+    if limit <= 0:
+        return usage
+    candidates = []
+    for f in findings:
+        h = falsify.normalize_hypothesis(f.get("hypothesis"))
+        if f.get("verification_status") != VERIFIED or not h or not h["complete"]:
+            continue
+        probe = dict(f)
+        probe.update(evidence.check(project, probe))
+        if probe.get("verification_status") == VERIFIED:
+            candidates.append((f, probe))
+    candidates.sort(key=lambda c: SEVERITIES.index(c[0]["severity"])
+                    if c[0].get("severity") in SEVERITIES else 99)
+    candidates = candidates[:limit]
+    if not candidates:
+        return usage
+
+    instruction = ""
+    if language in LANGUAGES and language != "en":
+        instruction = (f'Write "argument" in {LANGUAGE_NAME[language]}; quote '
+                       f"code exactly as it is.\n")
+    head = DEVIL_PROMPT.format(notice=chunking.DATA_NOTICE, language=instruction)
+    index = falsify.Index(project) if any(
+        str(p.get("file", "")).endswith(".py") for _, p in candidates) else None
+    room = max(1500, min(6000, (backend.context_chars - len(head)) // len(candidates)))
+    blocks = [_devil_block(n, f, falsify.context_for(project, probe, index, room))
+              for n, (f, probe) in enumerate(candidates, 1)]
+    prompt = head + "\n".join(blocks)
+    usage["requested"] = len(candidates)
+    print(f"[*] devil's advocate: {len(candidates)} finding(s), "
+          f"{len(prompt)} characters", file=sys.stderr)
+
+    backend.last_usage = None
+    try:
+        output = backend.run(project, prompt, timeout=timeout)
+    except SystemExit as e:
+        # The audit itself is done: losing the counter-argument costs the
+        # findings a refutation attempt, not their existence.
+        usage["error"] = str(e.code or "the backend aborted")[:200]
+        return usage
+    for key in ("input_tokens", "output_tokens"):
+        usage[key] += int((backend.last_usage or {}).get(key) or 0)
+    parsed = extract_json_findings(output)
+    if parsed is _PARSE_FAILED:
+        usage["error"] = "the answer was not a JSON array"
+        return usage
+    answers = {str(a.get("id")).strip(): a for a in parsed if isinstance(a, dict)}
+    for n, (f, _) in enumerate(candidates, 1):
+        a = answers.get(str(n))
+        if not a or a.get("verdict") not in falsify.VERDICTS:
+            continue
+        cites = a.get("citations") if isinstance(a.get("citations"), list) else []
+        f["devil_advocate"] = {
+            "verdict": a["verdict"],
+            "argument": redact_secrets(str(a.get("argument") or ""))[:4000],
+            "citations": [{"file": str(c.get("file") or "")[:512],
+                           "code_snippet": redact_secrets(
+                               str(c.get("code_snippet") or ""))[:MAX_SNIPPET_CHARS]}
+                          for c in cites[:8] if isinstance(c, dict)],
+        }
+    return usage
 
 # ---------------------------------------------------------------------------
 # Display helpers

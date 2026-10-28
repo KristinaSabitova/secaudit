@@ -77,7 +77,7 @@ def run_one(server: str, token: str, job: dict, timeout: int) -> None:
             # The server checks the evidence again against its own checkout
             # of this commit; the manifest says what each request was shown.
             for key in ("findings", "coverage", "coverage_summary", "manifest",
-                        "usage"):
+                        "usage", "refutation_usage"):
                 result[key] = audit[key]
         except (CloneError, AuditError) as e:
             result["error"] = str(e)
