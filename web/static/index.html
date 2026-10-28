@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>secaudit</title>
+  <meta name="color-scheme" content="dark light">
+  <!-- Before anything paints: sets data-theme so the page never flashes. -->
+  <script src="/theme.js"></script>
   <!-- Served straight from web/static, which is mounted at the root. -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
@@ -11,135 +14,300 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <!-- Last: browsers that understand none of the above fall back to this. -->
   <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="preload" href="/fonts/ibm-plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>secaudit</h1>
-    <div class="header-right">
-      <div id="health" class="health" data-state="unknown">checking&hellip;</div>
-      <span id="whoami" class="muted" hidden></span>
-      <label class="sr-only" for="lang" data-i18n="lang.label">language</label>
-      <select id="lang" class="ghost lang-select">
-        <option value="en">English</option>
-        <option value="es">Castellano</option>
-      </select>
-      <button id="settings-toggle" class="ghost" type="button"
-              aria-expanded="false" hidden data-i18n="nav.backend">backend</button>
+  <a class="skip-link" href="#content" data-i18n="nav.skip">skip to content</a>
+
+  <header class="topbar">
+    <button id="nav-toggle" class="icon-button" type="button" hidden
+            aria-controls="sidebar" aria-expanded="true">
+      <span aria-hidden="true">&#9776;</span>
+      <span class="sr-only" data-i18n="nav.toggle">sections</span>
+    </button>
+    <span class="brand">secaudit</span>
+
+    <div class="context" id="context" hidden>
+      <label class="sr-only" for="project-select" data-i18n="top.project">project</label>
+      <select id="project-select"></select>
+      <label class="sr-only" for="audit-select" data-i18n="top.audit">audit</label>
+      <select id="audit-select"></select>
+    </div>
+
+    <div class="topbar-right">
+      <label class="sr-only" for="search" data-i18n="top.search">search findings</label>
+      <input id="search" type="search" spellcheck="false" hidden
+             data-i18n-placeholder="top.searchph" placeholder="search findings">
+      <span id="health" class="health" data-state="unknown">checking&hellip;</span>
+      <span id="whoami" class="muted whoami" hidden></span>
       <button id="logout" class="ghost" type="button" hidden
               data-i18n="nav.signout">sign out</button>
+      <button id="theme-toggle" class="icon-button" type="button">
+        <span aria-hidden="true">&#9680;</span>
+        <span class="sr-only" id="theme-toggle-label">switch theme</span>
+      </button>
     </div>
   </header>
 
-  <main>
-    <section class="pane" id="signin" hidden>
-      <h2 data-i18n="signin.title">sign in</h2>
-      <p class="signin-lead" data-i18n="signin.lead">
-        secaudit audits GitHub repositories with the model of your choice.
-        Sign in to bring your own API key &mdash; your key and your audits
-        stay yours, and nobody else on this instance can see either.
-      </p>
-      <p>
-        <a class="button-link" id="signin-link" href="/api/auth/login"
-           data-i18n="signin.button">
-          sign in with GitHub
-        </a>
-      </p>
-      <p id="signin-disabled" class="muted" hidden data-i18n="signin.disabled">
-        Sign-in is not configured on this instance yet.
-      </p>
-    </section>
+  <section class="signin" id="signin" hidden>
+    <h1 data-i18n="signin.title">sign in</h1>
+    <p class="signin-lead" data-i18n="signin.lead">
+      secaudit audits GitHub repositories with the model of your choice.
+    </p>
+    <p>
+      <a class="button-link" id="signin-link" href="/api/auth/login"
+         data-i18n="signin.button">sign in with GitHub</a>
+    </p>
+    <p id="signin-disabled" class="muted" hidden data-i18n="signin.disabled">
+      Sign-in is not configured on this instance yet.
+    </p>
+    <p class="field-inline">
+      <label for="lang-signin" data-i18n="lang.label">language</label>
+      <select id="lang-signin" class="lang-select">
+        <option value="en">English</option>
+        <option value="es">Castellano</option>
+      </select>
+    </p>
+  </section>
 
-    <div id="app" hidden>
-      <section class="pane" id="settings" hidden>
-        <h2 data-i18n="settings.title">audit backend</h2>
-        <p class="muted settings-intro" data-i18n="settings.intro">
-          Paste an API key and secaudit works with it. The key is encrypted
-          before it is stored and is never sent back to this page.
-        </p>
-        <form id="settings-form" autocomplete="off">
+  <div class="shell" id="app" hidden>
+    <nav class="sidebar" id="sidebar" data-i18n-label="nav.sections">
+      <ul class="nav-list">
+        <li><a href="#summary" data-section="summary">
+          <span data-i18n="nav.summary">summary</span>
+          <span class="nav-indicator" data-indicator="summary"></span></a></li>
+        <li><a href="#findings" data-section="findings">
+          <span data-i18n="nav.findings">findings</span>
+          <span class="nav-indicator" data-indicator="findings"></span></a></li>
+        <li><a href="#parallax" data-section="parallax">
+          <span data-i18n="nav.parallax">parallax</span>
+          <span class="nav-indicator" data-indicator="parallax"></span></a></li>
+        <li><a href="#falsifiability" data-section="falsifiability">
+          <span data-i18n="nav.falsifiability">falsifiability</span>
+          <span class="nav-indicator" data-indicator="falsifiability"></span></a></li>
+        <li><a href="#memory" data-section="memory">
+          <span data-i18n="nav.memory">memory</span>
+          <span class="nav-indicator" data-indicator="memory"></span></a></li>
+        <li><a href="#leverage" data-section="leverage">
+          <span data-i18n="nav.leverage">leverage</span>
+          <span class="nav-indicator" data-indicator="leverage"></span></a></li>
+        <li><a href="#attacker" data-section="attacker">
+          <span data-i18n="nav.attacker">attacker</span>
+          <span class="nav-indicator" data-indicator="attacker"></span></a></li>
+      </ul>
+      <ul class="nav-list nav-secondary">
+        <li><a href="#history" data-section="history">
+          <span data-i18n="nav.history">history</span>
+          <span class="nav-indicator" data-indicator="history"></span></a></li>
+        <li><a href="#settings" data-section="settings">
+          <span data-i18n="nav.settings">settings</span></a></li>
+      </ul>
+    </nav>
+    <!-- Shown by style.css only while the sections float over a narrow screen. -->
+    <div class="scrim" id="scrim"></div>
+
+    <main class="content" id="content" tabindex="-1">
+      <!-- Built from the selected audit by app.js. -->
+      <section class="view" data-view="summary" aria-labelledby="h-summary" hidden>
+        <h1 id="h-summary" data-i18n="nav.summary">summary</h1>
+        <div id="summary-body"></div>
+      </section>
+
+      <section class="view" data-view="findings" aria-labelledby="h-findings" hidden>
+        <h1 id="h-findings" data-i18n="nav.findings">findings</h1>
+        <form class="filters" id="filters" autocomplete="off">
           <div class="field">
-            <label for="api-key" data-i18n="settings.apikey">api key</label>
-            <input id="api-key" type="password" spellcheck="false"
-                   placeholder="sk-ant-… or sk-…">
-          </div>
-          <div class="field">
-            <label for="backend" data-i18n="settings.backend">backend</label>
-            <select id="backend">
-              <option value="" data-i18n="settings.detect">detect from the key</option>
-              <option value="anthropic-api">anthropic-api</option>
-              <option value="openai-api">openai-api</option>
-              <option value="ollama" data-i18n="settings.ollama">ollama (free, local)</option>
-              <option value="claude-code" data-i18n="settings.claudecode">claude-code (local binary)</option>
+            <label for="filter-severity" data-i18n="filter.severity">severity</label>
+            <select id="filter-severity">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="critical" data-i18n="severity.critical">critical</option>
+              <option value="high" data-i18n="severity.high">high</option>
+              <option value="medium" data-i18n="severity.medium">medium</option>
+              <option value="low" data-i18n="severity.low">low</option>
+              <option value="info" data-i18n="severity.info">info</option>
             </select>
           </div>
           <div class="field">
-            <label for="model"><span data-i18n="settings.model">model</span>
-              <span class="muted" data-i18n="settings.optional">(optional)</span></label>
-            <input id="model" spellcheck="false" data-i18n-placeholder="settings.modelph"
-                   placeholder="backend default">
+            <label for="filter-evidence" data-i18n="filter.evidence">evidence</label>
+            <select id="filter-evidence">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="verified" data-i18n="findings.verifiedonly">only findings backed by code</option>
+              <option value="unverified" data-i18n="filter.unverifiedonly">only unverified</option>
+            </select>
           </div>
-          <div class="field" id="ollama-field" hidden>
-            <label for="ollama-url" data-i18n="settings.ollamaurl">ollama url</label>
-            <input id="ollama-url" spellcheck="false"
-                   placeholder="http://host.docker.internal:11434">
-          </div>
-          <div class="settings-actions">
-            <button type="submit" data-i18n="settings.save">save</button>
-            <button type="button" id="clear-key" class="ghost"
-                    data-i18n="settings.removekey">remove key</button>
+          <div class="field">
+            <label for="filter-epistemic" data-i18n="filter.epistemic">epistemic status</label>
+            <select id="filter-epistemic">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="exists" data-i18n="epistemic.exists">exists</option>
+              <option value="reachable" data-i18n="epistemic.reachable">reachable</option>
+              <option value="corroborated" data-i18n="epistemic.corroborated">corroborated</option>
+              <option value="refuted" data-i18n="epistemic.refuted">refuted</option>
+              <option value="inconclusive" data-i18n="epistemic.inconclusive">inconclusive</option>
+              <option value="none" data-i18n="epistemic.none">not established</option>
+            </select>
           </div>
         </form>
-        <p id="settings-error" class="error" hidden></p>
-        <p id="settings-state" class="muted"></p>
+        <p id="findings-count" class="muted"></p>
+        <div id="findings-body"></div>
+      </section>
 
-        <div id="runner" hidden>
-          <h3 data-i18n="runner.title">run audits on your own machine</h3>
-          <p class="muted settings-intro" data-i18n="runner.intro">
-            The <code>claude-code</code> backend runs a program signed in on a
-            machine, which this server is not. Audits you queue are left waiting
-            for a runner on your computer to pick them up — see
-            <code>secaudit-runner.py</code>. Nothing but the findings leaves
-            your machine.
-          </p>
-          <div class="settings-actions">
+      <section class="view module" data-view="parallax" aria-labelledby="h-parallax" hidden>
+        <h1 id="h-parallax" data-i18n="nav.parallax">parallax</h1>
+        <p class="question" data-i18n="parallax.question"></p>
+        <div class="empty-state">
+          <p data-i18n="parallax.what"></p>
+          <p class="muted" data-i18n="parallax.phase"></p>
+        </div>
+      </section>
+
+      <section class="view module" data-view="falsifiability" aria-labelledby="h-falsifiability" hidden>
+        <h1 id="h-falsifiability" data-i18n="nav.falsifiability">falsifiability</h1>
+        <p class="question" data-i18n="falsifiability.question"></p>
+        <div class="empty-state">
+          <p data-i18n="falsifiability.what"></p>
+          <p class="muted" data-i18n="falsifiability.phase"></p>
+        </div>
+      </section>
+
+      <section class="view module" data-view="memory" aria-labelledby="h-memory" hidden>
+        <h1 id="h-memory" data-i18n="nav.memory">memory</h1>
+        <p class="question" data-i18n="memory.question"></p>
+        <div class="empty-state">
+          <p data-i18n="memory.what"></p>
+          <p class="muted" data-i18n="memory.phase"></p>
+        </div>
+      </section>
+
+      <section class="view module" data-view="leverage" aria-labelledby="h-leverage" hidden>
+        <h1 id="h-leverage" data-i18n="nav.leverage">leverage</h1>
+        <p class="question" data-i18n="leverage.question"></p>
+        <div class="empty-state">
+          <p data-i18n="leverage.what"></p>
+          <p class="muted" data-i18n="leverage.phase"></p>
+        </div>
+      </section>
+
+      <section class="view module" data-view="attacker" aria-labelledby="h-attacker" hidden>
+        <h1 id="h-attacker" data-i18n="nav.attacker">attacker</h1>
+        <p class="question" data-i18n="attacker.question"></p>
+        <div class="empty-state">
+          <p data-i18n="attacker.what"></p>
+          <p class="muted" data-i18n="attacker.phase"></p>
+        </div>
+      </section>
+
+      <section class="view" data-view="history" aria-labelledby="h-history" hidden>
+        <h1 id="h-history" data-i18n="nav.history">history</h1>
+        <form id="audit-form" class="audit-form" autocomplete="off">
+          <label class="sr-only" for="repo-url" data-i18n="audit.repo">repository</label>
+          <input id="repo-url" name="repo-url" type="text" spellcheck="false"
+                 placeholder="https://github.com/owner/repo" required>
+          <button type="submit" data-i18n="audit.run">run audit</button>
+        </form>
+        <p id="form-error" class="error" hidden></p>
+        <h2><span data-i18n="audits.title">audits</span>
+          <span id="audit-count" class="muted"></span></h2>
+        <div id="history-body"></div>
+        <p id="audits-empty" class="muted" data-i18n="audits.empty">no audits yet</p>
+        <p class="muted" data-i18n="history.metrics"></p>
+      </section>
+
+      <section class="view" data-view="settings" aria-labelledby="h-settings" hidden>
+        <h1 id="h-settings" data-i18n="nav.settings">settings</h1>
+
+        <section class="block" aria-labelledby="h-backend">
+          <h2 id="h-backend" data-i18n="settings.title">audit backend</h2>
+          <p class="muted settings-intro" data-i18n="settings.intro"></p>
+          <form id="settings-form" autocomplete="off">
+            <div class="field">
+              <label for="api-key" data-i18n="settings.apikey">api key</label>
+              <input id="api-key" type="password" spellcheck="false"
+                     placeholder="sk-ant-… or sk-…">
+            </div>
+            <div class="field">
+              <label for="backend" data-i18n="settings.backend">backend</label>
+              <select id="backend">
+                <option value="" data-i18n="settings.detect">detect from the key</option>
+                <option value="anthropic-api">anthropic-api</option>
+                <option value="openai-api">openai-api</option>
+                <option value="ollama" data-i18n="settings.ollama">ollama (free, local)</option>
+                <option value="claude-code" data-i18n="settings.claudecode">claude-code (local binary)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="model"><span data-i18n="settings.model">model</span>
+                <span class="muted" data-i18n="settings.optional">(optional)</span></label>
+              <input id="model" spellcheck="false" data-i18n-placeholder="settings.modelph"
+                     placeholder="backend default">
+            </div>
+            <div class="field" id="ollama-field" hidden>
+              <label for="ollama-url" data-i18n="settings.ollamaurl">ollama url</label>
+              <input id="ollama-url" spellcheck="false"
+                     placeholder="http://host.docker.internal:11434">
+            </div>
+            <div class="actions">
+              <button type="submit" data-i18n="settings.save">save</button>
+              <button type="button" id="clear-key" class="ghost"
+                      data-i18n="settings.removekey">remove key</button>
+            </div>
+          </form>
+          <p id="settings-error" class="error" hidden></p>
+          <p id="settings-state" class="muted"></p>
+        </section>
+
+        <section class="block" id="runner" aria-labelledby="h-runner" hidden>
+          <h2 id="h-runner" data-i18n="runner.title">run audits on your own machine</h2>
+          <p class="muted settings-intro" data-i18n="runner.intro"></p>
+          <div class="actions">
             <button type="button" id="runner-token"
                     data-i18n="runner.create">create runner token</button>
             <button type="button" id="runner-revoke" class="ghost"
                     data-i18n="runner.revoke">revoke</button>
           </div>
           <p id="runner-shown" class="muted" hidden></p>
-        </div>
+        </section>
+
+        <section class="block" aria-labelledby="h-display">
+          <h2 id="h-display" data-i18n="settings.display">display</h2>
+          <div class="field-row">
+            <div class="field">
+              <label for="lang" data-i18n="lang.label">language</label>
+              <select id="lang" class="lang-select">
+                <option value="en">English</option>
+                <option value="es">Castellano</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="theme-choice" data-i18n="theme.label">theme</label>
+              <select id="theme-choice">
+                <option value="system" data-i18n="theme.system">as the system</option>
+                <option value="dark" data-i18n="theme.dark">dark</option>
+                <option value="light" data-i18n="theme.light">light</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section class="block" aria-labelledby="h-jewels">
+          <h2 id="h-jewels" data-i18n="jewels.title">crown jewels</h2>
+          <p class="muted" data-i18n="jewels.phase"></p>
+        </section>
       </section>
+    </main>
 
-      <form id="audit-form" autocomplete="off">
-        <label class="sr-only" for="repo-url" data-i18n="audit.repo">repository</label>
-        <input id="repo-url" name="repo-url" type="text" spellcheck="false"
-               placeholder="https://github.com/owner/repo" required>
-        <button type="submit" data-i18n="audit.run">run audit</button>
-      </form>
-      <p id="form-error" class="error" hidden></p>
-
-      <div class="panes">
-        <section class="pane" id="audits-pane">
-          <h2><span data-i18n="audits.title">audits</span>
-            <span id="audit-count" class="muted"></span></h2>
-          <ul id="audit-list"></ul>
-          <p id="audits-empty" class="muted" data-i18n="audits.empty">no audits yet</p>
-        </section>
-
-        <section class="pane" id="detail-pane">
-          <h2><span data-i18n="findings.title">findings</span></h2>
-          <label class="verified-filter">
-            <input type="checkbox" id="verified-only">
-            <span data-i18n="findings.verifiedonly">only findings backed by code</span>
-          </label>
-          <p id="detail-empty" class="muted" data-i18n="findings.select">select an audit</p>
-          <div id="detail" hidden></div>
-        </section>
+    <aside class="drawer" id="drawer" aria-labelledby="drawer-title" hidden>
+      <div class="drawer-head">
+        <h2 id="drawer-title"></h2>
+        <button id="drawer-close" class="icon-button" type="button">
+          <span aria-hidden="true">&times;</span>
+          <span class="sr-only" data-i18n="drawer.close">close</span>
+        </button>
       </div>
-    </div>
-  </main>
+      <div class="drawer-body" id="drawer-body"></div>
+    </aside>
+  </div>
 
   <script src="/app.js"></script>
 </body>

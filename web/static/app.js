@@ -7,6 +7,39 @@ const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 const ACTIVE_STATUSES = new Set(["pending", "running"]);
 const POLL_MS = 3000;
 
+const SECTIONS = ["summary", "findings", "parallax", "falsifiability", "memory",
+                  "leverage", "attacker", "history", "settings"];
+// The sections that need an audit to show anything; the rest stand alone.
+const AUDIT_SECTIONS = new Set(SECTIONS.slice(0, 7));
+// Each module section, the module_runs name it reads, and the phase it lands in.
+const MODULES = {
+  parallax: { run: "parallax", phase: 5 },
+  falsifiability: { run: "falsifiability", phase: 4 },
+  memory: { run: "immune", phase: 6 },
+  leverage: { run: "leverage", phase: 7 },
+  attacker: { run: "attacker", phase: 8 },
+};
+const RISK_TIERS = { 1: "tier.1", 2: "tier.2", 3: "tier.3", 4: "tier.4",
+                     5: "tier.5", 6: "tier.6" };
+
+// Browser storage may be blocked; nothing here depends on it working.
+function stored(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (_) {
+    return null;
+  }
+}
+
+function store(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch (_) {
+    // the choice holds for this visit only
+  }
+}
+
 // ---------------------------------------------------------------------------
 // i18n
 //
@@ -22,15 +55,39 @@ const LANG_KEY = "secaudit.language";
 const TEXT = {
   en: {
     "lang.label": "language",
-    "nav.backend": "backend",
+    "nav.skip": "skip to content",
+    "nav.toggle": "show or hide the sections",
+    "nav.sections": "sections",
+    "nav.summary": "Summary",
+    "nav.findings": "Findings",
+    "nav.parallax": "Parallax",
+    "nav.falsifiability": "Falsifiability",
+    "nav.memory": "Memory",
+    "nav.leverage": "Leverage",
+    "nav.attacker": "Attacker",
+    "nav.history": "History",
+    "nav.settings": "Settings",
     "nav.signout": "sign out",
+    "nav.notrun": "not run",
+    "nav.phase": (n) => `phase ${n}`,
+    "top.project": "project",
+    "top.audit": "audit",
+    "top.search": "search findings",
+    "top.searchph": "search findings  /",
+    "theme.label": "theme",
+    "theme.system": "as the system",
+    "theme.dark": "dark",
+    "theme.light": "light",
+    "theme.todark": "Switch to dark mode",
+    "theme.tolight": "Switch to light mode",
+    "drawer.close": "close the detail panel",
     "signin.title": "sign in",
     "signin.lead": "secaudit audits GitHub repositories with the model of your " +
       "choice. Sign in to bring your own API key — your key and your audits " +
       "stay yours, and nobody else on this instance can see either.",
     "signin.button": "sign in with GitHub",
     "signin.disabled": "Sign-in is not configured on this instance yet.",
-    "settings.title": "audit backend",
+    "settings.title": "Audit backend",
     "settings.intro": "Paste an API key and secaudit works with it. The key is " +
       "encrypted before it is stored and is never sent back to this page.",
     "settings.apikey": "api key",
@@ -48,7 +105,12 @@ const TEXT = {
     "settings.ready": "ready",
     "settings.notready": "not ready",
     "settings.nobackend": "no backend",
-    "runner.title": "run audits on your own machine",
+    "settings.display": "Display",
+    "jewels.title": "Crown jewels",
+    "jewels.phase": "What an attacker would want most from each project — " +
+      "secrets, user data, deployment, administration. Declared here from " +
+      "phase 8, together with the Attacker section.",
+    "runner.title": "Run audits on your own machine",
     "runner.intro": "The claude-code backend runs a program signed in on a " +
       "machine, which this server is not. Audits you queue are left waiting " +
       "for a runner on your computer to pick them up — see " +
@@ -59,18 +121,108 @@ const TEXT = {
     "runner.revoked": "runner token revoked",
     "audit.repo": "repository",
     "audit.run": "run audit",
-    "audits.title": "audits",
+    "audits.title": "Audits",
     "audits.empty": "no audits yet",
-    "findings.title": "findings",
-    "findings.select": "select an audit",
+    "history.metrics": "How each metric moves from one commit to the next is " +
+      "drawn here once the modules record them.",
+    "history.repo": "repository",
+    "history.commit": "commit",
+    "history.when": "when",
+    "history.status": "status",
+    "history.findings": "findings",
+    "history.coverage": "coverage",
+    "summary.noaudits": "Nothing has been audited yet.",
+    "summary.start": "start an audit",
+    "summary.loading": "loading…",
+    "summary.integrity": "Integrity of the audit",
+    "summary.integrityphase": "Whether the auditor really read what it was " +
+      "given, measured with planted canaries. Arrives in phase 5.",
+    "summary.coverage": "Coverage",
+    "summary.nocoverage": "This audit predates coverage: what the auditor saw " +
+      "was not recorded.",
+    "summary.files": "Files left out or audited in part",
+    "summary.allaudited": "Every file was audited in full.",
+    "summary.findings": "Findings",
+    "summary.seefindings": "see the findings",
+    "summary.paths": "Critical paths and the fix that cuts most",
+    "summary.pathsphase": "The cheapest way in for each attacker profile and " +
+      "the single fix that closes most of them. Arrives in phase 8.",
+    "summary.modules": "What ran",
+    "summary.nomodules": "No module runs were recorded for this audit.",
+    "module.name": "module",
+    "module.status": "status",
+    "module.model": "model",
+    "module.tokens": "tokens in / out",
+    "module.duration": "duration",
+    "module.audit": "audit",
+    "module.evidence": "evidence check",
+    "coverage.file": "file",
+    "coverage.reason": "reason",
+    "coverage.tier": "risk",
+    "tier.1": "runs on its own",
+    "tier.2": "agent configuration",
+    "tier.3": "entry point",
+    "tier.4": "auth and secrets",
+    "tier.5": "code",
+    "tier.6": "tests, docs, data",
     "findings.verifiedonly": "only findings backed by code",
     "findings.none": "no findings reported",
     "findings.nonverified": "no findings backed by code in this audit",
+    "findings.nomatch": "no finding matches these filters",
     "findings.inprogress": "audit in progress…",
     "findings.failed": "audit failed",
     "findings.nofindings": "no findings",
     "findings.unverified": "unverified",
+    "findings.verified": "backed by code",
     "findings.counted": (n, v) => `${n} findings · ${v} backed by code`,
+    "findings.showing": (n) => ` · ${n} shown`,
+    "findings.expand": (title) => `show more of: ${title}`,
+    "findings.severity": "severity",
+    "findings.finding": "finding",
+    "findings.location": "location",
+    "findings.evidence": "evidence",
+    "findings.epistemic": "status",
+    "findings.category": "category",
+    "findings.anchor": "anchor",
+    "findings.note": "why it is unverified",
+    "findings.snippet": "the code it quotes",
+    "findings.description": "description",
+    "filter.severity": "severity",
+    "filter.evidence": "evidence",
+    "filter.epistemic": "epistemic status",
+    "filter.all": "all",
+    "filter.unverifiedonly": "only unverified",
+    "epistemic.exists": "exists",
+    "epistemic.reachable": "reachable",
+    "epistemic.corroborated": "corroborated",
+    "epistemic.refuted": "refuted",
+    "epistemic.inconclusive": "inconclusive",
+    "epistemic.none": "not established",
+    "parallax.question": "Does the model read the repository the way a person does?",
+    "parallax.what": "Each file seen several ways — as a person reads it, as " +
+      "bytes, as the machine runs it, as the model was shown it, as it was " +
+      "published — and every place where those views disagree, annotated over " +
+      "the code.",
+    "parallax.phase": "Arrives in phase 5, with the canaries that measure the " +
+      "audit's integrity.",
+    "falsifiability.question": "Does each finding survive a serious attempt to refute it?",
+    "falsifiability.what": "A source-to-sink hypothesis for every finding, the " +
+      "attempts made to refute it — call graph, sanitisers, reachability, a " +
+      "devil's advocate — and the evidence each one left.",
+    "falsifiability.phase": "Arrives in phase 4.",
+    "memory.question": "Has a flaw that was already fixed come back?",
+    "memory.what": "Rules learnt from the project's own fixes, checked against " +
+      "the commit that was vulnerable and the one that fixed it; the zombies " +
+      "they catch; and their export to Semgrep.",
+    "memory.phase": "Arrives in phase 6.",
+    "leverage.question": "Which files give the most power over the system with the least oversight?",
+    "leverage.what": "A map of every file by leverage against oversight, and " +
+      "what each agent configuration lets an agent do.",
+    "leverage.phase": "Arrives in phase 7.",
+    "attacker.question": "How far does each kind of attacker get, and which fix stops them first?",
+    "attacker.what": "Choose a profile and a crown jewel to see the path " +
+      "between them, step by step, with the evidence for each step.",
+    "attacker.phase": "Arrives in phase 8.",
     "coverage.line": (c) => `${c.audited} of ${c.files} files audited in ` +
       `${c.requests} request${c.requests === 1 ? "" : "s"}` +
       (c.partial ? ` (${c.partial} in part)` : "") +
@@ -95,6 +247,7 @@ const TEXT = {
     "status.running": "running",
     "status.done": "done",
     "status.error": "error",
+    "status.ok": "ok",
     "trigger.manual": "manual",
     "trigger.webhook": "webhook",
     "severity.critical": "critical",
@@ -105,15 +258,39 @@ const TEXT = {
   },
   es: {
     "lang.label": "idioma",
-    "nav.backend": "motor",
+    "nav.skip": "saltar al contenido",
+    "nav.toggle": "mostrar u ocultar las secciones",
+    "nav.sections": "secciones",
+    "nav.summary": "Resumen",
+    "nav.findings": "Hallazgos",
+    "nav.parallax": "Paralaje",
+    "nav.falsifiability": "Falsabilidad",
+    "nav.memory": "Memoria",
+    "nav.leverage": "Palanca",
+    "nav.attacker": "Atacante",
+    "nav.history": "Historial",
+    "nav.settings": "Ajustes",
     "nav.signout": "cerrar sesión",
+    "nav.notrun": "sin ejecutar",
+    "nav.phase": (n) => `fase ${n}`,
+    "top.project": "proyecto",
+    "top.audit": "auditoría",
+    "top.search": "buscar hallazgos",
+    "top.searchph": "buscar hallazgos  /",
+    "theme.label": "tema",
+    "theme.system": "como el sistema",
+    "theme.dark": "oscuro",
+    "theme.light": "claro",
+    "theme.todark": "Cambiar a modo oscuro",
+    "theme.tolight": "Cambiar a modo claro",
+    "drawer.close": "cerrar el panel de detalle",
     "signin.title": "iniciar sesión",
     "signin.lead": "secaudit audita repositorios de GitHub con el modelo que " +
       "elijas. Inicia sesión para usar tu propia clave de API: tu clave y tus " +
       "auditorías son tuyas, y nadie más en esta instancia puede verlas.",
     "signin.button": "iniciar sesión con GitHub",
     "signin.disabled": "El inicio de sesión aún no está configurado en esta instancia.",
-    "settings.title": "motor de auditoría",
+    "settings.title": "Motor de auditoría",
     "settings.intro": "Pega una clave de API y secaudit funciona con ella. La " +
       "clave se cifra antes de guardarse y nunca se devuelve a esta página.",
     "settings.apikey": "clave de api",
@@ -131,7 +308,12 @@ const TEXT = {
     "settings.ready": "listo",
     "settings.notready": "no disponible",
     "settings.nobackend": "sin motor",
-    "runner.title": "ejecutar auditorías en tu propia máquina",
+    "settings.display": "Visualización",
+    "jewels.title": "Joyas de la corona",
+    "jewels.phase": "Lo que un atacante querría por encima de todo en cada " +
+      "proyecto: secretos, datos de usuarios, despliegue, administración. Se " +
+      "declaran aquí a partir de la fase 8, junto con la sección Atacante.",
+    "runner.title": "Ejecutar auditorías en tu propia máquina",
     "runner.intro": "El motor claude-code ejecuta un programa con la sesión " +
       "iniciada en una máquina, cosa que este servidor no es. Las auditorías " +
       "que encoles quedan esperando a que las recoja un runner en tu " +
@@ -143,18 +325,108 @@ const TEXT = {
     "runner.revoked": "token de runner revocado",
     "audit.repo": "repositorio",
     "audit.run": "auditar",
-    "audits.title": "auditorías",
+    "audits.title": "Auditorías",
     "audits.empty": "todavía no hay auditorías",
-    "findings.title": "hallazgos",
-    "findings.select": "selecciona una auditoría",
+    "history.metrics": "Cómo evoluciona cada métrica de un commit al siguiente " +
+      "se dibujará aquí cuando los módulos las registren.",
+    "history.repo": "repositorio",
+    "history.commit": "commit",
+    "history.when": "cuándo",
+    "history.status": "estado",
+    "history.findings": "hallazgos",
+    "history.coverage": "cobertura",
+    "summary.noaudits": "Todavía no se ha auditado nada.",
+    "summary.start": "empezar una auditoría",
+    "summary.loading": "cargando…",
+    "summary.integrity": "Integridad de la auditoría",
+    "summary.integrityphase": "Si el auditor leyó de verdad lo que se le dio, " +
+      "medido con canarios plantados. Llega en la fase 5.",
+    "summary.coverage": "Cobertura",
+    "summary.nocoverage": "Esta auditoría es anterior a la cobertura: no se " +
+      "registró qué vio el auditor.",
+    "summary.files": "Ficheros sin auditar o auditados en parte",
+    "summary.allaudited": "Se auditaron todos los ficheros completos.",
+    "summary.findings": "Hallazgos",
+    "summary.seefindings": "ver los hallazgos",
+    "summary.paths": "Caminos críticos y el arreglo que más corta",
+    "summary.pathsphase": "La entrada más barata para cada perfil de atacante " +
+      "y el arreglo único que cierra más caminos. Llega en la fase 8.",
+    "summary.modules": "Qué se ejecutó",
+    "summary.nomodules": "No hay ejecuciones de módulos registradas para esta auditoría.",
+    "module.name": "módulo",
+    "module.status": "estado",
+    "module.model": "modelo",
+    "module.tokens": "tokens entrada / salida",
+    "module.duration": "duración",
+    "module.audit": "auditoría",
+    "module.evidence": "comprobación de evidencia",
+    "coverage.file": "fichero",
+    "coverage.reason": "motivo",
+    "coverage.tier": "riesgo",
+    "tier.1": "se ejecuta solo",
+    "tier.2": "configuración de agentes",
+    "tier.3": "punto de entrada",
+    "tier.4": "autenticación y secretos",
+    "tier.5": "código",
+    "tier.6": "tests, documentación, datos",
     "findings.verifiedonly": "solo hallazgos con código que los respalde",
     "findings.none": "no se han reportado hallazgos",
     "findings.nonverified": "ningún hallazgo de esta auditoría tiene código que lo respalde",
+    "findings.nomatch": "ningún hallazgo coincide con estos filtros",
     "findings.inprogress": "auditoría en curso…",
     "findings.failed": "la auditoría falló",
     "findings.nofindings": "sin hallazgos",
     "findings.unverified": "sin verificar",
+    "findings.verified": "con código que lo respalda",
     "findings.counted": (n, v) => `${n} hallazgos · ${v} con código que los respalda`,
+    "findings.showing": (n) => ` · ${n} mostrados`,
+    "findings.expand": (title) => `ver más de: ${title}`,
+    "findings.severity": "severidad",
+    "findings.finding": "hallazgo",
+    "findings.location": "ubicación",
+    "findings.evidence": "evidencia",
+    "findings.epistemic": "estado",
+    "findings.category": "categoría",
+    "findings.anchor": "ancla",
+    "findings.note": "por qué no está verificado",
+    "findings.snippet": "el código que cita",
+    "findings.description": "descripción",
+    "filter.severity": "severidad",
+    "filter.evidence": "evidencia",
+    "filter.epistemic": "estado epistémico",
+    "filter.all": "todos",
+    "filter.unverifiedonly": "solo sin verificar",
+    "epistemic.exists": "existe",
+    "epistemic.reachable": "alcanzable",
+    "epistemic.corroborated": "corroborado",
+    "epistemic.refuted": "refutado",
+    "epistemic.inconclusive": "no concluyente",
+    "epistemic.none": "sin establecer",
+    "parallax.question": "¿Lee el modelo el repositorio como lo lee una persona?",
+    "parallax.what": "Cada fichero visto de varias maneras —como lo lee una " +
+      "persona, como bytes, como lo ejecuta la máquina, como se le mostró al " +
+      "modelo, como se publicó— y cada punto donde esas vistas no coinciden, " +
+      "anotado sobre el código.",
+    "parallax.phase": "Llega en la fase 5, con los canarios que miden la " +
+      "integridad de la auditoría.",
+    "falsifiability.question": "¿Sobrevive cada hallazgo a un intento serio de refutarlo?",
+    "falsifiability.what": "Una hipótesis de origen a destino por cada " +
+      "hallazgo, los intentos de refutarla —grafo de llamadas, saneadores, " +
+      "alcanzabilidad, un abogado del diablo— y la evidencia de cada uno.",
+    "falsifiability.phase": "Llega en la fase 4.",
+    "memory.question": "¿Ha vuelto algún fallo que ya se había arreglado?",
+    "memory.what": "Reglas aprendidas de los propios arreglos del proyecto, " +
+      "comprobadas contra el commit vulnerable y el que lo arregló; los " +
+      "zombis que detectan; y su exportación a Semgrep.",
+    "memory.phase": "Llega en la fase 6.",
+    "leverage.question": "¿Qué ficheros dan más poder sobre el sistema con menos vigilancia?",
+    "leverage.what": "Un mapa de todos los ficheros según su palanca frente a " +
+      "su vigilancia, y lo que cada configuración de agente le permite hacer.",
+    "leverage.phase": "Llega en la fase 7.",
+    "attacker.question": "¿Hasta dónde llega cada tipo de atacante y qué arreglo lo frena antes?",
+    "attacker.what": "Elige un perfil y una joya de la corona para ver el " +
+      "camino entre ellos, paso a paso, con la evidencia de cada paso.",
+    "attacker.phase": "Llega en la fase 8.",
     "coverage.line": (c) => `${c.audited} de ${c.files} ficheros auditados en ` +
       `${c.requests} petici${c.requests === 1 ? "ón" : "ones"}` +
       (c.partial ? ` (${c.partial} en parte)` : "") +
@@ -179,6 +451,7 @@ const TEXT = {
     "status.running": "en curso",
     "status.done": "terminada",
     "status.error": "error",
+    "status.ok": "correcto",
     "trigger.manual": "manual",
     "trigger.webhook": "webhook",
     "severity.critical": "crítica",
@@ -211,8 +484,8 @@ const CATEGORIES = {
 };
 
 function initialLanguage() {
-  const stored = localStorage.getItem(LANG_KEY);
-  if (LANGUAGES.includes(stored)) return stored;
+  const saved = stored(LANG_KEY);
+  if (LANGUAGES.includes(saved)) return saved;
   return String(navigator.language || "en").toLowerCase().startsWith("es")
     ? "es" : "en";
 }
@@ -237,18 +510,26 @@ function applyStaticText() {
   for (const target of document.querySelectorAll("[data-i18n-placeholder]")) {
     target.placeholder = t(target.dataset.i18nPlaceholder);
   }
+  for (const target of document.querySelectorAll("[data-i18n-label]")) {
+    target.setAttribute("aria-label", t(target.dataset.i18nLabel));
+  }
+  renderThemeToggle();
 }
 
 const el = (id) => document.getElementById(id);
-
-let selectedId = null;
-let pollTimer = null;
 
 function node(tag, className, text) {
   const n = document.createElement(tag);
   if (className) n.className = className;
   if (text !== undefined && text !== null) n.textContent = String(text);
   return n;
+}
+
+function button(text, className, onClick) {
+  const b = node("button", className, text);
+  b.type = "button";
+  if (onClick) b.addEventListener("click", onClick);
+  return b;
 }
 
 async function api(path, options) {
@@ -288,211 +569,830 @@ function relativeTime(iso) {
   return then.toLocaleDateString(lang);
 }
 
+function totalOf(summary) {
+  return Object.values(summary || {}).reduce((a, b) => a + b, 0);
+}
+
+// Severity is never colour alone: the word is always there, the marker's
+// shape differs per level (style.css).
+function severityNode(severity, count) {
+  const label = t(`severity.${severity}`);
+  return node("span", `severity severity-${severity}`,
+              count === undefined ? label : `${label} ${count}`);
+}
+
+function statusNode(status) {
+  return node("span", `status status-${status}`, t(`status.${status}`));
+}
+
 function countsNode(summary) {
   const counts = node("div", "counts");
-  let total = 0;
   for (const severity of SEVERITIES) {
     const n = (summary && summary[severity]) || 0;
-    total += n;
-    if (n > 0) {
-      counts.append(node("span", `count count-${severity}`,
-                         `${t(`severity.${severity}`)} ${n}`));
-    }
+    if (n > 0) counts.append(severityNode(severity, n));
   }
-  if (total === 0) counts.append(node("span", "muted", t("findings.nofindings")));
+  if (totalOf(summary) === 0) counts.append(node("span", "muted", t("findings.nofindings")));
   return counts;
 }
 
-// ---------------------------------------------------------------------------
-// audit list
-// ---------------------------------------------------------------------------
-
-function auditNode(audit) {
-  const item = document.createElement("li");
-  const button = node("button", "audit");
-  button.type = "button";
-  button.setAttribute("aria-current", String(audit.id === selectedId));
-  button.addEventListener("click", () => select(audit.id));
-
-  button.append(node("span", "audit-repo", repoLabel(audit.repo_url)));
-
-  const meta = node("div", "audit-meta");
-  meta.append(node("span", `status status-${audit.status}`,
-                   t(`status.${audit.status}`)));
-  if (audit.branch) meta.append(node("span", null, audit.branch));
-  if (audit.commit_sha) meta.append(node("span", null, shortSha(audit.commit_sha)));
-  meta.append(node("span", null, t(`trigger.${audit.trigger}`)));
-  const when = relativeTime(audit.created_at);
-  if (when) meta.append(node("span", null, when));
-  button.append(meta);
-
-  if (audit.status === "done") button.append(countsNode(audit.summary));
-  item.append(button);
-  return item;
+function headerRow(headers) {
+  const head = document.createElement("thead");
+  const tr = document.createElement("tr");
+  for (const h of headers) {
+    const th = node("th", h.className, h.text);
+    th.scope = "col";
+    tr.append(th);
+  }
+  head.append(tr);
+  return head;
 }
 
-function renderList(audits) {
-  const list = el("audit-list");
-  list.replaceChildren(...audits.map(auditNode));
-  el("audits-empty").hidden = audits.length > 0;
-  el("audit-count").textContent = audits.length ? `(${audits.length})` : "";
+// bodies: <tr>s for a single <tbody>, or <tbody>s when rows come in groups.
+function table(headers, bodies) {
+  const wrap = node("div", "table-wrap");
+  const tbl = document.createElement("table");
+  tbl.append(headerRow(headers));
+  if (bodies.length && bodies[0].tagName === "TBODY") {
+    tbl.append(...bodies);
+  } else {
+    const body = document.createElement("tbody");
+    body.append(...bodies);
+    tbl.append(body);
+  }
+  wrap.append(tbl);
+  return wrap;
+}
+
+function row(cells, className) {
+  const tr = document.createElement("tr");
+  if (className) tr.className = className;
+  for (const cell of cells) {
+    const td = document.createElement("td");
+    const plain = cell === null || cell === undefined || typeof cell !== "object"
+      || cell instanceof Node;
+    const content = plain ? cell : cell.content;
+    if (!plain && cell.className) td.className = cell.className;
+    if (content instanceof Node) td.append(content);
+    else if (content !== null && content !== undefined) td.textContent = String(content);
+    tr.append(td);
+  }
+  return tr;
+}
+
+function block(titleText, ...children) {
+  const section = node("section", "block");
+  section.append(node("h2", null, titleText), ...children);
+  return section;
+}
+
+function facts(pairs) {
+  const dl = node("dl", "facts");
+  for (const [term, value] of pairs) {
+    const item = document.createElement("div");
+    const dd = document.createElement("dd");
+    if (value instanceof Node) dd.append(value);
+    else dd.textContent = String(value);
+    item.append(node("dt", null, term), dd);
+    dl.append(item);
+  }
+  return dl;
 }
 
 // ---------------------------------------------------------------------------
-// detail pane
+// state
 // ---------------------------------------------------------------------------
 
-function findingNode(finding) {
-  const verified = finding.verification_status === "verified";
-  const item = node("article", `finding${verified ? "" : " finding-unverified"}`);
+const state = {
+  loaded: false,           // the list of audits has arrived at least once
+  audits: [],
+  current: null,           // the selected audit, with its findings
+  selectedId: null,
+  section: "summary",
+  coverage: new Map(),     // audit id -> coverage rows, fetched when opened
+  expanded: new Set(),     // finding ids whose row is open
+  drawerFinding: null,     // finding id shown in the detail panel
+  drawerOpener: null,      // what gets focus back when the panel closes
+  query: "",
+};
 
-  const head = node("div", "finding-head");
-  head.append(node("span", `severity severity-${finding.severity}`,
-                   t(`severity.${finding.severity}`)));
-  head.append(node("span", "finding-title", finding.title));
-  // An unverified finding is reported, not hidden — but it never looks like a
-  // confirmed one.
-  if (!verified) head.append(node("span", "badge-unverified", t("findings.unverified")));
-  item.append(head);
+let pollTimer = null;
 
-  // line is where the snippet was found in the file, checked by the server.
-  const lines = finding.line_end && finding.line_end !== finding.line
-    ? `${finding.line}-${finding.line_end}` : finding.line;
-  const at = finding.line ? `${finding.file}:${lines}` : finding.file;
-  const where = [at, finding.anchor, categoryLabel(finding.category)]
-    .filter(Boolean);
-  if (where.length) item.append(node("div", "finding-where", where.join("  ·  ")));
-  // The snippet is code from an audited third-party repo: textContent only.
-  if (verified && finding.code_snippet) {
-    item.append(node("pre", "finding-snippet", finding.code_snippet));
+// One project per owner and repository. Audits from before projects existed
+// were given one by migration 0010, so project_id is only missing on an audit
+// that has not been stored yet; the repository stands in for it.
+function projectKey(audit) {
+  return audit.project_id ? `p${audit.project_id}` : `r${audit.repo_url}`;
+}
+
+function projects() {
+  const byKey = new Map();
+  for (const audit of state.audits) {
+    const key = projectKey(audit);
+    if (!byKey.has(key)) byKey.set(key, { key, repo_url: audit.repo_url, audits: [] });
+    byKey.get(key).audits.push(audit);
   }
-  if (!verified && finding.verification_note) {
-    item.append(node("div", "finding-note muted", finding.verification_note));
+  return [...byKey.values()];
+}
+
+function selectedAudit() {
+  return state.audits.find((a) => a.id === state.selectedId) || null;
+}
+
+// ---------------------------------------------------------------------------
+// routing: #section or #section/<audit id>
+// ---------------------------------------------------------------------------
+
+function parseHash() {
+  const [section, id] = location.hash.replace(/^#/, "").split("/");
+  return { section: SECTIONS.includes(section) ? section : "summary",
+           id: id ? decodeURIComponent(id) : null };
+}
+
+function hashFor(section, id) {
+  return AUDIT_SECTIONS.has(section) && id
+    ? `#${section}/${encodeURIComponent(id)}` : `#${section}`;
+}
+
+function go(section, id = state.selectedId) {
+  const target = hashFor(section, id);
+  if (location.hash === target) applyRoute();
+  else location.hash = target;
+}
+
+function renderNavLinks() {
+  for (const link of document.querySelectorAll("[data-section]")) {
+    link.href = hashFor(link.dataset.section, state.selectedId);
+    if (link.dataset.section === state.section) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   }
-  if (finding.description) item.append(node("p", "finding-desc", finding.description));
-  return item;
+}
+
+function applyRoute() {
+  if (el("app").hidden) return;
+  const { section, id } = parseHash();
+  const sectionChanged = section !== state.section;
+  state.section = section;
+  if (id && id !== state.selectedId) selectAudit(id, { route: false });
+  for (const view of document.querySelectorAll("[data-view]")) {
+    view.hidden = view.dataset.view !== section;
+  }
+  if (narrow()) setNav(false);
+  renderSection();
+  if (sectionChanged) el("content").scrollTop = 0;
+  if (section === "settings") loadSettings();
+}
+
+window.addEventListener("hashchange", applyRoute);
+
+// ---------------------------------------------------------------------------
+// top bar: project and audit
+// ---------------------------------------------------------------------------
+
+function auditLabel(audit) {
+  const when = audit.created_at ? new Date(audit.created_at).toLocaleString(lang, {
+    dateStyle: "short", timeStyle: "short" }) : "";
+  const what = shortSha(audit.commit_sha) || t(`status.${audit.status}`);
+  return [what, audit.branch, when].filter(Boolean).join(" · ");
+}
+
+function renderContext() {
+  const all = projects();
+  el("context").hidden = all.length === 0;
+  const current = selectedAudit();
+  const currentKey = current ? projectKey(current) : null;
+
+  const projectSelect = el("project-select");
+  projectSelect.replaceChildren(...all.map((p) => {
+    const option = node("option", null, repoLabel(p.repo_url));
+    option.value = p.key;
+    return option;
+  }));
+  if (currentKey) projectSelect.value = currentKey;
+
+  const project = all.find((p) => p.key === currentKey);
+  const auditSelect = el("audit-select");
+  auditSelect.replaceChildren(...(project ? project.audits : []).map((a) => {
+    const option = node("option", null, auditLabel(a));
+    option.value = a.id;
+    return option;
+  }));
+  if (current) auditSelect.value = current.id;
+}
+
+el("project-select").addEventListener("change", () => {
+  const project = projects().find((p) => p.key === el("project-select").value);
+  if (project) selectAudit(project.audits[0].id);
+});
+
+el("audit-select").addEventListener("change", () => {
+  selectAudit(el("audit-select").value);
+});
+
+// ---------------------------------------------------------------------------
+// sidebar indicators: the state of the last run and how many items it left
+// ---------------------------------------------------------------------------
+
+function setIndicator(name, text, stateName, label) {
+  const target = document.querySelector(`[data-indicator="${name}"]`);
+  target.textContent = text || "";
+  if (stateName) target.dataset.state = stateName;
+  else delete target.dataset.state;
+  if (label) target.title = label;
+  else target.removeAttribute("title");
+}
+
+function renderIndicators() {
+  const audit = selectedAudit();
+  const current = state.current && state.current.id === state.selectedId
+    ? state.current : null;
+  const coverage = audit && audit.coverage;
+  const auditState = !audit ? null
+    : ACTIVE_STATUSES.has(audit.status) ? "running"
+    : audit.status === "error" ? "error" : "ok";
+  setIndicator("summary",
+               coverage && coverage.files
+                 ? `${Math.round((100 * coverage.audited) / coverage.files)}%` : "",
+               auditState, audit ? t(`status.${audit.status}`) : null);
+  setIndicator("findings", audit && audit.status === "done"
+    ? String(totalOf(audit.summary)) : "");
+  const runs = (current && current.modules) || [];
+  for (const [section, module] of Object.entries(MODULES)) {
+    const run = runs.filter((r) => r.module === module.run).pop();
+    if (run) {
+      const items = run.detail && Number.isFinite(run.detail.items)
+        ? String(run.detail.items) : t(`status.${run.status}`);
+      setIndicator(section, items, run.status === "ok" ? "ok" : "error",
+                   t(`status.${run.status}`));
+    } else {
+      setIndicator(section, t("nav.phase", module.phase), null, t("nav.notrun"));
+    }
+  }
+  setIndicator("history", state.audits.length ? String(state.audits.length) : "");
+}
+
+// ---------------------------------------------------------------------------
+// sections
+// ---------------------------------------------------------------------------
+
+function renderSection() {
+  renderNavLinks();
+  renderContext();
+  renderIndicators();
+  if (state.section === "summary") renderSummary();
+  else if (state.section === "findings") renderFindings();
+  else if (state.section === "history") renderHistory();
+  renderDrawerFinding();
+}
+
+// Fills target with why there is nothing to show yet, if there is not.
+function needsAudit(target) {
+  if (!state.loaded || (state.selectedId && !(state.current
+      && state.current.id === state.selectedId))) {
+    target.replaceChildren(node("p", "muted", t("summary.loading")));
+    return true;
+  }
+  if (!state.selectedId) {
+    const empty = node("div", "empty-state");
+    empty.append(node("p", null, t("summary.noaudits")),
+                 button(t("summary.start"), null, () => {
+                   go("history");
+                   el("repo-url").focus();
+                 }));
+    target.replaceChildren(empty);
+    return true;
+  }
+  return false;
 }
 
 function deleteButton(audit) {
   // Two clicks rather than a modal: the second one is the confirmation.
-  const button = node("button", "ghost danger", t("detail.delete"));
-  button.type = "button";
+  const b = button(t("detail.delete"), "ghost danger");
   let armed = false;
-  button.addEventListener("click", async () => {
+  b.addEventListener("click", async () => {
     if (!armed) {
       armed = true;
-      button.textContent = t("detail.deleteconfirm");
+      b.textContent = t("detail.deleteconfirm");
       setTimeout(() => {
         armed = false;
-        button.textContent = t("detail.delete");
+        b.textContent = t("detail.delete");
       }, 4000);
       return;
     }
-    button.disabled = true;
+    b.disabled = true;
     try {
-      await api(`/api/audits/${encodeURIComponent(audit.id)}`,
-                { method: "DELETE" });
-      selectedId = null;
-      el("detail").hidden = true;
-      el("detail-empty").hidden = false;
+      await api(`/api/audits/${encodeURIComponent(audit.id)}`, { method: "DELETE" });
+      state.selectedId = null;
+      state.current = null;
+      closeDrawer();
       await refresh();
+      go(state.section);
     } catch (e) {
-      button.disabled = false;
-      button.textContent = e.message;
+      b.disabled = false;
+      b.textContent = e.message;
     }
   });
-  return button;
+  return b;
 }
 
-function detailHead(audit) {
-  const head = node("div", "detail-head");
-  const title = node("div", "detail-title");
-  title.append(node("span", "finding-title", repoLabel(audit.repo_url)),
-               deleteButton(audit));
-  head.append(title);
-
-  const dl = document.createElement("dl");
-  const rows = [
-    ["status", t("detail.status"), t(`status.${audit.status}`)],
-    ["branch", t("detail.branch"), audit.branch || t("detail.default")],
-    ["commit", t("detail.commit"), shortSha(audit.commit_sha) || "—"],
-    ["trigger", t("detail.trigger"), t(`trigger.${audit.trigger}`)],
-    ["language", t("detail.language"), audit.language || "en"],
-    ["started", t("detail.started"),
+function auditHead(audit) {
+  const wrap = document.createDocumentFragment();
+  const head = node("div", "audit-head");
+  head.append(node("span", "audit-repo-title", repoLabel(audit.repo_url)),
+              deleteButton(audit));
+  const pairs = [
+    [t("detail.status"), statusNode(audit.status)],
+    [t("detail.branch"), audit.branch || t("detail.default")],
+    [t("detail.commit"), shortSha(audit.commit_sha) || "—"],
+    [t("detail.trigger"), t(`trigger.${audit.trigger}`)],
+    [t("detail.language"), audit.language || "en"],
+    [t("detail.started"),
      audit.created_at ? new Date(audit.created_at).toLocaleString(lang) : "—"],
   ];
-  if (audit.error) rows.push(["error", t("detail.error"), audit.error]);
-  for (const [key, term, value] of rows) {
-    dl.append(node("dt", null, term));
-    dl.append(node("dd", key === "status" ? `status status-${audit.status}` : null, value));
-  }
-  head.append(dl);
-  head.append(countsNode(audit.summary));
-  return head;
+  if (audit.error) pairs.push([t("detail.error"), audit.error]);
+  wrap.append(head, facts(pairs));
+  return wrap;
 }
 
-function renderDetail(audit) {
-  const detail = el("detail");
-  detail.replaceChildren(detailHead(audit));
-
-  const findings = audit.findings || [];
-  const total = Object.values(audit.summary || {}).reduce((a, b) => a + b, 0);
-  if (audit.status === "done" && total > 0) {
-    detail.append(node("p", "muted verified-count",
-                       t("findings.counted", total, audit.verified_count || 0)));
-  }
-  // What the auditor was shown. Audits from before coverage have none.
+function coverageBlock(audit) {
   const coverage = audit.coverage;
-  if (audit.status === "done" && coverage && coverage.files) {
-    detail.append(node("p", "muted coverage", t("coverage.line", coverage)));
-    if (coverage.high_risk_not_audited) {
-      detail.append(node("p", "coverage-warning",
-                         t("coverage.highrisk", coverage.high_risk_not_audited)));
-    }
-    if (coverage.padding_suspected) {
-      detail.append(node("p", "coverage-warning", t("coverage.padding")));
-    }
+  const section = block(t("summary.coverage"));
+  if (!coverage || !coverage.files) {
+    section.append(node("p", "muted",
+                        ACTIVE_STATUSES.has(audit.status) ? t("findings.inprogress")
+                          : audit.status === "error" ? t("findings.failed")
+                          : t("summary.nocoverage")));
+    return section;
   }
-  if (findings.length === 0) {
-    const message = ACTIVE_STATUSES.has(audit.status)
-      ? t("findings.inprogress")
-      : audit.status === "error" ? t("findings.failed")
-      : el("verified-only").checked && total > 0 ? t("findings.nonverified")
-      : t("findings.none");
-    detail.append(node("p", "muted", message));
-  } else {
-    const order = new Map(SEVERITIES.map((s, i) => [s, i]));
-    const sorted = [...findings].sort(
-      (a, b) => (order.get(a.severity) ?? 99) - (order.get(b.severity) ?? 99)
-    );
-    detail.append(...sorted.map(findingNode));
+  section.append(node("p", null, t("coverage.line", coverage)));
+  if (coverage.high_risk_not_audited) {
+    section.append(node("p", "coverage-warning",
+                        t("coverage.highrisk", coverage.high_risk_not_audited)));
+  }
+  if (coverage.padding_suspected) {
+    section.append(node("p", "coverage-warning", t("coverage.padding")));
   }
 
-  detail.hidden = false;
-  el("detail-empty").hidden = true;
+  // The list is long and read rarely: fetched the first time it is opened.
+  const details = node("details", "block");
+  details.append(node("summary", null, t("summary.files")));
+  const holder = node("div");
+  details.append(holder);
+  const fill = () => {
+    const left = state.coverage.get(audit.id)
+      .filter((r) => !r.audited || String(r.reason).startsWith("audited in part"))
+      .sort((a, b) => a.risk_tier - b.risk_tier || a.file.localeCompare(b.file));
+    if (left.length === 0) {
+      holder.replaceChildren(node("p", "muted", t("summary.allaudited")));
+      return;
+    }
+    holder.replaceChildren(table(
+      [{ text: t("coverage.file") }, { text: t("coverage.tier") },
+       { text: t("coverage.reason") }],
+      left.map((r) => row([{ className: "where", content: r.file },
+                           t(RISK_TIERS[r.risk_tier] || "tier.5"),
+                           r.reason]))));
+  };
+  details.addEventListener("toggle", async () => {
+    if (!details.open) return;
+    if (!state.coverage.has(audit.id)) {
+      holder.replaceChildren(node("p", "muted", t("summary.loading")));
+      try {
+        const body = await api(`/api/audits/${encodeURIComponent(audit.id)}/coverage`);
+        state.coverage.set(audit.id, body.files || []);
+      } catch (e) {
+        holder.replaceChildren(node("p", "error", e.message));
+        return;
+      }
+    }
+    fill();
+  });
+  section.append(details);
+  return section;
 }
+
+function moduleRunsBlock(audit) {
+  const details = node("details", "block");
+  details.append(node("summary", null, t("summary.modules")));
+  const runs = audit.modules || [];
+  if (runs.length === 0) {
+    details.append(node("p", "muted", t("summary.nomodules")));
+    return details;
+  }
+  const number = (n) => Number(n || 0).toLocaleString(lang);
+  details.append(table(
+    [{ text: t("module.name") }, { text: t("module.status") },
+     { text: t("module.model") }, { text: t("module.tokens"), className: "num" },
+     { text: t("module.duration"), className: "num" }],
+    runs.map((r) => row([
+      TEXT.en[`module.${r.module}`] ? t(`module.${r.module}`) : r.module,
+      statusNode(r.status),
+      [r.backend, r.model].filter(Boolean).join(" · ") || "—",
+      { className: "num", content: r.tokens_in || r.tokens_out
+        ? `${number(r.tokens_in)} / ${number(r.tokens_out)}` : "—" },
+      { className: "num", content: Number.isFinite(r.duration_ms)
+        ? `${(r.duration_ms / 1000).toFixed(1)} s` : "—" },
+    ]))));
+  return details;
+}
+
+function renderSummary() {
+  const target = el("summary-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const total = totalOf(audit.summary);
+
+  const findings = block(t("summary.findings"), countsNode(audit.summary));
+  if (audit.status === "done" && total > 0) {
+    findings.append(node("p", "muted", t("findings.counted", total, audit.verified_count || 0)),
+                    button(t("summary.seefindings"), "link", () => go("findings")));
+  } else if (ACTIVE_STATUSES.has(audit.status)) {
+    findings.append(node("p", "muted", t("findings.inprogress")));
+  }
+
+  // Keep open whatever the reader had open across the re-render polling does.
+  const open = new Set([...target.querySelectorAll("details[open] > summary")]
+    .map((s) => s.textContent));
+  target.replaceChildren(
+    auditHead(audit),
+    block(t("summary.integrity"), node("p", "placeholder", t("summary.integrityphase"))),
+    coverageBlock(audit),
+    findings,
+    block(t("summary.paths"), node("p", "placeholder", t("summary.pathsphase"))),
+    moduleRunsBlock(audit),
+  );
+  for (const summary of target.querySelectorAll("details > summary")) {
+    if (open.has(summary.textContent)) summary.parentElement.open = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// findings
+// ---------------------------------------------------------------------------
+
+function whereText(finding) {
+  // line is where the snippet was found in the file, checked by the server.
+  const lines = finding.line_end && finding.line_end !== finding.line
+    ? `${finding.line}-${finding.line_end}` : finding.line;
+  return finding.line ? `${finding.file}:${lines}` : finding.file || "";
+}
+
+function filteredFindings() {
+  const severity = el("filter-severity").value;
+  const evidence = el("filter-evidence").value;
+  const epistemic = el("filter-epistemic").value;
+  const query = state.query.trim().toLowerCase();
+  const order = new Map(SEVERITIES.map((s, i) => [s, i]));
+  return (state.current.findings || [])
+    .filter((f) => !severity || f.severity === severity)
+    .filter((f) => evidence !== "unverified" || f.verification_status !== "verified")
+    .filter((f) => !epistemic
+            || (epistemic === "none" ? !f.epistemic_status : f.epistemic_status === epistemic))
+    .filter((f) => !query || [f.title, f.file, f.anchor, f.description, f.category,
+                              categoryLabel(f.category)]
+      .some((v) => String(v || "").toLowerCase().includes(query)))
+    .sort((a, b) => (order.get(a.severity) ?? 99) - (order.get(b.severity) ?? 99));
+}
+
+function epistemicNode(finding) {
+  const status = finding.epistemic_status;
+  return node("span", `badge${status ? ` badge-${status}` : ""}`,
+              t(`epistemic.${status || "none"}`));
+}
+
+function evidenceNode(finding) {
+  const verified = finding.verification_status === "verified";
+  return node("span", verified ? null : "muted",
+              verified ? t("findings.verified") : t("findings.unverified"));
+}
+
+// What the expanded row and the detail panel both show.
+function findingBody(finding, { full }) {
+  const parts = document.createDocumentFragment();
+  const verified = finding.verification_status === "verified";
+  if (full) {
+    const pairs = [
+      [t("findings.severity"), severityNode(finding.severity)],
+      [t("findings.evidence"), evidenceNode(finding)],
+      [t("findings.epistemic"), epistemicNode(finding)],
+      [t("findings.category"), categoryLabel(finding.category) || "—"],
+      [t("findings.location"), node("span", "where", whereText(finding) || "—")],
+    ];
+    if (finding.anchor) pairs.push([t("findings.anchor"), node("span", "where", finding.anchor)]);
+    parts.append(facts(pairs));
+  }
+  // The snippet is code from an audited third-party repo: textContent only.
+  // An unverified one is not shown as if it were the file's.
+  if (verified && finding.code_snippet) {
+    if (full) parts.append(node("h3", null, t("findings.snippet")));
+    parts.append(node("pre", "snippet", finding.code_snippet));
+  }
+  if (!verified && finding.verification_note) {
+    if (full) parts.append(node("h3", null, t("findings.note")));
+    parts.append(node("p", "note", finding.verification_note));
+  }
+  if (finding.description) {
+    if (full) parts.append(node("h3", null, t("findings.description")));
+    parts.append(node("p", "prose", finding.description));
+  }
+  return parts;
+}
+
+function findingRows(finding) {
+  const body = document.createElement("tbody");
+  const verified = finding.verification_status === "verified";
+  const open = state.expanded.has(finding.id);
+  const expandId = `finding-more-${finding.id}`;
+
+  const toggle = button("", "toggle");
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-controls", expandId);
+  toggle.setAttribute("aria-label", t("findings.expand", finding.title));
+
+  const title = button(finding.title, "link");
+  title.dataset.finding = String(finding.id);
+  title.addEventListener("click", () => openFinding(finding.id, title));
+
+  const main = row([
+    toggle,
+    severityNode(finding.severity),
+    { className: "finding-title-cell", content: title },
+    { className: "where hide-narrow", content: whereText(finding) },
+    { className: "hide-narrow", content: evidenceNode(finding) },
+    { className: "hide-narrow", content: epistemicNode(finding) },
+  ], `finding-row${verified ? "" : " unverified"}`);
+  main.setAttribute("aria-selected", String(state.drawerFinding === finding.id));
+
+  const more = document.createElement("tr");
+  more.className = "finding-expand";
+  more.id = expandId;
+  more.hidden = !open;
+  const cell = document.createElement("td");
+  cell.colSpan = 6;
+  if (whereText(finding)) cell.append(node("div", "where", whereText(finding)));
+  cell.append(findingBody(finding, { full: false }));
+  more.append(cell);
+
+  toggle.addEventListener("click", () => {
+    const now = !state.expanded.has(finding.id);
+    if (now) state.expanded.add(finding.id);
+    else state.expanded.delete(finding.id);
+    toggle.setAttribute("aria-expanded", String(now));
+    more.hidden = !now;
+  });
+  body.append(main, more);
+  return body;
+}
+
+function renderFindings() {
+  const target = el("findings-body");
+  const count = el("findings-count");
+  count.textContent = "";
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const findings = audit.findings || [];
+  const total = totalOf(audit.summary);
+
+  if (findings.length === 0) {
+    const message = ACTIVE_STATUSES.has(audit.status) ? t("findings.inprogress")
+      : audit.status === "error" ? t("findings.failed")
+      : el("filter-evidence").value === "verified" && total > 0 ? t("findings.nonverified")
+      : t("findings.none");
+    target.replaceChildren(node("p", "muted", message));
+    return;
+  }
+  const shown = filteredFindings();
+  count.textContent = t("findings.counted", total, audit.verified_count || 0) +
+    (shown.length !== total ? t("findings.showing", shown.length) : "");
+  if (shown.length === 0) {
+    target.replaceChildren(node("p", "muted", t("findings.nomatch")));
+    return;
+  }
+  // A re-render must not drop the keyboard: put focus back where it was.
+  const focused = document.activeElement && target.contains(document.activeElement)
+    ? document.activeElement.dataset.finding : null;
+  target.replaceChildren(table([
+    { text: "" },
+    { text: t("findings.severity") },
+    { text: t("findings.finding") },
+    { text: t("findings.location"), className: "hide-narrow" },
+    { text: t("findings.evidence"), className: "hide-narrow" },
+    { text: t("findings.epistemic"), className: "hide-narrow" },
+  ], shown.map(findingRows)));
+  if (focused) {
+    const again = target.querySelector(`[data-finding="${CSS.escape(focused)}"]`);
+    if (again) again.focus();
+  }
+}
+
+for (const id of ["filter-severity", "filter-epistemic"]) {
+  el(id).addEventListener("change", renderFindings);
+}
+
+// "Only backed by code" is asked of the server, as it always was; "only
+// unverified" is a view over what is already here.
+el("filter-evidence").addEventListener("change", () => {
+  if (state.selectedId) loadDetail(state.selectedId);
+});
+
+el("filters").addEventListener("submit", (event) => event.preventDefault());
+
+el("search").addEventListener("input", () => {
+  state.query = el("search").value;
+  if (state.section !== "findings") go("findings");
+  else renderFindings();
+});
+
+// ---------------------------------------------------------------------------
+// detail panel
+// ---------------------------------------------------------------------------
+
+function narrow() {
+  return window.matchMedia("(max-width: 899px)").matches;
+}
+
+function openDrawer(title, content, opener) {
+  if (opener) state.drawerOpener = opener;
+  el("drawer-title").textContent = title;
+  el("drawer-body").replaceChildren(content);
+  const wasOpen = !el("drawer").hidden;
+  el("drawer").hidden = false;
+  el("app").classList.add("drawer-open");
+  if (!wasOpen) el("drawer-close").focus();
+}
+
+function closeDrawer() {
+  if (el("drawer").hidden) return;
+  const shown = state.drawerFinding;
+  el("drawer").hidden = true;
+  el("app").classList.remove("drawer-open");
+  state.drawerFinding = null;
+  for (const r of document.querySelectorAll(".finding-row")) {
+    r.setAttribute("aria-selected", "false");
+  }
+  // Back to what opened it — or to its stand-in, if polling redrew the table.
+  let opener = state.drawerOpener;
+  state.drawerOpener = null;
+  if ((!opener || !opener.isConnected) && shown !== null) {
+    opener = document.querySelector(`[data-finding="${CSS.escape(String(shown))}"]`);
+  }
+  if (opener && opener.isConnected) opener.focus();
+  else el("content").focus();
+}
+
+function openFinding(id, opener) {
+  state.drawerFinding = id;
+  for (const r of document.querySelectorAll(".finding-row")) {
+    r.setAttribute("aria-selected", "false");
+  }
+  if (opener) opener.closest("tr").setAttribute("aria-selected", "true");
+  renderDrawerFinding(opener);
+}
+
+// Kept in step with polling: the finding shown is re-read from the latest data.
+function renderDrawerFinding(opener) {
+  if (state.drawerFinding === null) return;
+  const finding = state.current && (state.current.findings || [])
+    .find((f) => f.id === state.drawerFinding);
+  if (!finding) {
+    closeDrawer();
+    return;
+  }
+  openDrawer(finding.title, findingBody(finding, { full: true }), opener);
+}
+
+el("drawer-close").addEventListener("click", closeDrawer);
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    if (!el("drawer").hidden) {
+      event.preventDefault();
+      closeDrawer();
+    } else if (narrow() && !el("app").classList.contains("nav-collapsed")) {
+      setNav(false);
+      el("nav-toggle").focus();
+    }
+    return;
+  }
+  // "/" jumps to the search, unless something is being typed already.
+  const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (event.key === "/" && !typing && !el("app").hidden) {
+    event.preventDefault();
+    el("search").focus();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// sidebar
+// ---------------------------------------------------------------------------
+
+const NAV_KEY = "secaudit.nav";
+
+function setNav(open) {
+  el("app").classList.toggle("nav-collapsed", !open);
+  el("nav-toggle").setAttribute("aria-expanded", String(open));
+}
+
+el("nav-toggle").addEventListener("click", () => {
+  const open = el("app").classList.contains("nav-collapsed");
+  setNav(open);
+  // Only the desktop choice is remembered; on a phone it always starts shut.
+  if (!narrow()) store(NAV_KEY, open ? null : "collapsed");
+  if (open && narrow()) el("sidebar").querySelector("a").focus();
+});
+
+el("scrim").addEventListener("click", () => setNav(false));
+
+// ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+
+function renderHistory() {
+  const target = el("history-body");
+  el("audits-empty").hidden = !state.loaded || state.audits.length > 0;
+  el("audit-count").textContent = state.audits.length ? `(${state.audits.length})` : "";
+  if (state.audits.length === 0) {
+    target.replaceChildren();
+    return;
+  }
+  target.replaceChildren(table(
+    [{ text: t("history.repo") }, { text: t("history.commit") },
+     { text: t("history.status") }, { text: t("history.findings") },
+     { text: t("history.coverage"), className: "hide-narrow" },
+     { text: t("history.when"), className: "hide-narrow" }],
+    state.audits.map((audit) => {
+      const here = audit.id === state.selectedId;
+      const open = button(repoLabel(audit.repo_url), "link", () => go("summary", audit.id));
+      if (here) open.setAttribute("aria-current", "true");
+      const coverage = audit.coverage;
+      return row([
+        { className: "where", content: open },
+        { className: "where", content: [shortSha(audit.commit_sha), audit.branch]
+          .filter(Boolean).join(" · ") || "—" },
+        statusNode(audit.status),
+        audit.status === "done" ? countsNode(audit.summary) : "",
+        { className: "hide-narrow", content: coverage && coverage.files
+          ? `${coverage.audited} / ${coverage.files}` : "—" },
+        { className: "hide-narrow", content: relativeTime(audit.created_at) },
+      ], here ? "current" : null);
+    })));
+}
+
+el("audit-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = el("repo-url");
+  const submit = event.target.querySelector("button");
+  const error = el("form-error");
+
+  error.hidden = true;
+  submit.disabled = true;
+  try {
+    const audit = await api("/api/audits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // The findings come back written in the language of the interface: the
+      // backend is asked for it, so nothing is translated afterwards.
+      body: JSON.stringify({ repo_url: input.value.trim(), language: lang }),
+    });
+    input.value = "";
+    await refresh();
+    go("summary", audit.id);
+  } catch (e) {
+    error.textContent = e.message;
+    error.hidden = false;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// loading and polling
+// ---------------------------------------------------------------------------
 
 async function loadDetail(id) {
-  const query = el("verified-only").checked ? "?verified_only=true" : "";
+  const query = el("filter-evidence").value === "verified" ? "?verified_only=true" : "";
   try {
-    renderDetail(await api(`/api/audits/${encodeURIComponent(id)}${query}`));
+    const audit = await api(`/api/audits/${encodeURIComponent(id)}${query}`);
+    if (id !== state.selectedId) return;      // another audit was chosen meanwhile
+    state.current = audit;
   } catch (_) {
     // a failed detail fetch leaves the previous render in place
+    return;
   }
+  renderSection();
 }
 
-function select(id) {
-  selectedId = id;
-  for (const button of document.querySelectorAll(".audit")) {
-    button.setAttribute("aria-current", "false");
+function selectAudit(id, { route = true } = {}) {
+  if (id !== state.selectedId) {
+    state.selectedId = id;
+    state.current = null;
+    state.expanded.clear();
+    closeDrawer();
   }
+  // Routing renders it; the id is already selected, so it does not load it.
+  if (route) go(AUDIT_SECTIONS.has(state.section) ? state.section : "summary", id);
+  else renderSection();
   loadDetail(id);
-  refresh();
 }
-
-// ---------------------------------------------------------------------------
-// polling
-// ---------------------------------------------------------------------------
 
 async function refresh() {
   clearTimeout(pollTimer);
@@ -503,10 +1403,19 @@ async function refresh() {
     pollTimer = setTimeout(refresh, POLL_MS * 2);
     return;
   }
+  state.audits = audits;
+  state.loaded = true;
 
-  renderList(audits);
-  const selected = audits.find((a) => a.id === selectedId);
-  if (selected) await loadDetail(selectedId);
+  // The audit in the address if it is still there, or else the latest one.
+  if (!audits.some((a) => a.id === state.selectedId)) {
+    state.selectedId = audits.length ? audits[0].id : null;
+    state.current = null;
+    if (AUDIT_SECTIONS.has(state.section)) {
+      history.replaceState(null, "", hashFor(state.section, state.selectedId));
+    }
+  }
+  renderSection();
+  if (state.selectedId) await loadDetail(state.selectedId);
 
   if (audits.some((a) => ACTIVE_STATUSES.has(a.status))) {
     pollTimer = setTimeout(refresh, POLL_MS);
@@ -535,14 +1444,14 @@ function renderSettings(settings) {
   el("runner-shown").hidden = true;
 
   const status = settings.backend_status || {};
-  const state = el("settings-state");
-  state.replaceChildren(
+  const line = el("settings-state");
+  line.replaceChildren(
     node("span", `status status-${status.ready ? "done" : "error"}`,
          status.ready ? t("settings.ready") : t("settings.notready")),
     node("span", null, `  ${status.name || t("settings.nobackend")}`),
   );
-  if (status.model) state.append(node("span", null, `  ·  ${status.model}`));
-  if (status.detail) state.append(node("div", "muted", status.detail));
+  if (status.model) line.append(node("span", null, `  ·  ${status.model}`));
+  if (status.detail) line.append(node("div", "muted", status.detail));
 }
 
 async function loadSettings() {
@@ -569,13 +1478,6 @@ async function saveSettings(body) {
     error.hidden = false;
   }
 }
-
-el("settings-toggle").addEventListener("click", () => {
-  const panel = el("settings");
-  panel.hidden = !panel.hidden;
-  el("settings-toggle").setAttribute("aria-expanded", String(!panel.hidden));
-  if (!panel.hidden) loadSettings();
-});
 
 el("backend").addEventListener("change", () => {
   el("ollama-field").hidden = el("backend").value !== "ollama";
@@ -632,34 +1534,40 @@ async function loadHealth() {
 }
 
 // ---------------------------------------------------------------------------
-// new audit
+// theme: theme.js has already set it; this keeps the button and the setting
 // ---------------------------------------------------------------------------
 
-el("audit-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const input = el("repo-url");
-  const button = event.target.querySelector("button");
-  const error = el("form-error");
+const THEME_KEY = "secaudit.theme";
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
 
-  error.hidden = true;
-  button.disabled = true;
-  try {
-    const audit = await api("/api/audits", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      // The findings come back written in the language of the interface: the
-      // backend is asked for it, so nothing is translated afterwards.
-      body: JSON.stringify({ repo_url: input.value.trim(), language: lang }),
-    });
-    input.value = "";
-    selectedId = audit.id;
-    await refresh();
-  } catch (e) {
-    error.textContent = e.message;
-    error.hidden = false;
-  } finally {
-    button.disabled = false;
-  }
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function setTheme(choice) {
+  // "system" forgets the choice, so the system decides again.
+  store(THEME_KEY, choice === "system" ? null : choice);
+  document.documentElement.dataset.theme = choice === "system"
+    ? (systemDark.matches ? "dark" : "light") : choice;
+  renderThemeToggle();
+}
+
+function renderThemeToggle() {
+  const label = currentTheme() === "dark" ? t("theme.tolight") : t("theme.todark");
+  el("theme-toggle-label").textContent = label;
+  el("theme-toggle").title = label;
+  const saved = stored(THEME_KEY);
+  el("theme-choice").value = saved === "dark" || saved === "light" ? saved : "system";
+}
+
+el("theme-toggle").addEventListener("click", () => {
+  setTheme(currentTheme() === "dark" ? "light" : "dark");
+});
+
+el("theme-choice").addEventListener("change", () => setTheme(el("theme-choice").value));
+
+systemDark.addEventListener("change", () => {
+  if (!stored(THEME_KEY)) setTheme("system");
 });
 
 // ---------------------------------------------------------------------------
@@ -671,17 +1579,21 @@ function showSignedOut(signInEnabled) {
   el("signin").hidden = false;
   el("signin-link").hidden = !signInEnabled;
   el("signin-disabled").hidden = signInEnabled;
-  for (const id of ["whoami", "settings-toggle", "logout"]) el(id).hidden = true;
+  for (const id of ["whoami", "logout", "nav-toggle", "search", "context"]) {
+    el(id).hidden = true;
+  }
 }
 
 function showSignedIn(user, singleUser) {
   el("signin").hidden = true;
   el("app").hidden = false;
+  el("nav-toggle").hidden = false;
+  el("search").hidden = false;
   el("whoami").textContent = user.login + (user.is_admin ? " · admin" : "");
   el("whoami").hidden = false;
-  el("settings-toggle").hidden = false;
   // A personal instance has no session to end.
   el("logout").hidden = singleUser;
+  setNav(!narrow() && stored(NAV_KEY) !== "collapsed");
 }
 
 el("logout").addEventListener("click", async () => {
@@ -690,27 +1602,29 @@ el("logout").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// language and evidence filter
+// language
 // ---------------------------------------------------------------------------
 
-el("lang").addEventListener("change", () => {
-  lang = LANGUAGES.includes(el("lang").value) ? el("lang").value : "en";
-  localStorage.setItem(LANG_KEY, lang);
+function setLanguage(value) {
+  lang = LANGUAGES.includes(value) ? value : "en";
+  store(LANG_KEY, lang);
+  el("lang").value = lang;
+  el("lang-signin").value = lang;
   applyStaticText();
   // Only the interface changes: findings keep the language they were audited
   // in, which is why each audit records its own.
   loadHealth();
-  if (!el("settings").hidden) loadSettings();
-  refresh();
-  if (selectedId) loadDetail(selectedId);
-});
+  if (el("app").hidden) return;
+  if (state.section === "settings") loadSettings();
+  renderSection();
+}
 
-el("verified-only").addEventListener("change", () => {
-  if (selectedId) loadDetail(selectedId);
-});
+el("lang").addEventListener("change", () => setLanguage(el("lang").value));
+el("lang-signin").addEventListener("change", () => setLanguage(el("lang-signin").value));
 
 async function start() {
   el("lang").value = lang;
+  el("lang-signin").value = lang;
   applyStaticText();
   loadHealth();
   let me;
@@ -725,6 +1639,8 @@ async function start() {
     return;
   }
   showSignedIn(me.user, me.single_user);
+  state.section = null;          // so the first route counts as a change
+  applyRoute();
   refresh();
 }
 
