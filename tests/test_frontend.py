@@ -36,6 +36,7 @@ class TestWhatIsServed:
         r = client.get(f"/fonts/{name}.woff2")
         assert r.status_code == 200
         assert r.content[:4] == b"wOF2"
+        assert r.headers["content-type"] == "font/woff2"
         assert f'url("/fonts/{name}.woff2")' in CSS
 
     def test_the_font_licences_ship_with_them(self):

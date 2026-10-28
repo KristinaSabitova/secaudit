@@ -1,6 +1,7 @@
 """FastAPI app exposing the secaudit engine over HTTP."""
 
 import logging
+import mimetypes
 import os
 import secrets
 import shutil
@@ -674,4 +675,7 @@ def health(session: Session = Depends(db_session)):
 # Mounted last: a mount at "/" matches any path, so it must come after every
 # API route or it would shadow them.
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+# The slim image has no /etc/mime.types, which is where .woff2 is usually
+# learnt; without this the fonts go out as application/octet-stream.
+mimetypes.add_type("font/woff2", ".woff2")
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
