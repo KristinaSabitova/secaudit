@@ -3,8 +3,8 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
-                        Text)
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer,
+                        String, Text, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -15,6 +15,26 @@ SEVERITIES = ["critical", "high", "medium", "low", "info"]
 # audited repository; see verification_status on Finding.
 VERIFIED = "verified"
 UNVERIFIED = "unverified"
+
+# How far a finding has been shown to hold (module 2). NULL means nothing has
+# been shown: the finding has no evidence, or predates the evidence check.
+EXISTS = "exists"
+EPISTEMIC_STATUSES = (EXISTS, "reachable", "corroborated", "refuted", "inconclusive")
+REFUTATION_METHODS = ("callgraph", "sanitizer", "reachability", "devil_advocate")
+REFUTATION_RESULTS = ("refuted", "survived", "inconclusive")
+
+# Views of a repository and how two of them can disagree (module 1).
+VIEWS = ("human", "bytes", "machine", "llm", "published")
+DIVERGENCE_KINDS = ("hidden_content", "unexpected_execution", "audit_blind_spot",
+                    "release_mismatch")
+
+CONFIDENCE = ("high", "medium", "low")
+
+# Who might attack, and from where (module 5).
+PERSONAS = ("anonymous", "authenticated_user", "malicious_contributor",
+            "compromised_dependency", "manipulated_agent")
+JEWEL_KINDS = ("secrets", "user_data", "deployment", "administration", "other")
+DECLARED_BY = ("user", "suggested")
 
 # Languages an audit can be written in. The engine is asked for one of these
 # directly, so there is no translation step after the fact.
@@ -81,12 +101,59 @@ class Audit(Base):
     )
     # Counts over the coverage rows; NULL for audits from before they existed.
     coverage_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
 
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="audit", cascade="all, delete-orphan", order_by="Finding.id",
     )
     coverage: Mapped[list["Coverage"]] = relationship(
         cascade="all, delete-orphan", order_by="Coverage.id",
+    )
+    module_runs: Mapped[list["ModuleRun"]] = relationship(
+        cascade="all, delete-orphan", order_by="ModuleRun.id",
+    )
+    project: Mapped["Project | None"] = relationship()
+
+
+class Project(Base):
+    """A repository as one owner audits it. NULL owner: the instance's own."""
+
+    __tablename__ = "projects"
+    __table_args__ = (UniqueConstraint("user_id", "repo_url",
+                                       name="uq_projects_user_repo"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
+    repo_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False,
+    )
+
+
+class ModuleRun(Base):
+    """One stage of an audit: what it did, what it cost, whether it worked."""
+
+    __tablename__ = "module_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    module: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False,
     )
 
 
@@ -194,8 +261,231 @@ class Finding(Base):
     )
     # Why an unverified finding could not be anchored to code.
     verification_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Module 2: how far the finding has been shown to hold.
+    epistemic_status: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, index=True,
+    )
+    # Module 3: where it probably came from, and where it went.
+    origin_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    origin_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Declared in the origin commit's trailers; never established.
+    ai_declared: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fix_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    zombie_of: Mapped[int | None] = mapped_column(
+        ForeignKey("findings.id", ondelete="SET NULL"), nullable=True,
+    )
+    # Module 5: who can trigger it, and what it is worth in context.
+    personas: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    contextual_severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     audit: Mapped[Audit] = relationship(back_populates="findings")
+    hypothesis: Mapped["Hypothesis | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False,
+    )
+
+
+class Hypothesis(Base):
+    """A finding stated so that it can be refuted: from where, to what, how."""
+
+    __tablename__ = "hypotheses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    finding_id: Mapped[int] = mapped_column(
+        ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, unique=True,
+    )
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sink: Mapped[str | None] = mapped_column(Text, nullable=True)
+    path: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    preconditions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    attempts: Mapped[list["RefutationAttempt"]] = relationship(
+        cascade="all, delete-orphan", order_by="RefutationAttempt.id",
+    )
+
+
+class RefutationAttempt(Base):
+    __tablename__ = "refutation_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hypothesis_id: Mapped[int] = mapped_column(
+        ForeignKey("hypotheses.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    method: Mapped[str] = mapped_column(String(32), nullable=False)
+    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ViewDivergence(Base):
+    """Two views of the same file that disagree (module 1)."""
+
+    __tablename__ = "view_divergences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    file: Mapped[str] = mapped_column(String(512), nullable=False)
+    view_a: Mapped[str] = mapped_column(String(16), nullable=False)
+    view_b: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class CanaryRun(Base):
+    """How many planted decoys the auditor found. Decoys are never findings."""
+
+    __tablename__ = "canary_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    canaries_planted: Mapped[int] = mapped_column(Integer, nullable=False)
+    canaries_found: Mapped[int] = mapped_column(Integer, nullable=False)
+    integrity_score: Mapped[float] = mapped_column(Float, nullable=False)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ImmuneRule(Base):
+    """A Semgrep rule learnt from a fix, validated against the history (module 3)."""
+
+    __tablename__ = "immune_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    finding_id: Mapped[int | None] = mapped_column(
+        ForeignKey("findings.id", ondelete="SET NULL"), nullable=True,
+    )
+    rule_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_yaml: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fix_commit: Mapped[str] = mapped_column(String(40), nullable=False)
+    vulnerable_commit: Mapped[str] = mapped_column(String(40), nullable=False)
+    validated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    validation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    matches_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False,
+    )
+
+
+class FileLeverage(Base):
+    """How much damage a change here could do, against who would notice (module 4)."""
+
+    __tablename__ = "file_leverage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    file: Mapped[str] = mapped_column(String(512), nullable=False)
+    leverage_score: Mapped[float] = mapped_column(Float, nullable=False)
+    oversight_score: Mapped[float] = mapped_column(Float, nullable=False)
+    reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class AgentCapability(Base):
+    """Something an AI agent opening the repository would inherit."""
+
+    __tablename__ = "agent_capabilities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    source_file: Mapped[str] = mapped_column(String(512), nullable=False)
+    capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class CrownJewel(Base):
+    """What an attacker of this project would be after."""
+
+    __tablename__ = "crown_jewels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    target: Mapped[str] = mapped_column(String(512), nullable=False)
+    declared_by: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False,
+    )
+
+
+class AttackNode(Base):
+    """A capability an attacker can hold (module 5)."""
+
+    __tablename__ = "attack_nodes"
+    __table_args__ = (UniqueConstraint("audit_id", "key",
+                                       name="uq_attack_nodes_audit_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    persona: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    crown_jewel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("crown_jewels.id", ondelete="SET NULL"), nullable=True,
+    )
+
+
+class AttackEdge(Base):
+    """One step between capabilities, and what makes it possible."""
+
+    __tablename__ = "attack_edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    source_node_id: Mapped[int] = mapped_column(
+        ForeignKey("attack_nodes.id", ondelete="CASCADE"), nullable=False,
+    )
+    target_node_id: Mapped[int] = mapped_column(
+        ForeignKey("attack_nodes.id", ondelete="CASCADE"), nullable=False,
+    )
+    finding_id: Mapped[int | None] = mapped_column(
+        ForeignKey("findings.id", ondelete="CASCADE"), nullable=True,
+    )
+    divergence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("view_divergences.id", ondelete="CASCADE"), nullable=True,
+    )
+    leverage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_leverage.id", ondelete="CASCADE"), nullable=True,
+    )
+    persona: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cost: Mapped[float] = mapped_column(Float, nullable=False)
+    cost_detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tentative: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    explanation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class AttackPath(Base):
+    """The cheapest way from where a profile starts to a crown jewel."""
+
+    __tablename__ = "attack_paths"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    persona: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_node_id: Mapped[int] = mapped_column(
+        ForeignKey("attack_nodes.id", ondelete="CASCADE"), nullable=False,
+    )
+    cost: Mapped[float] = mapped_column(Float, nullable=False)
+    edges: Mapped[list] = mapped_column(JSON, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 def _line_number(value) -> int | None:
@@ -308,3 +598,4 @@ def coverage_from_dict(audit_id: str, row: dict) -> Coverage:
 def coverage_to_dict(row: Coverage) -> dict:
     return {"file": row.file, "audited": row.audited, "reason": row.reason,
             "risk_tier": row.risk_tier, "signals": row.signals or []}
+
