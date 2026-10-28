@@ -468,7 +468,7 @@ class TestPackRepository:
         (d / "huge.py").write_text("y = 2\n" * 5000)
         packed = pack_repository(d, budget=800)
         assert len(packed) < 4000
-        assert "did not fit" in packed
+        assert "huge.py" in packed.split("you have NOT seen these")[1]
 
     def test_what_was_left_out_is_named(self, tmp_path):
         d = self.repo(tmp_path)

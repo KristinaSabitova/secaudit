@@ -11,6 +11,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY alembic.ini secaudit.py ./
+COPY analysis/ ./analysis/
 COPY migrations/ ./migrations/
 COPY web/ ./web/
 COPY docker-entrypoint.sh /usr/local/bin/

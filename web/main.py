@@ -131,7 +131,7 @@ def execute_audit(audit_id: str) -> None:
                                               branch=audit.branch)
                 audit.status = "running"
                 session.commit()
-                findings = run_audit(dest, config, credentials)
+                findings = run_audit(dest, config, credentials)["findings"]
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))

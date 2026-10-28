@@ -7,7 +7,8 @@ the process, so an in-process approach could not isolate them. It also bounds a
 runaway audit and keeps an engine crash out of the web server.
 
 Invoked as `python -m web.runner`: reads {"project", "config", "timeout"} as
-JSON on stdin and writes {"findings"} or {"error"} as JSON on stdout.
+JSON on stdin and writes the audit result (findings, coverage, manifest, usage)
+or {"error"} as JSON on stdout.
 """
 
 import json
@@ -21,7 +22,7 @@ def main() -> int:
     from .engine import AuditError, run_audit_in_process
 
     try:
-        findings = run_audit_in_process(
+        result = run_audit_in_process(
             Path(request["project"]),
             request.get("config") or {},
             int(request.get("timeout") or 3600),
@@ -33,7 +34,7 @@ def main() -> int:
         json.dump({"error": f"internal error: {e}"}, sys.stdout)
         return 1
 
-    json.dump({"findings": findings}, sys.stdout)
+    json.dump(result, sys.stdout)
     return 0
 
 

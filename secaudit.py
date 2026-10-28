@@ -48,6 +48,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+# The deterministic half of the audit lives next to this file. Run as a script,
+# this file's directory is already on sys.path; imported, it may not be.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from analysis import chunking  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Finding schema
 # ---------------------------------------------------------------------------
@@ -89,6 +94,9 @@ class Finding:
     code_snippet: str = ""
     verification_status: str = UNVERIFIED
     verification_note: str = ""
+    # The request the finding came from, when the audit was split; the
+    # evidence check needs to know what that request was shown.
+    chunk: int | None = None
 
 
 # Controls a reverse proxy, CDN or gateway usually applies rather than the
@@ -326,6 +334,7 @@ def classify(raw_findings: list, saved: dict,
             code_snippet=str(raw.get("code_snippet") or "").strip()[:MAX_SNIPPET_CHARS],
             verification_status=status,
             verification_note=note,
+            chunk=raw.get("chunk") if isinstance(raw.get("chunk"), int) else None,
         )
         finding = _sanitize(finding)
 
@@ -589,53 +598,13 @@ def load_config() -> dict:
 # what it was sent.
 # ---------------------------------------------------------------------------
 
-_SKIP_DIRS = {
-    ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "env",
-    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist",
-    "build", "target", "vendor", ".next", ".nuxt", ".gradle", "coverage",
-    "site-packages", ".terraform", ".idea", ".vscode",
-}
-
-_SOURCE_SUFFIXES = {
-    ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte",
-    ".go", ".rb", ".php", ".java", ".kt", ".cs", ".rs", ".c", ".h", ".cc",
-    ".cpp", ".hpp", ".scala", ".ex", ".exs", ".pl", ".sh", ".bash", ".zsh",
-    ".sql", ".graphql", ".proto", ".html", ".htm", ".ejs", ".erb", ".jinja",
-    ".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".tf", ".env",
-}
-
-# Files worth reading whatever they are called.
-_SOURCE_NAMES = {
-    "dockerfile", "docker-compose.yml", "makefile", "procfile", "nginx.conf",
-    ".env.example", "requirements.txt", "package.json", "gemfile", "go.mod",
-    "cargo.toml", "pom.xml", ".htaccess",
-}
-
-# Where the attack surface usually is. These files go in first, so that a
-# budget that cannot hold the whole repository still holds the parts that
-# matter for a security audit.
-_PRIORITY_HINTS = (
-    "auth", "login", "signin", "signup", "session", "token", "jwt", "password",
-    "user", "account", "admin", "permission", "role", "acl", "middleware",
-    "route", "router", "controller", "handler", "view", "api", "endpoint",
-    "query", "sql", "db", "database", "model", "upload", "file", "payment",
-    "config", "settings", "security", "crypt", "secret", "cors", "csrf",
-)
-
-MAX_CONTEXT_CHARS = 200_000     # roughly 50k tokens of source
-MAX_FILE_CHARS = 60_000         # one enormous file must not eat the budget
+MAX_CONTEXT_CHARS = 200_000     # per request; roughly 50k tokens of source
 
 # Room for the findings themselves. Each one now carries a snippet and a full
 # explanation, so a repository with real problems needs considerably more than
 # the 8k this used to be: at 8k the list was cut off mid-finding and the whole
 # response stopped being parseable.
 MAX_OUTPUT_TOKENS = 32_000
-
-
-# Entry points wire up the middleware — CORS, headers, sessions, body parsing —
-# so they carry security decisions no keyword in their path would reveal.
-_ENTRY_POINT_STEMS = {"main", "app", "server", "index", "wsgi", "asgi",
-                      "settings", "urls", "routes"}
 
 
 # Where a reverse proxy, web server or hosting platform applies the controls
@@ -674,6 +643,11 @@ def project_has_server_config(project: Path) -> bool:
                              for p in iter_source_files(project))
 
 
+def iter_source_files(project: Path) -> list[Path]:
+    """Every file that can be sent to the auditor, highest risk first."""
+    return [project / e.path for e in chunking.inventory(project) if e.candidate]
+
+
 NO_SERVER_CONFIG_NOTICE = """\
 NO WEB SERVER OR REVERSE PROXY CONFIGURATION IS PRESENT IN THIS CHECKOUT.
 Controls normally applied at that layer — security headers, HSTS, CSP,
@@ -684,97 +658,29 @@ any such control as "unverified", and say in the note that the serving layer is
 outside this repository."""
 
 
-def _priority(rel_path: str) -> int:
-    lowered = rel_path.lower()
-    if PurePosixPath(lowered).stem in _ENTRY_POINT_STEMS:
-        return 0
-    return 1 if any(hint in lowered for hint in _PRIORITY_HINTS) else 2
-
-
-def _is_source(path: Path) -> bool:
-    name = path.name.lower()
-    return (name in _SOURCE_NAMES or path.suffix.lower() in _SOURCE_SUFFIXES
-            or name.startswith("dockerfile"))
-
-
-def iter_source_files(project: Path) -> list[Path]:
-    """Every readable source file in the checkout, most security-relevant first."""
-    found = []
-    for path in project.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        if any(part in _SKIP_DIRS for part in path.relative_to(project).parts[:-1]):
-            continue
-        if _is_source(path):
-            found.append(path)
-    return sorted(found, key=lambda p: (_priority(str(p.relative_to(project))),
-                                        str(p.relative_to(project))))
-
-
-def _read_text(path: Path) -> str | None:
-    """File contents, or None if it is binary or unreadable."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
-        return None
-    return text if "\x00" not in text else None
+def plan_audit(project: Path, budget: int, base_prompt: str,
+               max_chunks: int | None = None, only=None):
+    """Decide what each request carries. Returns (plan, notices)."""
+    entries = chunking.inventory(project, only)
+    notices = ([] if has_server_config(e.path for e in entries if e.candidate)
+               else [NO_SERVER_CONFIG_NOTICE])
+    overhead = chunking.prompt_overhead(entries, base_prompt, notices)
+    plan = chunking.plan_chunks(entries, budget,
+                                max_chunks or chunking.DEFAULT_MAX_CHUNKS, overhead)
+    return plan, notices
 
 
 def pack_repository(project: Path, budget: int = MAX_CONTEXT_CHARS) -> str:
-    """The checkout as text the model can quote from, within a size budget.
+    """The checkout as a single request's worth of text, highest risk first.
 
-    Lines are numbered so a finding can point at one, and every file that did
-    not fit is named at the end — a model that knows what it was not shown can
-    say so instead of guessing about it.
+    Used where the answer is free text that cannot be merged across requests
+    (the one-shot report). Structured audits are split; see audit_repository.
     """
-    files = iter_source_files(project)
-    if not files:
+    plan, notices = plan_audit(project, budget, "", max_chunks=1)
+    if not plan.chunks:
         return ("REPOSITORY CONTENTS:\n(no readable source files were found in "
                 "this checkout)\n")
-
-    included, omitted, spent = [], [], 0
-    for path in files:
-        rel = str(path.relative_to(project))
-        text = _read_text(path)
-        if text is None:
-            omitted.append(f"{rel} (not text)")
-            continue
-        truncated = len(text) > MAX_FILE_CHARS
-        text = text[:MAX_FILE_CHARS]
-        numbered = "\n".join(f"{i:5d}| {line}"
-                             for i, line in enumerate(text.splitlines(), 1))
-        block = (f"--- {rel} ---\n{numbered}\n"
-                 + (f"[truncated at {MAX_FILE_CHARS} characters]\n" if truncated else ""))
-        if spent + len(block) > budget:
-            omitted.append(f"{rel} (did not fit)")
-            continue
-        included.append(block)
-        spent += len(block)
-
-    relatives = [p.relative_to(project) for p in files]
-    tree = "\n".join(f"  {rel}" for rel in relatives)
-    parts = [
-        "REPOSITORY CONTENTS:",
-        f"The checkout holds {len(files)} source file(s):",
-        tree,
-        "",
-    ]
-    if not has_server_config(relatives):
-        parts += [NO_SERVER_CONFIG_NOTICE, ""]
-    parts += [
-        "Below is the content of the files that fit, with line numbers added "
-        "for reference. Quote from these when you report evidence — the line "
-        "numbers are not part of the file itself.",
-        "",
-        "\n".join(included),
-    ]
-    if omitted:
-        parts += [
-            "FILES NOT INCLUDED BELOW — you have NOT seen these, so do not "
-            "report findings in them as verified:",
-            "\n".join(f"  {name}" for name in omitted),
-        ]
-    return "\n".join(parts) + "\n"
+    return chunking.render_chunk(plan, plan.chunks[0], "", notices).lstrip()
 
 
 def with_repository(prompt: str, project: Path, budget: int | None = None) -> str:
@@ -932,6 +838,11 @@ class AnthropicAPIBackend(AuditBackend):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
+            usage = data.get("usage") or {}
+            self.last_usage = {
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+            }
             if data.get("stop_reason") == "max_tokens":
                 # The findings list is cut off mid-item. Say so here: further
                 # down it is only an unparseable string, and the reason for it
@@ -980,6 +891,11 @@ class OpenAIBackend(AuditBackend):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
+            usage = data.get("usage") or {}
+            self.last_usage = {
+                "input_tokens": int(usage.get("prompt_tokens") or 0),
+                "output_tokens": int(usage.get("completion_tokens") or 0),
+            }
             return data["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
@@ -1015,6 +931,10 @@ class OllamaBackend(AuditBackend):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
+            self.last_usage = {
+                "input_tokens": int(data.get("prompt_eval_count") or 0),
+                "output_tokens": int(data.get("eval_count") or 0),
+            }
             return data.get("response", "")
         except urllib.error.URLError as e:
             sys.exit(
@@ -1284,6 +1204,110 @@ def extract_json_findings(text: str):
     return _PARSE_FAILED
 
 # ---------------------------------------------------------------------------
+# Running an audit over several requests
+# ---------------------------------------------------------------------------
+
+def max_chunks_from(config: dict | None) -> int:
+    """How many requests one audit may make: config, then the environment."""
+    value = (config or {}).get("max_chunks") or os.environ.get("SECAUDIT_MAX_CHUNKS")
+    try:
+        return max(1, int(value)) if value else chunking.DEFAULT_MAX_CHUNKS
+    except (TypeError, ValueError):
+        return chunking.DEFAULT_MAX_CHUNKS
+
+
+def _unparseable(output: str) -> str:
+    """Why an answer could not be read as findings. The fix differs."""
+    if output.lstrip().startswith("[") or '"category"' in output:
+        return ("the backend's answer was cut off before it could be read as "
+                "findings — raise SECAUDIT_MAX_OUTPUT_TOKENS or audit a "
+                "smaller scope")
+    return "backend output was not parseable as JSON findings"
+
+
+def _rank(raw: dict) -> tuple:
+    verified = str(raw.get("verification_status") or "").lower() == VERIFIED
+    sev = str(raw.get("severity") or "info").lower()
+    return (not verified, SEVERITIES.index(sev) if sev in SEVERITIES else 99)
+
+
+def dedupe_findings(raw_findings: list) -> list:
+    """One finding per fingerprint across requests: the best-backed one.
+
+    A file can be named in several requests' answers — a finding about a call
+    site in one part and the function it calls in another. They are the same
+    finding when they fingerprint the same; the one kept is the verified one,
+    or the more severe.
+    """
+    best: dict[str, dict] = {}
+    order: list[str] = []
+    for raw in raw_findings:
+        fp = make_fingerprint(str(raw.get("category", "other")).lower().strip(),
+                              str(raw.get("file", "")).strip(),
+                              str(raw.get("anchor", "")).strip())
+        if fp not in best:
+            order.append(fp)
+            best[fp] = raw
+        elif _rank(raw) < _rank(best[fp]):
+            best[fp] = raw
+    return [best[fp] for fp in order]
+
+
+def audit_repository(project: Path, backend: "AuditBackend", base_prompt: str,
+                     timeout: int = 3600, max_chunks: int | None = None,
+                     only=None) -> dict:
+    """Audit the checkout in as many requests as it takes, up to max_chunks.
+
+    Returns the raw findings (each tagged with the request it came from), the
+    coverage of every file, a manifest of what each request contained, and
+    the tokens spent. A request that fails is recorded against the files it
+    carried rather than failing the audit — unless no request has succeeded
+    yet, in which case the problem is the backend, not the repository, and
+    repeating it for every part would only repeat the error.
+    """
+    plan, notices = plan_audit(project, backend.context_chars, base_prompt,
+                               max_chunks, only)
+    raw_findings: list = []
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    succeeded = 0
+    first_error = None
+    for chunk in plan.chunks:
+        prompt = chunking.render_chunk(plan, chunk, base_prompt, notices)
+        print(f"[*] part {chunk.index} of {len(plan.chunks)}: "
+              f"{len(chunk.segments)} file(s), {len(prompt)} characters",
+              file=sys.stderr)
+        backend.last_usage = None
+        try:
+            output = backend.run(project, prompt, timeout=timeout)
+        except SystemExit as e:
+            if not succeeded:
+                raise
+            chunk.failed = str(e.code or "the backend aborted")[:200]
+            continue
+        for key in usage:
+            usage[key] += int((backend.last_usage or {}).get(key) or 0)
+        parsed = extract_json_findings(output)
+        if parsed is _PARSE_FAILED:
+            chunk.failed = _unparseable(output)
+            first_error = first_error or chunk.failed
+            continue
+        succeeded += 1
+        for raw in parsed:
+            if isinstance(raw, dict):
+                raw["chunk"] = chunk.index
+                raw_findings.append(raw)
+    if plan.chunks and not succeeded:
+        sys.exit(f"error: {first_error or 'no request produced findings'}")
+    return {
+        "findings": dedupe_findings(raw_findings),
+        "coverage": plan.coverage(),
+        "coverage_summary": chunking.summary(plan),
+        "manifest": plan.manifest(),
+        "usage": usage,
+        "server_config_present": not notices,
+    }
+
+# ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
 
@@ -1402,23 +1426,27 @@ def run_oneshot(args, project: Path, backend: AuditBackend) -> None:
 def run_differential(args, project: Path, backend: AuditBackend, files=None) -> None:
     prompt = build_diff_prompt(args.stack, args.scope, files,
                                getattr(args, "language", "en"))
-    prompt = backend.prepare(project, prompt)
+    max_chunks = max_chunks_from(load_config())
     if args.print_prompt:
-        print(prompt)
+        plan, notices = plan_audit(project, backend.context_chars, prompt,
+                                   max_chunks, files)
+        for chunk in plan.chunks:
+            print(chunking.render_chunk(plan, chunk, prompt, notices))
         return
 
-    raw_output = backend.run(project, prompt)
-    raw_findings = extract_json_findings(raw_output)
-
-    if raw_findings is _PARSE_FAILED:
-        print("[!] Could not parse JSON from output:", file=sys.stderr)
-        print(raw_output)
-        return
+    result = audit_repository(project, backend, prompt,
+                              max_chunks=max_chunks, only=files)
+    summary = result["coverage_summary"]
+    print(f"[*] coverage: {summary['audited']} of {summary['files']} file(s) "
+          f"audited in {summary['requests']} request(s)"
+          + (f", {summary['not_audited']} not audited" if summary['not_audited'] else "")
+          + (" — the repository looks padded" if summary["padding_suspected"] else ""),
+          file=sys.stderr)
 
     pid = get_project_id(project)
     saved = load_state(pid)
     updated_state, all_findings = classify(
-        raw_findings, saved, project_has_server_config(project))
+        result["findings"], saved, result["server_config_present"])
     save_state(pid, updated_state)
 
     if args.json:

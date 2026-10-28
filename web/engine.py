@@ -45,6 +45,7 @@ _ENV_ALLOWLIST = (
     # left unset.
     "SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
     "SECAUDIT_CONTEXT_CHARS", "SECAUDIT_MAX_OUTPUT_TOKENS", "SECAUDIT_TIMEOUT",
+    "SECAUDIT_MAX_CHUNKS",
 )
 
 # Every backend option the CLI reads from its config file must also be
@@ -57,6 +58,8 @@ _ENV_CONFIG = {
     "SECAUDIT_CONTEXT_CHARS": "context_chars",
     # Room the backend has to write the findings in.
     "SECAUDIT_MAX_OUTPUT_TOKENS": "max_output_tokens",
+    # How many requests one audit may be split into: its cost ceiling.
+    "SECAUDIT_MAX_CHUNKS": "max_chunks",
 }
 
 
@@ -108,44 +111,41 @@ def backend_config(overrides: dict | None = None) -> dict:
     return config
 
 
-def run_audit_in_process(project: Path, config: dict, timeout: int) -> list[dict]:
+def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
     """Drive the engine directly. Only web/runner.py should call this.
 
     Everything else goes through run_audit(), which isolates the credentials.
+    Returns the findings with the coverage, the manifest of what each request
+    carried, and the tokens spent.
     """
     language = config.get("language") or engine.LANGUAGES[0]
     try:
         backend = engine.select_backend(None, config)
         prompt = engine.build_diff_prompt(None, "all", None, language)
-        # Hands the checkout to a backend that cannot open files itself.
-        prompt = backend.prepare(project, prompt)
-        raw_output = backend.run(project, prompt, timeout=timeout)
+        result = engine.audit_repository(
+            project, backend, prompt, timeout=timeout,
+            max_chunks=engine.max_chunks_from(config))
     except SystemExit as e:  # the engine reports failures via sys.exit()
-        raise AuditError(sanitize_error(str(e.code)) if e.code
-                         else "engine aborted") from e
+        message = str(e.code) if e.code else "engine aborted"
+        raise AuditError(sanitize_error(message.removeprefix("error: "))) from e
 
-    raw = engine.extract_json_findings(raw_output)
-    if raw is engine._PARSE_FAILED:
-        # Distinguish the two ways this happens, because the fix differs: a
-        # cut-off answer needs more room, anything else is the backend not
-        # answering in the requested format at all.
-        if raw_output.lstrip().startswith("[") or '"category"' in raw_output:
-            raise AuditError(
-                "the backend's answer was cut off before it could be read as "
-                "findings — raise SECAUDIT_MAX_OUTPUT_TOKENS or audit a "
-                "smaller scope")
-        raise AuditError("backend output was not parseable as JSON findings")
     # classify() with empty saved state: builds Finding objects, redacts
     # secrets and computes fingerprints without touching CLI state files.
     # The checkout decides whether a proxy-provided control can be judged
     # missing from here at all.
-    _, findings = engine.classify(
-        raw, {}, engine.project_has_server_config(project))
-    return [asdict(f) for f in findings]
+    _, findings = engine.classify(result["findings"], {},
+                                  result["server_config_present"])
+    return {
+        "findings": [asdict(f) for f in findings],
+        "coverage": result["coverage"],
+        "coverage_summary": result["coverage_summary"],
+        "manifest": result["manifest"],
+        "usage": result["usage"],
+    }
 
 
 def run_audit(project: Path, config: dict | None = None,
-              credentials: dict[str, str] | None = None) -> list[dict]:
+              credentials: dict[str, str] | None = None) -> dict:
     """Run a full structured audit on a checked-out project directory.
 
     credentials are the environment variables holding this audit's API key.
@@ -184,7 +184,7 @@ def run_audit(project: Path, config: dict | None = None,
             f"{detail[-1] if detail else f'exit {result.returncode}'}"))
     if "error" in response:
         raise AuditError(sanitize_error(str(response["error"])))
-    return response["findings"]
+    return response
 
 
 OLLAMA_PROBE_TIMEOUT = 2

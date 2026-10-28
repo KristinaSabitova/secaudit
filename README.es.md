@@ -362,17 +362,41 @@ modelo se porte bien. `?verified_only=true` deja fuera los no verificados.
 
 ### Cómo llega el código al modelo
 
-Ningún backend abre ficheros por su cuenta, así que el repositorio se
-empaqueta dentro de la petición — el árbol de ficheros y luego el contenido de todos los que quepan en
-el presupuesto, con las líneas numeradas para que un hallazgo pueda señalar
-una. Entran primero los ficheros cuya ruta sugiere superficie de ataque (auth,
-sesiones, rutas, consultas, subidas, configuración…), y lo que no cupo se
-nombra en el prompt para que el modelo pueda decir que no lo vio en vez de
-inventarse algo sobre él.
+Ningún backend abre ficheros por su cuenta, así que el repositorio se envía
+como texto, con las líneas numeradas para que un hallazgo pueda señalar una.
+Cuando no cabe en una petición se reparte en varias (`SECAUDIT_MAX_CHUNKS`, 8
+por defecto), y los hallazgos que vuelven de más de una se fusionan por
+fingerprint.
 
-`SECAUDIT_CONTEXT_CHARS` fija el presupuesto (por defecto 200000 caracteres,
-unos 50k tokens; ollama recibe la cuarta parte). Más presupuesto cubre más de
-un repositorio grande y cuesta más por auditoría.
+El orden es por riesgo, no alfabético:
+
+1. lo que se ejecuta solo — hooks de git (`.husky/`, `.githooks/`),
+   `package.json`, `setup.py`, `pyproject.toml`, `.vscode/`, Dockerfiles,
+   workflows de CI;
+2. lo que leen los agentes de IA — `CLAUDE.md`, `AGENTS.md`, `.claude/`,
+   `.mcp.json`, `.cursor/`, `.github/copilot-instructions.md` y similares,
+   citados como datos;
+3. puntos de entrada — rutas, CLI, handlers de webhooks;
+4. autenticación, autorización y secretos;
+5. el resto del código;
+6. tests, documentación y datos.
+
+Cada fichero entra en la primera petición que aún tiene sitio, así que uno de
+poco riesgo solo ocupa el espacio que sobra y nunca desplaza a otro de más
+riesgo. Si ni así cabe todo, lo que queda fuera es lo menos peligroso, y al
+modelo se le dice qué ficheros no ha visto.
+
+Cada auditoría guarda su **cobertura**: por fichero, si se auditó, se auditó en
+parte (qué líneas) o no, y por qué — no es texto, es un directorio de
+dependencias, no cupo, o falló la petición. También marca los ficheros que
+parecen **relleno**, la forma más barata de sacar algo de un presupuesto que se
+llena en orden: grupos de ficheros casi idénticos, tamaños anómalos y módulos
+que ningún otro fichero menciona.
+
+`SECAUDIT_CONTEXT_CHARS` fija el tamaño de cada petición (200000 caracteres
+por defecto, unos 50k tokens; ollama recibe la cuarta parte).
+`SECAUDIT_MAX_CHUNKS` por esa cifra es lo máximo que puede enviar una
+auditoría, y por tanto su techo de coste.
 
 ### Idioma
 

@@ -292,7 +292,9 @@ class TestRunAudit:
             web_engine.engine, "select_backend",
             lambda flag, config=None: FakeBackend(),
         )
-        findings = web_engine.run_audit_in_process(tmp_path, {}, 10)
+        (tmp_path / "app.py").write_text("x = 1\n")
+        result = web_engine.run_audit_in_process(tmp_path, {}, 10)
+        findings = result["findings"]
         assert len(findings) == 2
         sevs = {f["severity"] for f in findings}
         assert sevs == {"critical", "high"}
@@ -303,8 +305,16 @@ class TestRunAudit:
             web_engine.engine, "select_backend",
             lambda flag, config=None: FakeBackend(output="not json at all"),
         )
+        (tmp_path / "app.py").write_text("x = 1\n")
         with pytest.raises(web_engine.AuditError):
             web_engine.run_audit_in_process(tmp_path, {}, 10)
+
+    def test_an_empty_checkout_costs_no_request(self, monkeypatch, tmp_path):
+        backend = FakeBackend()
+        monkeypatch.setattr(web_engine.engine, "select_backend",
+                            lambda flag, config=None: backend)
+        result = web_engine.run_audit_in_process(tmp_path, {}, 10)
+        assert result["findings"] == [] and backend.prompts == []
 
     def test_engine_sysexit_becomes_audit_error(self, monkeypatch, tmp_path):
         def exploding(flag, config=None):
@@ -1050,6 +1060,7 @@ class TestCredentialIsolation:
         assert "SOME_FUTURE_SECRET" not in self._captured_env(tmp_path, monkeypatch)
 
     def test_the_parents_key_is_not_inherited(self, tmp_path, monkeypatch):
+        (tmp_path / "app.py").write_text("x = 1\n")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-belongs-to-someone-else")
         with pytest.raises(web_engine.AuditError) as excinfo:
             web_engine.run_audit(tmp_path, {"backend": "anthropic-api"},
@@ -1057,6 +1068,7 @@ class TestCredentialIsolation:
         assert "ANTHROPIC_API_KEY is not set" in str(excinfo.value)
 
     def test_the_supplied_key_reaches_the_audit(self, tmp_path, monkeypatch):
+        (tmp_path / "app.py").write_text("x = 1\n")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(web_engine.AuditError) as excinfo:
             web_engine.run_audit(tmp_path, {"backend": "anthropic-api"},

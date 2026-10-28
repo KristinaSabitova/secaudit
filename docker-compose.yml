@@ -42,6 +42,9 @@ services:
       # How much source travels in one request to an API backend. Raising it
       # audits more of a large repository and costs more per audit.
       SECAUDIT_CONTEXT_CHARS: ${SECAUDIT_CONTEXT_CHARS:-}
+      # How many requests one audit may be split into; with the line above,
+      # the cost ceiling of an audit.
+      SECAUDIT_MAX_CHUNKS: ${SECAUDIT_MAX_CHUNKS:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
     # http://host.docker.internal:11434.
     extra_hosts:

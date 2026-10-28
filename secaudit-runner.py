@@ -71,7 +71,8 @@ def run_one(server: str, token: str, job: dict, timeout: int) -> None:
                                               branch=job.get("branch"))
             config = backend_config({"backend": "claude-code",
                                      "language": job.get("language") or "en"})
-            result["findings"] = run_audit_in_process(dest, config, timeout)
+            audit = run_audit_in_process(dest, config, timeout)
+            result["findings"] = audit["findings"]
         except (CloneError, AuditError) as e:
             result["error"] = str(e)
         except Exception as e:                       # never drop the audit

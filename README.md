@@ -356,16 +356,38 @@ behaving. `?verified_only=true` leaves the unverified ones out entirely.
 
 ### How the code reaches the model
 
-No backend opens files itself, so the repository is packed into the request — the file tree,
-then the contents of as many files as the budget allows, line-numbered so a
-finding can point at a line. The files whose paths suggest attack surface
-(auth, session, routes, queries, uploads, config…) go in first, and whatever
-did not fit is named in the prompt so the model can say it was not shown that
-file instead of guessing about it.
+No backend opens files itself, so the repository is sent as text, line-numbered
+so a finding can point at a line. When it does not fit in one request it is
+split into several (`SECAUDIT_MAX_CHUNKS`, default 8), and findings that come
+back from more than one are merged by fingerprint.
 
-`SECAUDIT_CONTEXT_CHARS` sets the budget (default 200000 characters, about 50k
-tokens; ollama gets a quarter of it). A larger budget covers more of a big
-repository and costs more per audit.
+The order is by risk, not by name:
+
+1. what runs on its own — git hooks (`.husky/`, `.githooks/`), `package.json`,
+   `setup.py`, `pyproject.toml`, `.vscode/`, Dockerfiles, CI workflows;
+2. what AI agents read — `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`,
+   `.cursor/`, `.github/copilot-instructions.md` and similar, quoted as data;
+3. entry points — routes, CLI, webhook handlers;
+4. authentication, authorization and secrets;
+5. the rest of the code;
+6. tests, documentation and data.
+
+Each file goes into the first request that still has room, so a low-risk file
+only ever takes space left over and never displaces a higher-risk one. If the
+whole repository does not fit even then, what is left out is the least
+dangerous part, and the model is told which files it was not shown.
+
+Every audit records its **coverage**: for each file, whether it was audited,
+audited in part (which lines) or not, and why — not text, a dependency
+directory, out of budget, or a request that failed. It also flags files that
+look like **padding**, the cheapest way to push something out of a budget filled
+in order: groups of near-identical files, files of anomalous size, and modules
+no other file mentions.
+
+`SECAUDIT_CONTEXT_CHARS` sets the size of each request (default 200000
+characters, about 50k tokens; ollama gets a quarter of it).
+`SECAUDIT_MAX_CHUNKS` times that is the most an audit can send, and so its cost
+ceiling.
 
 ### Language
 
