@@ -16,6 +16,59 @@ _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,254}$")
 
 CLONE_TIMEOUT = int(os.environ.get("SECAUDIT_CLONE_TIMEOUT", "120"))
 
+# The repository being cloned is untrusted, and so is anything that could make
+# git act on it. Cloning runs on the server and also through the runner on the
+# owner's own computer, where git reads that person's global and system config:
+# a global core.hooksPath runs its post-checkout hook in the fresh checkout, the
+# LFS filter that `git lfs install` registers globally downloads whatever the
+# repository's .gitattributes points it at, and credential helpers offer the
+# keychain to whatever host the clone talks to. So none of that is read. git is
+# told to use no global or system config at all, and the settings that decide
+# whether anything in the checkout runs or escapes it are pinned explicitly,
+# both for the clone itself and in the checkout's own config, which every later
+# git command in it reads.
+_HARDENED_CONFIG = (
+    f"core.hooksPath={os.devnull}",     # no hook runs, from any directory
+    "core.symlinks=false",              # a link is checked out as a plain file
+    "core.fsmonitor=false",             # fsmonitor is a command git would run
+    "submodule.recurse=false",
+    "filter.lfs.smudge=",               # never fetch LFS objects on checkout
+    "filter.lfs.process=",
+    "filter.lfs.required=false",
+)
+
+# Protocols git may use, for the clone and for anything it would follow from
+# there (a submodule URL, a redirect). Only HTTPS is ever cloned in production.
+ALLOWED_PROTOCOLS = ("https",)
+
+
+def git_env() -> dict:
+    """The environment for every git command run on an untrusted checkout.
+
+    The GIT_* variables of the calling process are dropped as well: one of them
+    (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT, GIT_DIR...) is enough to bring
+    configuration back or to point git somewhere else.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+    })
+    return env
+
+
+def git_config_args() -> list[str]:
+    """`git -c` options that apply the hardened config to a single command."""
+    args = []
+    for setting in _HARDENED_CONFIG:
+        args += ["-c", setting]
+    args += ["-c", "protocol.allow=never"]
+    for protocol in ALLOWED_PROTOCOLS:
+        args += ["-c", f"protocol.{protocol}.allow=always"]
+    return args
+
 
 class CloneError(Exception):
     """git clone failed or the cloned repo is unusable."""
@@ -49,12 +102,17 @@ def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
 
     With no branch, git checks out the repository's default branch.
     """
-    cmd = ["git", "clone", "--depth", "1"]
+    cmd = ["git", *git_config_args(), "clone", "--depth", "1",
+           "--no-recurse-submodules",
+           # No template: a template directory is where hooks would come from.
+           "--template="]
+    for setting in _HARDENED_CONFIG:
+        cmd += ["--config", setting]
     if branch is not None:
         cmd += ["--branch", validate_branch(branch), "--single-branch"]
     cmd += ["--", url, str(dest)]
 
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env = git_env()
     try:
         r = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, env=env,
@@ -66,8 +124,8 @@ def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
         raise CloneError(f"git clone failed: {detail}")
 
     rev = subprocess.run(
-        ["git", "-C", str(dest), "rev-parse", "HEAD"],
-        capture_output=True, text=True,
+        ["git", *git_config_args(), "-C", str(dest), "rev-parse", "HEAD"],
+        capture_output=True, text=True, env=env,
     )
     if rev.returncode != 0:
         raise CloneError("could not resolve HEAD of cloned repository")

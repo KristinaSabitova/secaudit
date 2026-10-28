@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 from web import auth as web_auth
 from web import db as web_db
 from web import engine as web_engine
+from web import gitclone as web_gitclone
 from web import main as web_main
 from web import models as web_models
 from web import runnerqueue as web_runnerqueue
@@ -55,6 +56,9 @@ def clean_backend_env(monkeypatch):
     # purpose. TestGuestList covers the default.
     monkeypatch.setenv(web_auth.ALLOWED_LOGINS_ENV, web_auth.OPEN_REGISTRATION)
     monkeypatch.setattr(web_engine.engine, "load_config", dict)
+    # The tests clone local repositories, which production never does.
+    # TestCloneHardening checks that file:// is refused by default.
+    monkeypatch.setattr(web_gitclone, "ALLOWED_PROTOCOLS", ("https", "file"))
 
 
 FAKE_FINDINGS = [
@@ -1448,6 +1452,115 @@ class TestBranchCloning:
     def test_unknown_branch_raises_clone_error(self, tmp_path, sample_repo):
         with pytest.raises(CloneError):
             clone_repo(f"file://{sample_repo}", tmp_path / "x", branch="nope")
+
+
+class TestCloneHardening:
+    """Nothing in the caller's git setup or in the repository runs on clone.
+
+    The runner clones on the owner's own computer, so the attacker's best
+    lever is that computer's git config: a global hooksPath or the LFS filter
+    `git lfs install` registers globally. Each test arranges one, proves with
+    a plain `git clone` that it would fire, and then that clone_repo does not.
+    """
+
+    def _commit_all(self, repo):
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-qm", "more"], cwd=repo, check=True)
+
+    def _hostile_home(self, tmp_path, monkeypatch, config: str):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".gitconfig").write_text(config)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+        return home
+
+    def _hook_dir(self, tmp_path, marker):
+        hooks = tmp_path / "hooks"
+        hooks.mkdir()
+        hook = hooks / "post-checkout"
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        hook.chmod(0o755)
+        return hooks
+
+    def _plain_clone(self, src, dest):
+        subprocess.run(["git", "clone", "-q", f"file://{src}", str(dest)],
+                       check=True, capture_output=True)
+
+    def test_a_global_hooks_path_does_not_run(self, tmp_path, monkeypatch,
+                                             sample_repo):
+        marker = tmp_path / "EXECUTED"
+        hooks = self._hook_dir(tmp_path, marker)
+        self._hostile_home(tmp_path, monkeypatch,
+                           f"[core]\n\thooksPath = {hooks}\n")
+        self._plain_clone(sample_repo, tmp_path / "control")
+        assert marker.exists(), "the arrangement should fire on a plain clone"
+        marker.unlink()
+
+        clone_repo(f"file://{sample_repo}", tmp_path / "checkout")
+        assert not marker.exists()
+
+    def test_config_inherited_through_the_environment_is_dropped(
+            self, tmp_path, monkeypatch, sample_repo):
+        marker = tmp_path / "EXECUTED"
+        hooks = self._hook_dir(tmp_path, marker)
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hookspath'='{hooks}'")
+        clone_repo(f"file://{sample_repo}", tmp_path / "checkout")
+        assert not marker.exists()
+
+    def test_a_globally_installed_lfs_filter_does_not_run(self, tmp_path,
+                                                          monkeypatch,
+                                                          sample_repo):
+        marker = tmp_path / "SMUDGED"
+        (sample_repo / ".gitattributes").write_text("*.bin filter=lfs\n")
+        (sample_repo / "blob.bin").write_text("pointer\n")
+        self._commit_all(sample_repo)
+        smudge = tmp_path / "smudge"
+        smudge.write_text(f"#!/bin/sh\ntouch '{marker}'\ncat\n")
+        smudge.chmod(0o755)
+        self._hostile_home(
+            tmp_path, monkeypatch,
+            f"[filter \"lfs\"]\n\tsmudge = {smudge}\n\trequired = true\n")
+        self._plain_clone(sample_repo, tmp_path / "control")
+        assert marker.exists(), "the arrangement should fire on a plain clone"
+        marker.unlink()
+
+        dest = tmp_path / "checkout"
+        clone_repo(f"file://{sample_repo}", dest)
+        assert not marker.exists()
+        assert (dest / "blob.bin").read_text() == "pointer\n"
+
+    def test_a_symlink_is_checked_out_as_a_plain_file(self, tmp_path,
+                                                      sample_repo):
+        (sample_repo / "escape").symlink_to("/etc/passwd")
+        self._commit_all(sample_repo)
+        dest = tmp_path / "checkout"
+        clone_repo(f"file://{sample_repo}", dest)
+        assert not (dest / "escape").is_symlink()
+        assert (dest / "escape").read_text() == "/etc/passwd"
+
+    def test_the_checkout_keeps_the_hardened_config(self, tmp_path, sample_repo):
+        """Every later git command in the checkout reads its own config."""
+        dest = tmp_path / "checkout"
+        clone_repo(f"file://{sample_repo}", dest)
+
+        def setting(key):
+            return subprocess.run(
+                ["git", "config", "--file", str(dest / ".git" / "config"), key],
+                capture_output=True, text=True).stdout.strip()
+
+        assert setting("core.hooksPath") == os.devnull
+        assert setting("core.symlinks") == "false"
+        # With no template, git does not even write the sample hooks.
+        assert not list((dest / ".git").glob("hooks/*"))
+
+    def test_only_https_is_allowed_by_default(self, tmp_path, monkeypatch,
+                                              sample_repo):
+        monkeypatch.setattr(web_gitclone, "ALLOWED_PROTOCOLS", ("https",))
+        with pytest.raises(CloneError):
+            clone_repo(f"file://{sample_repo}", tmp_path / "checkout")
 
 
 # ---------------------------------------------------------------------------
