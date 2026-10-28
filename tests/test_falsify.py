@@ -213,6 +213,60 @@ class TestTheFalsePositivesFall:
         assert outcome["attempts"][0]["evidence"]["citations"][0]["line"] == 1
 
 
+class TestWhatTheCallerPasses:
+    def test_a_parameter_cast_by_every_caller_is_sanitised(self, lab):
+        """The sink is in find_order; the int() is in the route that calls it."""
+        f = finding(lab, "app/db.py",
+                    'return cur.execute("SELECT * FROM orders WHERE id = " + str(order_id))',
+                    "app/views.py:show_order", "cur.execute in app/db.py:find_order")
+        outcome = assess(lab, f)
+        assert results(outcome)["sanitizer"] == "refuted"
+        assert outcome["attempts"][1]["evidence"]["through"] == ["int"]
+
+    def test_one_caller_passing_raw_input_is_enough(self, lab):
+        (lab / "app" / "admin.py").write_text(
+            "from . import db\n\n@app.route('/admin/order')\n"
+            "def admin_order():\n    return db.find_order(request.args['id'])\n")
+        f = finding(lab, "app/db.py",
+                    'return cur.execute("SELECT * FROM orders WHERE id = " + str(order_id))',
+                    "app/views.py:show_order", "cur.execute in app/db.py:find_order")
+        assert results(assess(lab, f))["sanitizer"] == "survived"
+
+    def test_a_route_parameter_comes_from_outside(self, tmp_path):
+        (tmp_path / "v.py").write_text(
+            "@app.route('/<name>')\ndef page(name):\n"
+            "    return cur.execute('SELECT ' + name)\n\npage('fixed')\n")
+        f = {"file": "v.py", "line": 3, "line_end": 3, "category": "injection",
+             "verification_status": "verified",
+             "code_snippet": "return cur.execute('SELECT ' + name)",
+             "hypothesis": {"source": "v.py:page", "sink": "cur.execute"}}
+        assert results(assess(tmp_path, f))["sanitizer"] == "survived"
+
+
+class TestDeadCodeWithoutAHypothesis:
+    def test_a_flow_finding_in_dead_code_is_refuted(self, lab):
+        f = finding(lab, "app/db.py",
+                    "return cur.execute(\"SELECT * FROM users WHERE name = '%s'\" % name)",
+                    "", "")
+        f["hypothesis"] = None
+        outcome = assess(lab, f)
+        assert outcome["status"] == REFUTED
+        assert results(outcome) == {"reachability": "refuted"}
+        assert outcome["hypothesis"]["complete"] is False
+
+    def test_a_secret_in_dead_code_still_stands(self, lab):
+        f = finding(lab, "app/db.py",
+                    "return cur.execute(\"SELECT * FROM users WHERE name = '%s'\" % name)",
+                    "", "", category="secrets")
+        f["hypothesis"] = None
+        assert assess(lab, f)["status"] == EXISTS
+
+    def test_live_code_without_a_hypothesis_records_nothing(self, lab):
+        f = finding(lab, "app/db.py", "return cur.execute(query).fetchall()", "", "")
+        f["hypothesis"] = None
+        assert assess(lab, f)["attempts"] == []
+
+
 class TestTheDevilIsChecked:
     def test_a_refutation_quoting_invented_code_does_not_count(self, lab):
         devil = {"verdict": "false_positive", "argument": "it is escaped",

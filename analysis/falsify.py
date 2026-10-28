@@ -55,6 +55,11 @@ MAX_PATH_STEPS = 12
 
 PYTHON_ONLY = ("flow analysis covers Python only; {file} can be refuted but "
                "not shown reachable, so it stays at exists")
+# Kinds of finding that are a flow from an input to a use, so that code
+# nothing can run cannot carry them. A committed secret in dead code is still
+# committed, and is not one of them.
+FLOW_CATEGORIES = {"injection", "xss", "file_handling", "authz", "sessions",
+                   "csrf", "client_security"}
 INCOMPLETE = "no complete hypothesis (source and sink) was given, so there was nothing to refute"
 
 
@@ -356,6 +361,7 @@ SANITIZERS = {
     "client_security": {"escape", "clean", "escape_html", "sanitize"},
     "file_handling": {"secure_filename", "basename", "safe_join"},
 }
+PASS_THROUGH = {"str", "repr", "format", "bytes"}
 STR_METHODS = {"format", "join", "replace", "strip", "lstrip", "rstrip",
                "lower", "upper", "title", "encode", "decode", "format_map"}
 
@@ -363,15 +369,56 @@ CONSTANT, SANITIZED, TAINTED = "constant", "sanitized", "tainted"
 _ORDER = {CONSTANT: 0, SANITIZED: 1, TAINTED: 2}
 
 
-class _Values:
-    """Where a value inside one function comes from, as far as ast shows."""
+# How many calls up a parameter is followed to the arguments it is given.
+MAX_CALLER_DEPTH = 2
 
-    def __init__(self, fn: Function, module: ast.Module | None, category: str):
+
+class _Values:
+    """Where a value inside one function comes from, as far as ast shows.
+
+    A parameter is followed up to the places the function is called from, so
+    a value cast by the caller is seen as cast: what reaches the sink is the
+    worst of what every call site passes. A function nobody calls in the
+    checkout, or one a framework calls (an entry point), gets its parameters
+    from outside, and they are taken as attacker-controlled.
+    """
+
+    def __init__(self, fn: Function, module: ast.Module | None, category: str,
+                 index: "Index | None" = None, depth: int = 0, used=None):
+        self.fn = fn
+        self.category = category
+        self.index = index
+        self.depth = depth
         self.sanitizers = GENERIC_SANITIZERS | SANITIZERS.get(category, set())
         self.params = {a.arg for a in ast.walk(fn.node.args) if isinstance(a, ast.arg)}
         self.local = self._assignments(fn.node)
         self.module = self._assignments(module, top_only=True) if module else {}
-        self.used: list[str] = []
+        self.used: list[str] = used if used is not None else []
+
+    def _from_callers(self, param: str) -> str:
+        fn = self.fn
+        if self.index is None or self.depth >= MAX_CALLER_DEPTH or fn.entry:
+            return TAINTED
+        args = fn.node.args
+        positional = [a.arg for a in args.posonlyargs + args.args]
+        method = "." in fn.qualname and positional[:1] in (["self"], ["cls"])
+        found = []
+        for caller in self.index.functions:
+            for call in ast.walk(caller.node):
+                if not isinstance(call, ast.Call) or _last_name(call.func) != fn.name:
+                    continue
+                arg = next((k.value for k in call.keywords if k.arg == param), None)
+                if arg is None and param in positional:
+                    at = positional.index(param) - (1 if method else 0)
+                    if any(isinstance(a, ast.Starred) for a in call.args):
+                        return TAINTED
+                    arg = call.args[at] if 0 <= at < len(call.args) else None
+                if arg is None:
+                    return TAINTED       # a default, **kwargs: not worth guessing
+                upstream = _Values(caller, self.index.modules.get(caller.file),
+                                   self.category, self.index, self.depth + 1, self.used)
+                found.append(upstream.of(arg))
+        return self._worst(found) if found else TAINTED
 
     @staticmethod
     def _assignments(tree, top_only=False) -> dict:
@@ -401,7 +448,7 @@ class _Values:
             return CONSTANT
         if isinstance(node, ast.Name):
             if node.id in self.params:
-                return TAINTED
+                return self._from_callers(node.id)
             sources = self.local.get(node.id) or self.module.get(node.id)
             if not sources:
                 return TAINTED          # an import or a global: not ours to vouch for
@@ -415,8 +462,11 @@ class _Values:
             if name in self.sanitizers:
                 self.used.append(name)
                 return SANITIZED
-            if isinstance(node.func, ast.Attribute) and name in STR_METHODS:
-                parts = [node.func.value] + list(node.args) + [k.value for k in node.keywords]
+            # str(x) is x as text: as safe or unsafe as x was.
+            transparent = isinstance(node.func, ast.Name) and name in PASS_THROUGH
+            if transparent or (isinstance(node.func, ast.Attribute) and name in STR_METHODS):
+                receiver = [] if transparent else [node.func.value]
+                parts = receiver + list(node.args) + [k.value for k in node.keywords]
                 return self._worst(self.of(p, depth + 1) for p in parts)
             return TAINTED
         return TAINTED
@@ -448,7 +498,7 @@ def try_sanitizer(index: Index, finding: dict, hypothesis: dict, sink: Function)
         return {"result": INCONCLUSIVE,
                 "note": f"no call in {sink.where()} matches the sink"}
     values = _Values(sink, index.modules.get(sink.file),
-                     str(finding.get("category") or ""))
+                     str(finding.get("category") or ""), index)
     callee = _last_name(call.func)
     where = {"call": ast.unparse(call.func)[:120], "line": call.lineno}
     params = len(call.args) >= 2 or any(k.arg in ("params", "parameters", "args")
@@ -565,11 +615,26 @@ def assess(project: Path, finding: dict, index: Index | None = None) -> dict:
     out = {"hypothesis": hypothesis, "attempts": [], "status": None, "note": None}
     if finding.get("verification_status") != "verified":
         return out
+    file = re.sub(r"^(\./)+", "", str(finding.get("file") or ""))
     if not hypothesis or not hypothesis["complete"]:
         out.update(status=EXISTS, note=INCOMPLETE)
+        # Without a flow there is nothing to refute but whether the code can
+        # run at all — and a model rarely names the source of dead code,
+        # because there is none. Only a refutation is recorded.
+        if file.endswith(".py") and finding.get("category") in FLOW_CATEGORIES:
+            index = index or Index(project)
+            sink = index.function_at(file, finding.get("line"))
+            reach = try_reachability(index, sink) if sink else None
+            if reach and reach["result"] == REFUTED:
+                out["hypothesis"] = hypothesis or {
+                    "source": "", "sink": "", "path": [], "preconditions": [],
+                    "complete": False}
+                out["attempts"] = [{"method": REACHABILITY, "result": REFUTED,
+                                    "evidence": reach.get("evidence"),
+                                    "note": reach.get("note")}]
+                out.update(status=REFUTED, note=None)
         return out
 
-    file = re.sub(r"^(\./)+", "", str(finding.get("file") or ""))
     python = file.endswith(".py")
     attempts: dict[str, dict] = {}
     if python:
