@@ -187,6 +187,20 @@ def run_audit(project: Path, config: dict | None = None,
     return response
 
 
+def backend_identity(config: dict) -> tuple[str | None, str | None]:
+    """Which backend and model an audit with this config runs on.
+
+    Recorded with every module run, so the rate at which a model's findings
+    get refuted can be told apart from another model's.
+    """
+    try:
+        backend = engine.select_backend(None, config)
+    except SystemExit:
+        return config.get("backend"), config.get("model")
+    return (config.get("backend") or "claude-code",
+            getattr(backend, "model", None) or config.get("model"))
+
+
 OLLAMA_PROBE_TIMEOUT = 2
 
 

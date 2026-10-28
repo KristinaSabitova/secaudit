@@ -97,6 +97,7 @@ class FakeBackend(web_engine.engine.AuditBackend):
 
     def run(self, project, prompt, timeout=3600):
         self.prompts.append(prompt)
+        self.last_usage = {"input_tokens": 1200, "output_tokens": 300}
         return self.output
 
 
@@ -967,6 +968,95 @@ class TestRunnerEvidence:
                        "risk_tier": 3, "signals": []}],
             coverage_summary={"files": 1, "audited": 1})
         assert detail["coverage"] == {"files": 1, "audited": 1}
+
+
+class TestDataModelInUse:
+    """What phase 2 records from the audits that already run."""
+
+    def audit(self, client, repo="https://github.com/acme/sample"):
+        audit_id = client.post("/api/audits", json={"repo_url": repo}).json()["id"]
+        return client.get(f"/api/audits/{audit_id}").json()
+
+    def test_audits_of_one_repository_share_a_project(self, client, signed_in,
+                                                      clone_from_sample):
+        first, second = self.audit(client), self.audit(client)
+        assert first["project_id"] and first["project_id"] == second["project_id"]
+        other = self.audit(client, "https://github.com/acme/other")
+        assert other["project_id"] != first["project_id"]
+
+    def test_another_owner_gets_their_own_project(self, client, signed_in,
+                                                  clone_from_sample):
+        mine = self.audit(client)
+        sign_in(client, github_id=99, login="ana")
+        assert self.audit(client)["project_id"] != mine["project_id"]
+
+    def test_a_webhook_audit_belongs_to_the_instance(self, client, monkeypatch,
+                                                     clone_from_sample):
+        monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+        deliver(client, push_payload())
+        deliver(client, push_payload())
+        session = web_db.get_session()
+        audits = session.scalars(select(web_models.Audit)).all()
+        projects = {a.project_id for a in audits}
+        owner = session.get(web_models.Project, projects.pop()).user_id
+        session.close()
+        assert len(audits) == 2 and not projects and owner is None
+
+    def test_a_checked_finding_exists_and_an_unchecked_one_does_not(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        altered = dict(FAKE_FINDINGS[0], anchor="another_function",
+                       code_snippet="not in the file at all()")
+        monkeypatch.setattr(web_engine.engine, "select_backend",
+                            lambda flag, config=None: FakeBackend(json.dumps(
+                                [FAKE_FINDINGS[0], altered, UNVERIFIED_FINDING])))
+        findings = self.audit(client)["findings"]
+        by_snippet = {f.get("code_snippet"): f["epistemic_status"] for f in findings}
+        assert by_snippet[FAKE_FINDINGS[0]["code_snippet"]] == "exists"
+        assert by_snippet["not in the file at all()"] is None
+        assert by_snippet[None] is None
+
+    def test_the_audit_records_what_it_cost(self, client, signed_in,
+                                            clone_from_sample, master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123",
+                                          "model": "claude-test-model"})
+        runs = {r["module"]: r for r in self.audit(client)["modules"]}
+        audit = runs["audit"]
+        assert audit["status"] == "ok"
+        assert (audit["tokens_in"], audit["tokens_out"]) == (1200, 300)
+        assert audit["backend"] == "anthropic-api"
+        assert audit["model"] == "claude-test-model"
+        assert audit["detail"]["requests"] == 1
+        assert audit["duration_ms"] is not None
+
+    def test_the_evidence_check_records_what_it_downgraded(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        altered = dict(FAKE_FINDINGS[0], anchor="another_function",
+                       code_snippet="not in the file at all()")
+        monkeypatch.setattr(web_engine.engine, "select_backend",
+                            lambda flag, config=None: FakeBackend(json.dumps(
+                                [FAKE_FINDINGS[0], altered])))
+        runs = {r["module"]: r for r in self.audit(client)["modules"]}
+        assert runs["evidence"]["detail"] == {"checked": 2, "claimed_verified": 2,
+                                              "downgraded": 1, "located": 1}
+        assert runs["evidence"]["tokens_in"] == 0
+
+    def test_a_runner_reports_its_own_tokens(self, client, signed_in, master_key,
+                                             clone_from_sample, sample_repo):
+        client.put("/api/settings", json={"backend": "claude-code"})
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        token = client.post("/api/runner/token").json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        client.post("/api/runner/claim", headers=headers)
+        client.post("/api/runner/result", headers=headers, json={
+            "audit_id": audit_id, "commit_sha": sample_head(sample_repo),
+            "findings": [], "usage": {"input_tokens": 5000, "output_tokens": 70},
+            "duration_ms": 4200})
+        runs = {r["module"]: r for r in
+                client.get(f"/api/audits/{audit_id}").json()["modules"]}
+        assert runs["audit"]["backend"] == "claude-code"
+        assert (runs["audit"]["tokens_in"], runs["audit"]["duration_ms"]) == (5000, 4200)
 
 
 class TestGuestListRevocation:

@@ -5,6 +5,7 @@ import os
 import secrets
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,11 +21,12 @@ from sqlalchemy.orm import Session
 from . import auth, runnerqueue, settings as settings_store
 from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
-from .engine import (AuditError, backend_config, backend_status, run_audit,
-                     sanitize_error)
+from .engine import (AuditError, backend_config, backend_identity, backend_status,
+                     run_audit, sanitize_error)
 from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
-from .models import (LANGUAGES, Audit, User, audit_to_dict, coverage_from_dict,
-                     coverage_to_dict, finding_from_dict, summarize)
+from .models import (LANGUAGES, Audit, ModuleRun, User, audit_to_dict,
+                     coverage_from_dict, coverage_to_dict, finding_from_dict,
+                     project_for, summarize)
 from .settings import InvalidOllamaURL, SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
@@ -105,6 +107,50 @@ def db_session():
         session.close()
 
 
+def _ms_since(start: float) -> int:
+    return int((time.monotonic() - start) * 1000)
+
+
+def record_llm_audit(session: Session, audit: Audit, backend: str | None,
+                     model: str | None, usage: dict | None,
+                     duration_ms: int | None, coverage_summary: dict | None) -> None:
+    """The module run for the part of an audit that talks to a backend."""
+    usage = usage if isinstance(usage, dict) else {}
+    summary = coverage_summary if isinstance(coverage_summary, dict) else {}
+
+    def tokens(key):
+        try:
+            return max(0, int(usage.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    session.add(ModuleRun(
+        audit_id=audit.id, module="audit", status="ok", backend=backend,
+        model=model, tokens_in=tokens("input_tokens"),
+        tokens_out=tokens("output_tokens"),
+        duration_ms=duration_ms if isinstance(duration_ms, int) else None,
+        detail={k: summary[k] for k in ("requests", "failed_requests")
+                if k in summary} or None,
+    ))
+
+
+def check_evidence(session: Session, audit: Audit, checkout: Path,
+                   findings: list[dict], manifest) -> list[dict]:
+    """Run the evidence check and record it as a module run."""
+    start = time.monotonic()
+    claimed = sum(1 for f in findings if f.get("verification_status") == "verified")
+    evidence.verify_findings(checkout, findings, manifest)
+    kept = sum(1 for f in findings if f.get("verification_status") == "verified")
+    session.add(ModuleRun(
+        audit_id=audit.id, module="evidence", status="ok",
+        duration_ms=_ms_since(start),
+        detail={"checked": len(findings), "claimed_verified": claimed,
+                "downgraded": claimed - kept,
+                "located": sum(1 for f in findings if f.get("line"))},
+    ))
+    return findings
+
+
 def store_result(session: Session, audit: Audit, findings: list[dict],
                  coverage: list[dict] | None, coverage_summary: dict | None) -> None:
     """Persist a finished audit: its findings, its coverage, and done."""
@@ -149,11 +195,15 @@ def execute_audit(audit_id: str) -> None:
                                               branch=audit.branch)
                 audit.status = "running"
                 session.commit()
+                start = time.monotonic()
                 result = run_audit(dest, config, credentials)
+                record_llm_audit(session, audit, *backend_identity(config),
+                                 result.get("usage"), _ms_since(start),
+                                 result.get("coverage_summary"))
                 # Checked here, against this server's own checkout, not by
                 # the process that talked to the backend.
-                findings = evidence.verify_findings(
-                    dest, result["findings"], result.get("manifest"))
+                findings = check_evidence(session, audit, dest, result["findings"],
+                                          result.get("manifest"))
                 store_result(session, audit, findings, result.get("coverage"),
                              result.get("coverage_summary"))
             except (CloneError, AuditError) as e:
@@ -182,7 +232,8 @@ def queue_audit(session: Session, background_tasks: BackgroundTasks, repo_url: s
     sha it actually checked out.
     """
     audit = Audit(repo_url=repo_url, branch=branch, trigger=trigger,
-                  commit_sha=commit_sha, user_id=user_id, language=language)
+                  commit_sha=commit_sha, user_id=user_id, language=language,
+                  project_id=project_for(session, user_id, repo_url).id)
     session.add(audit)
     session.commit()
     background_tasks.add_task(execute_audit, audit.id)
@@ -477,6 +528,8 @@ class RunnerResult(BaseModel):
     coverage_summary: dict | None = None
     # What each request carried, so the evidence can be checked against it.
     manifest: list[dict] | None = None
+    usage: dict | None = None
+    duration_ms: int | None = None
     error: str | None = None
 
 
@@ -509,7 +562,11 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
                         f["verification_status"] = "unverified"
                         f["verification_note"] = UNCHECKABLE.format(reason=e)
             else:
-                evidence.verify_findings(dest, findings, result.get("manifest"))
+                check_evidence(session, audit, dest, findings, result.get("manifest"))
+        # What the runner says it spent: it is the one that talked to the model.
+        record_llm_audit(session, audit, runnerqueue.RUNNER_BACKEND, None,
+                         result.get("usage"), result.get("duration_ms"),
+                         result.get("coverage_summary"))
         store_result(session, audit, findings, result.get("coverage"),
                      result.get("coverage_summary"))
         audit.runner_claimed_at = None

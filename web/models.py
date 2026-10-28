@@ -528,6 +528,9 @@ def finding_from_dict(audit_id: str, f: dict) -> Finding:
         code_snippet=snippet or None,
         verification_status=status,
         verification_note=note or None,
+        # The first rung of module 2: a finding whose snippet was found in the
+        # file is known to exist. Anything less has not been shown at all.
+        epistemic_status=EXISTS if status == VERIFIED else None,
     )
 
 
@@ -544,6 +547,7 @@ def finding_to_dict(f: Finding) -> dict:
         "anchor": f.anchor,
         "fingerprint": f.fingerprint,
         "verification_status": f.verification_status,
+        "epistemic_status": f.epistemic_status,
     }
     if f.code_snippet:
         d["code_snippet"] = f.code_snippet
@@ -566,6 +570,7 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         "error": audit.error,
         "summary": audit.summary or empty_summary(),
         "coverage": audit.coverage_summary,
+        "project_id": audit.project_id,
     }
     if include_findings:
         findings = audit.findings
@@ -576,6 +581,7 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         if verified_only:
             findings = [f for f in findings if f.verification_status == VERIFIED]
         d["findings"] = [finding_to_dict(f) for f in findings]
+        d["modules"] = [module_run_to_dict(r) for r in audit.module_runs]
     return d
 
 
@@ -599,3 +605,26 @@ def coverage_to_dict(row: Coverage) -> dict:
     return {"file": row.file, "audited": row.audited, "reason": row.reason,
             "risk_tier": row.risk_tier, "signals": row.signals or []}
 
+
+def project_for(session, user_id: int | None, repo_url: str) -> Project:
+    """The project an audit of repo_url by this owner belongs to, made if new.
+
+    NULL owners do not collide in a unique constraint, so the instance's own
+    projects are looked up here rather than left to the database.
+    """
+    from sqlalchemy import select
+
+    owner = Project.user_id.is_(None) if user_id is None else Project.user_id == user_id
+    project = session.scalar(select(Project).where(owner, Project.repo_url == repo_url))
+    if project is None:
+        project = Project(user_id=user_id, repo_url=repo_url)
+        session.add(project)
+        session.flush()
+    return project
+
+
+def module_run_to_dict(run: ModuleRun) -> dict:
+    return {"module": run.module, "status": run.status, "backend": run.backend,
+            "model": run.model, "tokens_in": run.tokens_in,
+            "tokens_out": run.tokens_out, "duration_ms": run.duration_ms,
+            "error": run.error, "detail": run.detail}
