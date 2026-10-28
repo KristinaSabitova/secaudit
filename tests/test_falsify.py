@@ -254,6 +254,13 @@ class TestDeadCodeWithoutAHypothesis:
         assert results(outcome) == {"reachability": "refuted"}
         assert outcome["hypothesis"]["complete"] is False
 
+    def test_a_query_of_constants_is_refuted_without_one(self, lab):
+        f = finding(lab, "app/db.py", "return cur.execute(query).fetchone()", "", "")
+        f["hypothesis"] = None
+        outcome = assess(lab, f)
+        assert results(outcome) == {"sanitizer": "refuted"}
+        assert outcome["status"] == REFUTED
+
     def test_a_secret_in_dead_code_still_stands(self, lab):
         f = finding(lab, "app/db.py",
                     "return cur.execute(\"SELECT * FROM users WHERE name = '%s'\" % name)",

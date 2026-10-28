@@ -397,7 +397,9 @@ leyendo el Python con `ast`, sin importarlo ni ejecutarlo nunca:
 Cada hallazgo acaba con un `epistemic_status`: `exists` (el código está ahí),
 `reachable` (lo alcanza un punto de entrada), `corroborated` (sobrevivió a
 todos los intentos), `refuted` (se guarda, con el motivo) o `inconclusive`. Un
-hallazgo sin hipótesis completa se queda en `exists`. El análisis de flujo
+hallazgo sin hipótesis completa se queda en `exists`, salvo que lo refute lo
+que no necesita origen: nada alcanza su código, o a la llamada solo llegan
+constantes. El análisis de flujo
 solo lee Python: en otros lenguajes un hallazgo puede refutarse, pero no pasa
 de `exists`. `GET /api/stats/refutation` convierte todo esto en una tasa de
 falsos positivos medida por motor y modelo.

@@ -618,20 +618,25 @@ def assess(project: Path, finding: dict, index: Index | None = None) -> dict:
     file = re.sub(r"^(\./)+", "", str(finding.get("file") or ""))
     if not hypothesis or not hypothesis["complete"]:
         out.update(status=EXISTS, note=INCOMPLETE)
-        # Without a flow there is nothing to refute but whether the code can
-        # run at all — and a model rarely names the source of dead code,
-        # because there is none. Only a refutation is recorded.
+        # Without a flow there is no chain to test, but two attempts need no
+        # source: whether the code can run at all, and what reaches the call
+        # the evidence points at. A model rarely names the source of dead
+        # code or of a query made of constants, because there is none. Only
+        # a refutation is recorded: anything else leaves it at exists.
         if file.endswith(".py") and finding.get("category") in FLOW_CATEGORIES:
             index = index or Index(project)
             sink = index.function_at(file, finding.get("line"))
-            reach = try_reachability(index, sink) if sink else None
-            if reach and reach["result"] == REFUTED:
-                out["hypothesis"] = hypothesis or {
-                    "source": "", "sink": "", "path": [], "preconditions": [],
-                    "complete": False}
-                out["attempts"] = [{"method": REACHABILITY, "result": REFUTED,
-                                    "evidence": reach.get("evidence"),
-                                    "note": reach.get("note")}]
+            blank = hypothesis or {"source": "", "sink": "", "path": [],
+                                   "preconditions": [], "complete": False}
+            tries = [] if sink is None else [
+                (REACHABILITY, try_reachability(index, sink)),
+                (SANITIZER, try_sanitizer(index, finding, blank, sink))]
+            refuted = [(m, a) for m, a in tries if a["result"] == REFUTED]
+            if refuted:
+                out["hypothesis"] = blank
+                out["attempts"] = [{"method": m, "result": REFUTED,
+                                    "evidence": a.get("evidence"), "note": a.get("note")}
+                                   for m, a in refuted]
                 out.update(status=REFUTED, note=None)
         return out
 

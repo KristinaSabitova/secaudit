@@ -391,7 +391,8 @@ never importing or running it:
 Each finding ends with an `epistemic_status`: `exists` (the code is there),
 `reachable` (an entry point reaches it), `corroborated` (it survived every
 attempt), `refuted` (kept, with the reason) or `inconclusive`. A finding with
-no complete hypothesis stays at `exists`. The flow analysis reads Python only:
+no complete hypothesis stays at `exists`, unless what needs no source refutes
+it: nothing can reach its code, or only constants reach the call. The flow analysis reads Python only:
 elsewhere a finding can be refuted but goes no further than `exists`.
 `GET /api/stats/refutation` turns this into a measured false-positive rate
 per backend and model.
