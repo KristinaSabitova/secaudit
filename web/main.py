@@ -522,8 +522,8 @@ def refutation_stats(user: User = Depends(require_user),
                      session: Session = Depends(db_session)):
     """How often each backend and model's findings fell when tested.
 
-    Counted over the findings that could be tested at all: backed by code and
-    stated as a complete hypothesis. The share refuted is a measured false
+    Counted over the findings that were actually tested: backed by code,
+    stated as a complete hypothesis, and attacked at least once. The share refuted is a measured false
     positive rate of that model, not a guess at one.
     """
     run = aliased(ModuleRun)
@@ -532,7 +532,7 @@ def refutation_stats(user: User = Depends(require_user),
              .join(Audit, Audit.id == Finding.audit_id)
              .join(run, (run.audit_id == Audit.id) & (run.module == "audit"))
              .join(Hypothesis, Hypothesis.finding_id == Finding.id)
-             .where(Hypothesis.complete.is_(True),
+             .where(Hypothesis.complete.is_(True), Hypothesis.attempts.any(),
                     Finding.epistemic_status.is_not(None))
              .group_by(run.backend, run.model, Finding.epistemic_status))
     if not user.is_admin:

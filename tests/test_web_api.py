@@ -2169,6 +2169,10 @@ class TestFalsifiability:
         self.audit(client, monkeypatch, [sqli], [
             {"id": 1, "verdict": "holds", "argument": "b", "citations": []}])
         self.audit(client, monkeypatch, FAKE_FINDINGS)       # nothing testable
+        # Stated, but in a language the analysis cannot read and with no
+        # devil: never attacked, so not counted as tested.
+        monkeypatch.setenv("SECAUDIT_MAX_REFUTATIONS", "0")
+        self.audit(client, monkeypatch, [dict(sqli, file="app.js")])
         stats = client.get("/api/stats/refutation").json()
         assert stats == [{"backend": "anthropic-api", "model": "claude-test-model",
                           "tested": 2, "refuted": 1, "rate": 0.5,
