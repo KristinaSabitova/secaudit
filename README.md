@@ -332,6 +332,7 @@ Then open <http://127.0.0.1:8000>.
 | `GET /api/audits` | every audit, newest first, with severity counts |
 | `GET /api/audits/{id}` | one audit including its findings |
 | `GET /api/audits/{id}?verified_only=true` | only the findings backed by code |
+| `GET /api/audits/{id}/coverage` | every file of the checkout: audited, in part, or not and why |
 | `POST /api/webhook/github` | signed push deliveries from GitHub |
 | `GET /api/health` | git, database, and backend readiness |
 
@@ -358,7 +359,9 @@ The snippet itself is checked as well, by the server, against its own checkout
 of the audited commit. It has to appear in the file it names — whitespace
 aside, nothing else: a paraphrase, an elision or code written from memory does
 not match — and within the lines that were sent to the request that reported
-it. A finding whose snippet is not there is downgraded with the reason.
+it. A finding whose snippet is not there is downgraded with the reason. Audits
+run by `secaudit-runner.py` are checked the same way: the server clones the
+exact commit the runner audited and checks what it sent before storing it.
 `line` and `line_end` are where the snippet was found; they are never the
 model's own claim, and stay null when the snippet could not be located. A
 secret is matched even after it has been masked in the snippet, by the hash

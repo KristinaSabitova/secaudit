@@ -5,6 +5,7 @@ import os
 import secrets
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,9 +22,9 @@ from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
 from .engine import (AuditError, backend_config, backend_status, run_audit,
                      sanitize_error)
-from .gitclone import CloneError, clone_repo, validate_repo_url
-from .models import (LANGUAGES, Audit, User, audit_to_dict, finding_from_dict,
-                     summarize)
+from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
+from .models import (LANGUAGES, Audit, User, audit_to_dict, coverage_from_dict,
+                     coverage_to_dict, finding_from_dict, summarize)
 from .settings import InvalidOllamaURL, SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
@@ -104,6 +105,20 @@ def db_session():
         session.close()
 
 
+def store_result(session: Session, audit: Audit, findings: list[dict],
+                 coverage: list[dict] | None, coverage_summary: dict | None) -> None:
+    """Persist a finished audit: its findings, its coverage, and done."""
+    for f in findings:
+        session.add(finding_from_dict(audit.id, f))
+    for row in coverage or []:
+        if isinstance(row, dict):
+            session.add(coverage_from_dict(audit.id, row))
+    audit.summary = summarize(findings)
+    audit.coverage_summary = coverage_summary if isinstance(coverage_summary, dict) else None
+    audit.status = "done"
+    audit.error = None
+
+
 def execute_audit(audit_id: str) -> None:
     """Background task: clone the repo, run the engine, persist the outcome."""
     session = get_session()
@@ -139,20 +154,19 @@ def execute_audit(audit_id: str) -> None:
                 # the process that talked to the backend.
                 findings = evidence.verify_findings(
                     dest, result["findings"], result.get("manifest"))
+                store_result(session, audit, findings, result.get("coverage"),
+                             result.get("coverage_summary"))
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
                 session.commit()
                 return
             except Exception as e:  # never leave an audit stuck in "running"
+                session.rollback()          # nothing half-stored survives
                 audit.status = "error"
                 audit.error = sanitize_error(f"internal error: {e}")
                 session.commit()
                 return
-        for f in findings:
-            session.add(finding_from_dict(audit.id, f))
-        audit.summary = summarize(findings)
-        audit.status = "done"
         session.commit()
     finally:
         session.close()
@@ -383,6 +397,17 @@ def get_audit(audit_id: str, verified_only: bool = False,
                          verified_only=verified_only)
 
 
+@app.get("/api/audits/{audit_id}/coverage")
+def get_coverage(audit_id: str, user: User = Depends(require_user),
+                 session: Session = Depends(db_session)):
+    """Every file of the audited checkout: audited, in part, or not and why."""
+    audit = session.get(Audit, audit_id)
+    if audit is None or not (user.is_admin or audit.user_id == user.id):
+        raise HTTPException(status_code=404, detail="audit not found")
+    return {"summary": audit.coverage_summary,
+            "files": [coverage_to_dict(row) for row in audit.coverage]}
+
+
 @app.delete("/api/audits/{audit_id}", status_code=204)
 def delete_audit(audit_id: str, user: User = Depends(require_user),
                  session: Session = Depends(db_session)):
@@ -448,7 +473,57 @@ class RunnerResult(BaseModel):
     audit_id: str
     commit_sha: str | None = None
     findings: list[dict] | None = None
+    coverage: list[dict] | None = None
+    coverage_summary: dict | None = None
+    # What each request carried, so the evidence can be checked against it.
+    manifest: list[dict] | None = None
     error: str | None = None
+
+
+UNCHECKABLE = ("degraded to unverified: the server could not check out the "
+               "audited commit to check the evidence ({reason})")
+
+
+def verify_runner_result(audit_id: str, result: dict) -> None:
+    """Background task: check a runner's findings against our own checkout.
+
+    The runner is someone's own machine, so what it sends is a claim, exactly
+    like a model's. The server clones the commit the runner says it audited
+    and runs the same evidence check it runs on its own audits. If that
+    commit cannot be checked out, nothing it sent can count as verified.
+    """
+    session = get_session()
+    try:
+        audit = session.get(Audit, audit_id)
+        if audit is None:
+            return
+        findings = [f for f in (result.get("findings") or []) if isinstance(f, dict)]
+        with tempfile.TemporaryDirectory(prefix="secaudit-verify-") as tmp:
+            dest = Path(tmp) / "repo"
+            try:
+                clone_at_commit(audit.repo_url, dest, audit.commit_sha or "")
+            except CloneError as e:
+                for f in findings:
+                    f["line"] = f["line_end"] = None
+                    if str(f.get("verification_status")) == "verified":
+                        f["verification_status"] = "unverified"
+                        f["verification_note"] = UNCHECKABLE.format(reason=e)
+            else:
+                evidence.verify_findings(dest, findings, result.get("manifest"))
+        store_result(session, audit, findings, result.get("coverage"),
+                     result.get("coverage_summary"))
+        audit.runner_claimed_at = None
+        session.commit()
+    except Exception as e:  # never leave an audit stuck in "running"
+        session.rollback()
+        audit = session.get(Audit, audit_id)
+        if audit is not None:
+            audit.status = "error"
+            audit.error = sanitize_error(f"internal error checking the result: {e}")
+            audit.runner_claimed_at = None
+            session.commit()
+    finally:
+        session.close()
 
 
 def runner_user(session: Session = Depends(db_session),
@@ -484,7 +559,8 @@ def runner_claim(response: Response, user: User = Depends(runner_user),
 
 
 @app.post("/api/runner/result")
-def runner_result(result: RunnerResult, user: User = Depends(runner_user),
+def runner_result(result: RunnerResult, background_tasks: BackgroundTasks,
+                  user: User = Depends(runner_user),
                   session: Session = Depends(db_session)):
     audit = session.get(Audit, result.audit_id)
     if audit is None or not (user.is_admin or audit.user_id == user.id):
@@ -498,14 +574,14 @@ def runner_result(result: RunnerResult, user: User = Depends(runner_user),
         audit.status = "error"
         # Written on someone else's machine by their backend's SDK.
         audit.error = sanitize_error(result.error)
+        audit.runner_claimed_at = None
     else:
-        findings = result.findings or []
-        for f in findings:
-            session.add(finding_from_dict(audit.id, f))
-        audit.summary = summarize(findings)
-        audit.status = "done"
-        audit.error = None
-    audit.runner_claimed_at = None
+        # Stays running until the evidence is checked; the fresh claim keeps
+        # another runner from taking it in the meantime.
+        audit.status = "running"
+        audit.runner_claimed_at = datetime.now(timezone.utc)
+        background_tasks.add_task(verify_runner_result, audit.id,
+                                  result.model_dump())
     session.commit()
     return audit_to_dict(audit)
 

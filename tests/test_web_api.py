@@ -144,6 +144,10 @@ def sample_repo(tmp_path):
          "commit", "-qm", "init"],
         cwd=repo, check=True,
     )
+    # GitHub serves any reachable commit by its sha; a local repo has to be
+    # told to, or clone_at_commit could only ever fetch a branch tip.
+    subprocess.run(["git", "config", "uploadpack.allowAnySHA1InWant", "true"],
+                   cwd=repo, check=True)
     return repo
 
 
@@ -161,6 +165,11 @@ def clone_from_sample(monkeypatch, sample_repo, stub_audit):
         return clone_repo(f"file://{sample_repo}", dest)
 
     monkeypatch.setattr(web_main, "clone_repo", fake_clone)
+    # How the server checks a runner's result: the same sample, at a commit.
+    monkeypatch.setattr(
+        web_main, "clone_at_commit",
+        lambda url, dest, sha, timeout=120: web_gitclone.clone_at_commit(
+            f"file://{sample_repo}", dest, sha))
     return calls
 
 
@@ -838,6 +847,128 @@ class TestGuestList:
         assert "guest list" in r.json()["detail"]
 
 
+def sample_head(repo) -> str:
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+class TestCoverage:
+    """Every audit says which files the auditor was shown."""
+
+    def test_an_audit_records_its_coverage(self, client, signed_in,
+                                           clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        detail = client.get(f"/api/audits/{audit_id}").json()
+        assert detail["coverage"]["files"] == 1
+        assert detail["coverage"]["audited"] == 1
+        assert detail["coverage"]["requests"] == 1
+
+        rows = client.get(f"/api/audits/{audit_id}/coverage").json()
+        assert rows["files"] == [{"file": "app.py", "audited": True,
+                                  "reason": "audited", "risk_tier": 3,
+                                  "signals": []}]
+
+    def test_the_line_range_is_stored(self, client, signed_in, clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        finding = next(f for f in client.get(f"/api/audits/{audit_id}").json()["findings"]
+                       if f["category"] == "injection")
+        assert (finding["line"], finding["line_end"]) == (4, 4)
+
+    def test_coverage_belongs_to_the_audits_owner(self, client, signed_in,
+                                                  clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        sign_in(client, github_id=77, login="other")
+        assert client.get(f"/api/audits/{audit_id}/coverage").status_code == 404
+
+    def test_deleting_an_audit_deletes_its_coverage(self, client, signed_in,
+                                                    clone_from_sample):
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        assert client.delete(f"/api/audits/{audit_id}").status_code == 204
+        session = web_db.get_session()
+        assert session.scalars(select(web_models.Coverage)).all() == []
+        session.close()
+
+
+class TestRunnerEvidence:
+    """A runner's findings are a claim; the server checks them itself."""
+
+    def run_on_runner(self, client, sample_repo, findings, sha=None, **extra):
+        client.put("/api/settings", json={"backend": "claude-code"})
+        audit_id = client.post(
+            "/api/audits",
+            json={"repo_url": "https://github.com/acme/sample"}).json()["id"]
+        token = client.post("/api/runner/token").json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        client.post("/api/runner/claim", headers=headers)
+        r = client.post("/api/runner/result", headers=headers, json={
+            "audit_id": audit_id, "commit_sha": sha or sample_head(sample_repo),
+            "findings": findings, **extra})
+        assert r.status_code == 200
+        return client.get(f"/api/audits/{audit_id}").json()
+
+    def test_a_real_snippet_stays_verified_and_gets_its_lines(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        detail = self.run_on_runner(client, sample_repo, [FAKE_FINDINGS[0]])
+        assert detail["status"] == "done"
+        f = detail["findings"][0]
+        assert f["verification_status"] == "verified"
+        assert (f["line"], f["line_end"]) == (4, 4)
+
+    def test_a_snippet_the_runner_made_up_is_downgraded(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        made_up = dict(FAKE_FINDINGS[0], code_snippet="os.system(user_input)",
+                       line=2)
+        f = self.run_on_runner(client, sample_repo, [made_up])["findings"][0]
+        assert f["verification_status"] == "unverified"
+        assert "does not appear in app.py" in f["verification_note"]
+        assert f["line"] is None
+
+    def test_the_commit_the_runner_audited_is_the_one_checked(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        """The branch moves on; the evidence is read from the audited commit."""
+        audited = sample_head(sample_repo)
+        (sample_repo / "app.py").write_text("def get_user(cur, name):\n    pass\n")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-qam", "fix"], cwd=sample_repo, check=True)
+        f = self.run_on_runner(client, sample_repo, [FAKE_FINDINGS[0]],
+                               sha=audited)["findings"][0]
+        assert f["verification_status"] == "verified"
+
+    def test_a_commit_the_server_cannot_check_out_verifies_nothing(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        f = self.run_on_runner(client, sample_repo, [FAKE_FINDINGS[0]],
+                               sha="b" * 40)["findings"][0]
+        assert f["verification_status"] == "unverified"
+        assert "could not check out the audited commit" in f["verification_note"]
+        assert f["line"] is None
+
+    def test_the_manifest_bounds_what_counts(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        manifest = [{"index": 1, "files": [{"file": "other.py", "start": 1,
+                                            "end": 9}]}]
+        f = self.run_on_runner(client, sample_repo,
+                               [dict(FAKE_FINDINGS[0], chunk=1)],
+                               manifest=manifest)["findings"][0]
+        assert "was not among the files sent" in f["verification_note"]
+
+    def test_the_runners_coverage_is_stored(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        detail = self.run_on_runner(
+            client, sample_repo, [],
+            coverage=[{"file": "app.py", "audited": True, "reason": "audited",
+                       "risk_tier": 3, "signals": []}],
+            coverage_summary={"files": 1, "audited": 1})
+        assert detail["coverage"] == {"files": 1, "audited": 1}
+
+
 class TestGuestListRevocation:
     """Taking a login off the guest list ends access it already had."""
 
@@ -1315,14 +1446,49 @@ class TestMigration:
         con.commit()
         con.close()
 
-        assert self._alembic(db_file, "upgrade", "head").returncode == 0
+        assert self._alembic(db_file, "upgrade", "0008").returncode == 0
         self._alembic(db_file, "stamp", "0007")
-        assert self._alembic(db_file, "upgrade", "head").returncode == 0
+        assert self._alembic(db_file, "upgrade", "0008").returncode == 0
 
         con = sqlite3.connect(db_file)
         stored = con.execute("SELECT token FROM user_sessions").fetchone()[0]
         con.close()
         assert stored == web_auth.hash_token("plaintext-cookie-value")
+
+    def test_0009_goes_both_ways(self, tmp_path):
+        db_file = tmp_path / "mig.db"
+        assert self._alembic(db_file, "upgrade", "0008").returncode == 0
+        con = sqlite3.connect(db_file)
+        con.execute("INSERT INTO audits (id, repo_url, trigger, status, "
+                    "created_at, summary, language) VALUES ('a1', 'u', 'manual', "
+                    "'done', '2026-09-01 00:00:00', '{}', 'en')")
+        con.execute("INSERT INTO findings (audit_id, severity, category, title, "
+                    "description, file, line, anchor, fingerprint, "
+                    "verification_status) VALUES ('a1', 'high', 'x', 't', 'd', "
+                    "'f.py', 7, 'a', 'fp', 'unverified')")
+        con.commit()
+        con.close()
+
+        assert self._alembic(db_file, "upgrade", "head").returncode == 0
+        con = sqlite3.connect(db_file)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(findings)")}
+        assert "line_end" in cols
+        assert "coverage_summary" in {r[1] for r in con.execute("PRAGMA table_info(audits)")}
+        con.execute("INSERT INTO coverage (audit_id, file, audited, reason, "
+                    "risk_tier) VALUES ('a1', 'f.py', 1, 'audited', 5)")
+        con.commit()
+        # The rows from before keep what they had.
+        assert con.execute("SELECT line, line_end FROM findings").fetchone() == (7, None)
+        con.close()
+
+        assert self._alembic(db_file, "downgrade", "0008").returncode == 0
+        con = sqlite3.connect(db_file)
+        tables = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "coverage" not in tables
+        assert "line_end" not in {r[1] for r in con.execute("PRAGMA table_info(findings)")}
+        con.close()
+        assert self._alembic(db_file, "upgrade", "head").returncode == 0
 
 
 # ---------------------------------------------------------------------------

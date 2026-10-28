@@ -79,10 +79,33 @@ class Audit(Base):
     runner_claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # Counts over the coverage rows; NULL for audits from before they existed.
+    coverage_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="audit", cascade="all, delete-orphan", order_by="Finding.id",
     )
+    coverage: Mapped[list["Coverage"]] = relationship(
+        cascade="all, delete-orphan", order_by="Coverage.id",
+    )
+
+
+class Coverage(Base):
+    """One file of an audited checkout: whether the auditor was shown it."""
+
+    __tablename__ = "coverage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    # A trailing slash marks a directory skipped as a whole (node_modules/).
+    file: Mapped[str] = mapped_column(String(512), nullable=False)
+    audited: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 1 runs automatically ... 6 tests, docs and data; see analysis/chunking.
+    risk_tier: Mapped[int] = mapped_column(Integer, nullable=False)
+    signals: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class User(Base):
@@ -156,10 +179,11 @@ class Finding(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     file: Mapped[str] = mapped_column(String(512), default="")
-    # Findings are anchored by function or class, which survives a refactor;
-    # the line is a convenience on top and stays NULL when the backend could
-    # not point at one.
+    # Findings are anchored by function or class, which survives a refactor.
+    # line and line_end are where the snippet was found in the audited file
+    # (analysis/evidence.py), and stay NULL when it could not be located.
     line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     anchor: Mapped[str] = mapped_column(String(255), default="")
     fingerprint: Mapped[str] = mapped_column(String(16), default="")
     # The code that shows the flaw, copied from the audited repository. Empty
@@ -206,9 +230,9 @@ def finding_from_dict(audit_id: str, f: dict) -> Finding:
         title=str(f.get("title") or "")[:255],
         description=str(f.get("description") or ""),
         file=file,
-        # The engine used to anchor findings by function or class only. With
-        # the excerpt line-numbered, a backend can point at a line as well.
+        # Where the evidence check found the snippet, never the model's claim.
         line=_line_number(f.get("line")),
+        line_end=_line_number(f.get("line_end")),
         anchor=str(f.get("anchor") or "")[:255],
         fingerprint=str(f.get("fingerprint") or "")[:16],
         code_snippet=snippet or None,
@@ -226,6 +250,7 @@ def finding_to_dict(f: Finding) -> dict:
         "description": f.description,
         "file": f.file,
         "line": f.line,
+        "line_end": f.line_end,
         "anchor": f.anchor,
         "fingerprint": f.fingerprint,
         "verification_status": f.verification_status,
@@ -250,6 +275,7 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         "created_at": isoformat_utc(audit.created_at),
         "error": audit.error,
         "summary": audit.summary or empty_summary(),
+        "coverage": audit.coverage_summary,
     }
     if include_findings:
         findings = audit.findings
@@ -261,3 +287,24 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
             findings = [f for f in findings if f.verification_status == VERIFIED]
         d["findings"] = [finding_to_dict(f) for f in findings]
     return d
+
+
+def coverage_from_dict(audit_id: str, row: dict) -> Coverage:
+    try:
+        tier = int(row.get("risk_tier"))
+    except (TypeError, ValueError):
+        tier = 5
+    signals = row.get("signals")
+    return Coverage(
+        audit_id=audit_id,
+        file=str(row.get("file") or "")[:512],
+        audited=bool(row.get("audited")),
+        reason=str(row.get("reason") or "")[:255],
+        risk_tier=tier if 1 <= tier <= 6 else 5,
+        signals=signals if isinstance(signals, list) and signals else None,
+    )
+
+
+def coverage_to_dict(row: Coverage) -> dict:
+    return {"file": row.file, "audited": row.audited, "reason": row.reason,
+            "risk_tier": row.risk_tier, "signals": row.signals or []}

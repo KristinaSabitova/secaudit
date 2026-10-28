@@ -71,6 +71,12 @@ const TEXT = {
     "findings.nofindings": "no findings",
     "findings.unverified": "unverified",
     "findings.counted": (n, v) => `${n} findings · ${v} backed by code`,
+    "coverage.line": (c) => `${c.audited} of ${c.files} files audited in ` +
+      `${c.requests} request${c.requests === 1 ? "" : "s"}` +
+      (c.partial ? ` (${c.partial} in part)` : "") +
+      (c.not_audited ? ` · ${c.not_audited} not audited` : ""),
+    "coverage.highrisk": (n) => `${n} high-risk file${n === 1 ? " was" : "s were"} not audited`,
+    "coverage.padding": "the repository looks padded: many near-identical or oversized files",
     "detail.status": "status",
     "detail.branch": "branch",
     "detail.commit": "commit",
@@ -149,6 +155,12 @@ const TEXT = {
     "findings.nofindings": "sin hallazgos",
     "findings.unverified": "sin verificar",
     "findings.counted": (n, v) => `${n} hallazgos · ${v} con código que los respalda`,
+    "coverage.line": (c) => `${c.audited} de ${c.files} ficheros auditados en ` +
+      `${c.requests} petici${c.requests === 1 ? "ón" : "ones"}` +
+      (c.partial ? ` (${c.partial} en parte)` : "") +
+      (c.not_audited ? ` · ${c.not_audited} sin auditar` : ""),
+    "coverage.highrisk": (n) => `${n} fichero${n === 1 ? "" : "s"} de alto riesgo sin auditar`,
+    "coverage.padding": "el repositorio parece rellenado: muchos ficheros casi idénticos o enormes",
     "detail.status": "estado",
     "detail.branch": "rama",
     "detail.commit": "commit",
@@ -343,7 +355,10 @@ function findingNode(finding) {
   if (!verified) head.append(node("span", "badge-unverified", t("findings.unverified")));
   item.append(head);
 
-  const at = finding.line ? `${finding.file}:${finding.line}` : finding.file;
+  // line is where the snippet was found in the file, checked by the server.
+  const lines = finding.line_end && finding.line_end !== finding.line
+    ? `${finding.line}-${finding.line_end}` : finding.line;
+  const at = finding.line ? `${finding.file}:${lines}` : finding.file;
   const where = [at, finding.anchor, categoryLabel(finding.category)]
     .filter(Boolean);
   if (where.length) item.append(node("div", "finding-where", where.join("  ·  ")));
@@ -425,6 +440,18 @@ function renderDetail(audit) {
   if (audit.status === "done" && total > 0) {
     detail.append(node("p", "muted verified-count",
                        t("findings.counted", total, audit.verified_count || 0)));
+  }
+  // What the auditor was shown. Audits from before coverage have none.
+  const coverage = audit.coverage;
+  if (audit.status === "done" && coverage && coverage.files) {
+    detail.append(node("p", "muted coverage", t("coverage.line", coverage)));
+    if (coverage.high_risk_not_audited) {
+      detail.append(node("p", "coverage-warning",
+                         t("coverage.highrisk", coverage.high_risk_not_audited)));
+    }
+    if (coverage.padding_suspected) {
+      detail.append(node("p", "coverage-warning", t("coverage.padding")));
+    }
   }
   if (findings.length === 0) {
     const message = ACTIVE_STATUSES.has(audit.status)

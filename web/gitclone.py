@@ -96,8 +96,40 @@ def validate_branch(name: str) -> str:
     return name
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _git(args: list[str], timeout: int, what: str) -> None:
+    try:
+        r = subprocess.run(["git", *git_config_args(), *args], capture_output=True,
+                           text=True, timeout=timeout, env=git_env())
+    except subprocess.TimeoutExpired:
+        raise CloneError(f"{what} timed out after {timeout}s")
+    if r.returncode != 0:
+        detail = r.stderr.strip().splitlines()[-1] if r.stderr.strip() else f"exit {r.returncode}"
+        raise CloneError(f"{what} failed: {detail}")
+
+
+def clone_at_commit(url: str, dest: Path, sha: str,
+                    timeout: int = CLONE_TIMEOUT) -> str:
+    """Check out exactly this commit, whatever the branch points at now.
+
+    Used to check a runner's findings: the branch may have moved since the
+    runner cloned it, and the evidence has to be read from the code that was
+    audited, not from what came after. Same hardening as clone_repo.
+    """
+    if not _SHA_RE.match(sha or ""):
+        raise CloneError("not a full commit sha")
+    clone_repo(url, dest, timeout=timeout, no_checkout=True)
+    _git(["-C", str(dest), "fetch", "--depth", "1", "--no-recurse-submodules",
+          "origin", sha], timeout, "git fetch")
+    _git(["-C", str(dest), "checkout", "-q", "--detach", sha], timeout,
+         "git checkout")
+    return sha
+
+
 def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
-               branch: str | None = None) -> str:
+               branch: str | None = None, no_checkout: bool = False) -> str:
     """Shallow-clone url into dest and return the HEAD commit sha.
 
     With no branch, git checks out the repository's default branch.
@@ -106,6 +138,8 @@ def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
            "--no-recurse-submodules",
            # No template: a template directory is where hooks would come from.
            "--template="]
+    if no_checkout:
+        cmd.append("--no-checkout")
     for setting in _HARDENED_CONFIG:
         cmd += ["--config", setting]
     if branch is not None:

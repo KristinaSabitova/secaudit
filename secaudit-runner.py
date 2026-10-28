@@ -72,7 +72,10 @@ def run_one(server: str, token: str, job: dict, timeout: int) -> None:
             config = backend_config({"backend": "claude-code",
                                      "language": job.get("language") or "en"})
             audit = run_audit_in_process(dest, config, timeout)
-            result["findings"] = audit["findings"]
+            # The server checks the evidence again against its own checkout
+            # of this commit; the manifest says what each request was shown.
+            for key in ("findings", "coverage", "coverage_summary", "manifest"):
+                result[key] = audit[key]
         except (CloneError, AuditError) as e:
             result["error"] = str(e)
         except Exception as e:                       # never drop the audit

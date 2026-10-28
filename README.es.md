@@ -338,6 +338,7 @@ Luego abre <http://127.0.0.1:8000>.
 | `GET /api/audits` | todas las auditorías, de más reciente a más antigua, con recuentos por severidad |
 | `GET /api/audits/{id}` | una auditoría con sus hallazgos |
 | `GET /api/audits/{id}?verified_only=true` | solo los hallazgos respaldados por código |
+| `GET /api/audits/{id}/coverage` | cada fichero del checkout: auditado, en parte, o no y por qué |
 | `POST /api/webhook/github` | entregas de push firmadas por GitHub |
 | `GET /api/health` | disponibilidad de git, la base de datos y el backend |
 
@@ -365,7 +366,9 @@ checkout del commit auditado. Tiene que aparecer en el fichero que nombra —
 salvo espacios, nada más: una paráfrasis, unos puntos suspensivos o código
 escrito de memoria no coinciden — y dentro de las líneas que se enviaron a la
 petición que lo reportó. Un hallazgo cuyo snippet no está ahí se degrada con el
-motivo. `line` y `line_end` son donde se encontró el snippet; nunca lo que dice
+motivo. Las auditorías de `secaudit-runner.py` se comprueban igual: el servidor
+clona el commit exacto que auditó el runner y revisa lo que manda antes de
+guardarlo. `line` y `line_end` son donde se encontró el snippet; nunca lo que dice
 el modelo, y quedan a null si no se pudo localizar. Un secreto se encuentra
 aunque ya esté enmascarado en el snippet, por el hash que lleva la máscara.
 
