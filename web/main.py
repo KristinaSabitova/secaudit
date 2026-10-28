@@ -17,7 +17,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from . import auth, runnerqueue, settings as settings_store
 from .auth import AuthError, AuthUnavailable, NotInvited
@@ -25,7 +25,8 @@ from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
 from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
-from .models import (LANGUAGES, Audit, ModuleRun, User, audit_to_dict,
+from .models import (LANGUAGES, Audit, Finding, Hypothesis, ModuleRun,
+                     RefutationAttempt, User, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
                      project_for, summarize)
 from .settings import InvalidOllamaURL, SecretsUnavailable
@@ -40,7 +41,7 @@ from .webhook import (
 )
 
 # Importable once .engine has put the repository root on sys.path.
-from analysis import evidence  # noqa: E402
+from analysis import evidence, falsify  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -153,10 +154,18 @@ def check_evidence(session: Session, audit: Audit, checkout: Path,
 
 
 def store_result(session: Session, audit: Audit, findings: list[dict],
-                 coverage: list[dict] | None, coverage_summary: dict | None) -> None:
-    """Persist a finished audit: its findings, its coverage, and done."""
+                 coverage: list[dict] | None,
+                 coverage_summary: dict | None) -> list[tuple[Finding, dict]]:
+    """Persist a finished audit: its findings, its coverage, and done.
+
+    Returns each stored finding with the dict it was made from, for the
+    modules that work on findings once they have an id.
+    """
+    stored = []
     for f in findings:
-        session.add(finding_from_dict(audit.id, f))
+        row = finding_from_dict(audit.id, f)
+        session.add(row)
+        stored.append((row, f))
     for row in coverage or []:
         if isinstance(row, dict):
             session.add(coverage_from_dict(audit.id, row))
@@ -164,6 +173,80 @@ def store_result(session: Session, audit: Audit, findings: list[dict],
     audit.coverage_summary = coverage_summary if isinstance(coverage_summary, dict) else None
     audit.status = "done"
     audit.error = None
+    session.flush()
+    return stored
+
+
+def record_falsifiability(session: Session, audit: Audit, checkout: Path | None,
+                          stored: list[tuple[Finding, dict]], backend: str | None,
+                          model: str | None, usage: dict | None) -> None:
+    """Module 2: try to refute every finding with evidence, and record how.
+
+    Runs on this server's checkout, after the evidence check: only a finding
+    whose snippet is really there exists, and only those are attacked. The
+    devil's advocate's answer arrives with each finding as a claim; its quotes
+    are checked here. A failure leaves the findings at exists — it never
+    fails the audit, whose findings are already sound.
+    """
+    start = time.monotonic()
+    usage = usage if isinstance(usage, dict) else {}
+    by_status: dict[str, int] = {}
+    hypotheses = 0
+    try:
+        index = None
+        if checkout is not None and any(
+                f.get("verification_status") == "verified"
+                and str(f.get("file") or "").endswith(".py") for _, f in stored):
+            index = falsify.Index(checkout)
+        for row, f in stored:
+            if checkout is None:
+                outcome = {"hypothesis": falsify.normalize_hypothesis(f.get("hypothesis")),
+                           "attempts": [], "status": row.epistemic_status}
+            else:
+                # The stored row has the verdict of the evidence check; the
+                # dict may not, if the row's own rules downgraded it.
+                f = {**f, "verification_status": row.verification_status,
+                     "line": row.line, "line_end": row.line_end}
+                outcome = falsify.assess(checkout, f, index)
+            h = outcome["hypothesis"]
+            if h:
+                hypothesis = Hypothesis(finding_id=row.id, source=h["source"] or None,
+                                        sink=h["sink"] or None, path=h["path"],
+                                        preconditions=h["preconditions"],
+                                        complete=h["complete"])
+                session.add(hypothesis)
+                session.flush()
+                hypotheses += 1
+                for a in outcome["attempts"]:
+                    session.add(RefutationAttempt(
+                        hypothesis_id=hypothesis.id, method=a["method"],
+                        result=a["result"], evidence=a["evidence"],
+                        note=(a["note"] or None) and a["note"][:2000]))
+            row.epistemic_status = outcome["status"]
+            if outcome["status"]:
+                by_status[outcome["status"]] = by_status.get(outcome["status"], 0) + 1
+        status, error = "ok", None
+    except Exception as e:      # the findings stand without it
+        log.exception("falsifiability failed for audit %s", audit.id)
+        status, error = "error", sanitize_error(str(e))[:500]
+
+    def tokens(key):
+        try:
+            return max(0, int(usage.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    session.add(ModuleRun(
+        audit_id=audit.id, module="falsifiability", status=status,
+        backend=backend if usage.get("requested") else None,
+        model=model if usage.get("requested") else None,
+        tokens_in=tokens("input_tokens"), tokens_out=tokens("output_tokens"),
+        duration_ms=_ms_since(start), error=error,
+        detail={"items": hypotheses, "by_status": by_status,
+                "devil_requested": tokens("requested"),
+                "devil_error": sanitize_error(str(usage["error"]))[:200]
+                if usage.get("error") else None},
+    ))
 
 
 def execute_audit(audit_id: str) -> None:
@@ -205,8 +288,11 @@ def execute_audit(audit_id: str) -> None:
                 # the process that talked to the backend.
                 findings = check_evidence(session, audit, dest, result["findings"],
                                           result.get("manifest"))
-                store_result(session, audit, findings, result.get("coverage"),
-                             result.get("coverage_summary"))
+                stored = store_result(session, audit, findings, result.get("coverage"),
+                                      result.get("coverage_summary"))
+                record_falsifiability(session, audit, dest, stored,
+                                      *backend_identity(config),
+                                      result.get("refutation_usage"))
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
@@ -431,6 +517,41 @@ def list_audits(user: User = Depends(require_user),
     return [audit_to_dict(a) for a in session.scalars(query).all()]
 
 
+@app.get("/api/stats/refutation")
+def refutation_stats(user: User = Depends(require_user),
+                     session: Session = Depends(db_session)):
+    """How often each backend and model's findings fell when tested.
+
+    Counted over the findings that could be tested at all: backed by code and
+    stated as a complete hypothesis. The share refuted is a measured false
+    positive rate of that model, not a guess at one.
+    """
+    run = aliased(ModuleRun)
+    query = (select(run.backend, run.model, Finding.epistemic_status,
+                    func.count(Finding.id))
+             .join(Audit, Audit.id == Finding.audit_id)
+             .join(run, (run.audit_id == Audit.id) & (run.module == "audit"))
+             .join(Hypothesis, Hypothesis.finding_id == Finding.id)
+             .where(Hypothesis.complete.is_(True),
+                    Finding.epistemic_status.is_not(None))
+             .group_by(run.backend, run.model, Finding.epistemic_status))
+    if not user.is_admin:
+        query = query.where(Audit.user_id == user.id)
+    rows: dict[tuple, dict] = {}
+    for backend, model, status, count in session.execute(query).all():
+        entry = rows.setdefault((backend, model), {
+            "backend": backend, "model": model, "tested": 0, "refuted": 0,
+            "by_status": {}})
+        entry["tested"] += count
+        entry["by_status"][status] = count
+        if status == falsify.REFUTED:
+            entry["refuted"] += count
+    out = sorted(rows.values(), key=lambda e: -e["tested"])
+    for entry in out:
+        entry["rate"] = round(entry["refuted"] / entry["tested"], 3)
+    return out
+
+
 @app.get("/api/audits/{audit_id}")
 def get_audit(audit_id: str, verified_only: bool = False,
               user: User = Depends(require_user),
@@ -530,6 +651,8 @@ class RunnerResult(BaseModel):
     # What each request carried, so the evidence can be checked against it.
     manifest: list[dict] | None = None
     usage: dict | None = None
+    # The devil's advocate's request; its verdicts ride on the findings.
+    refutation_usage: dict | None = None
     duration_ms: int | None = None
     error: str | None = None
 
@@ -557,19 +680,24 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             try:
                 clone_at_commit(audit.repo_url, dest, audit.commit_sha or "")
             except CloneError as e:
+                checkout = None
                 for f in findings:
                     f["line"] = f["line_end"] = None
                     if str(f.get("verification_status")) == "verified":
                         f["verification_status"] = "unverified"
                         f["verification_note"] = UNCHECKABLE.format(reason=e)
             else:
+                checkout = dest
                 check_evidence(session, audit, dest, findings, result.get("manifest"))
-        # What the runner says it spent: it is the one that talked to the model.
-        record_llm_audit(session, audit, runnerqueue.RUNNER_BACKEND, None,
-                         result.get("usage"), result.get("duration_ms"),
-                         result.get("coverage_summary"))
-        store_result(session, audit, findings, result.get("coverage"),
-                     result.get("coverage_summary"))
+            # What the runner says it spent: it is the one that talked to the model.
+            record_llm_audit(session, audit, runnerqueue.RUNNER_BACKEND, None,
+                             result.get("usage"), result.get("duration_ms"),
+                             result.get("coverage_summary"))
+            stored = store_result(session, audit, findings, result.get("coverage"),
+                                  result.get("coverage_summary"))
+            record_falsifiability(session, audit, checkout, stored,
+                                  runnerqueue.RUNNER_BACKEND, None,
+                                  result.get("refutation_usage"))
         audit.runner_claimed_at = None
         session.commit()
     except Exception as e:  # never leave an audit stuck in "running"

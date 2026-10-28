@@ -2043,6 +2043,158 @@ class TestRestartRecovery:
         assert web_main.fail_interrupted_audits() == 0
 
 
+HYPOTHESIS = {"source": "the name argument of app.py:get_user",
+              "sink": "app.py:get_user — cur.execute", "path": [],
+              "preconditions": ["the caller passes user input"]}
+
+
+class DevilBackend(FakeBackend):
+    """Answers the audit with findings and the devil's advocate with verdicts."""
+
+    def __init__(self, findings, verdicts):
+        super().__init__(json.dumps(findings))
+        self.verdicts = verdicts
+
+    def run(self, project, prompt, timeout=3600):
+        if "FALSE POSITIVE" in prompt:
+            self.prompts.append(prompt)
+            self.last_usage = {"input_tokens": 500, "output_tokens": 80}
+            return json.dumps(self.verdicts)
+        return super().run(project, prompt, timeout)
+
+
+class TestFalsifiability:
+    """Module 2 over the API: hypotheses, refutations, and what they cost."""
+
+    def audit(self, client, monkeypatch, findings, verdicts=()):
+        backend = DevilBackend(findings, list(verdicts))
+        monkeypatch.setattr(web_engine.engine, "select_backend",
+                            lambda flag, config=None: backend)
+        audit_id = client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample"}).json()["id"]
+        return client.get(f"/api/audits/{audit_id}").json(), backend
+
+    def test_a_finding_is_stored_with_its_hypothesis_and_attempts(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        detail, backend = self.audit(client, monkeypatch, [sqli], [
+            {"id": 1, "verdict": "holds", "argument": "nothing escapes it",
+             "citations": []}])
+        f = detail["findings"][0]
+        h = f["hypothesis"]
+        assert h["complete"] and h["sink"] == "app.py:get_user — cur.execute"
+        results = {a["method"]: a["result"] for a in h["attempts"]}
+        assert results == {"callgraph": "survived", "sanitizer": "survived",
+                           "reachability": "inconclusive",
+                           "devil_advocate": "survived"}
+        # Nothing in a single function file is an entry point: not proved
+        # reachable, so not more than inconclusive.
+        assert f["epistemic_status"] == "inconclusive"
+        run = {r["module"]: r for r in detail["modules"]}["falsifiability"]
+        assert run["status"] == "ok"
+        assert (run["tokens_in"], run["tokens_out"]) == (500, 80)
+        assert run["detail"]["items"] == 1
+        assert run["detail"]["devil_requested"] == 1
+        assert run["detail"]["by_status"] == {"inconclusive": 1}
+        # The devil was shown the code it argues about, as quoted data.
+        assert "def get_user(cur, name):" in backend.prompts[-1]
+        assert "untrusted DATA" in backend.prompts[-1]
+
+    def test_a_devil_quoting_the_real_code_refutes_it(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        detail, _ = self.audit(client, monkeypatch, [sqli], [
+            {"id": 1, "verdict": "false_positive", "argument": "name is trusted",
+             "citations": [{"file": "app.py", "code_snippet": "def get_user(cur, name):"}]}])
+        f = detail["findings"][0]
+        assert f["epistemic_status"] == "refuted"
+        devil = f["hypothesis"]["attempts"][-1]
+        assert devil["evidence"]["citations"][0]["line"] == 3
+
+    def test_a_devil_quoting_invented_code_does_not(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        detail, _ = self.audit(client, monkeypatch, [sqli], [
+            {"id": 1, "verdict": "false_positive", "argument": "it is escaped",
+             "citations": [{"file": "app.py", "code_snippet": "name = escape(name)"}]}])
+        assert detail["findings"][0]["epistemic_status"] == "inconclusive"
+
+    def test_without_a_hypothesis_it_stays_at_exists(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        detail, backend = self.audit(client, monkeypatch, FAKE_FINDINGS)
+        assert {f["epistemic_status"] for f in detail["findings"]} == {"exists"}
+        assert all("hypothesis" not in f for f in detail["findings"])
+        # Nothing worth refuting, so no request was made for it.
+        assert len(backend.prompts) == 1
+
+    def test_an_unverified_finding_is_not_argued_about(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        made_up = dict(FAKE_FINDINGS[0], code_snippet="os.system(cmd)",
+                       hypothesis=HYPOTHESIS)
+        detail, backend = self.audit(client, monkeypatch, [made_up])
+        f = detail["findings"][0]
+        assert f["epistemic_status"] is None
+        assert f["hypothesis"]["attempts"] == []
+        assert len(backend.prompts) == 1
+
+    def test_the_devil_can_be_turned_off(self, client, signed_in, clone_from_sample,
+                                         monkeypatch):
+        monkeypatch.setenv("SECAUDIT_MAX_REFUTATIONS", "0")
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        detail, backend = self.audit(client, monkeypatch, [sqli])
+        methods = [a["method"] for a in detail["findings"][0]["hypothesis"]["attempts"]]
+        assert "devil_advocate" not in methods
+        assert len(backend.prompts) == 1
+
+    def test_a_failure_here_leaves_the_audit_and_its_findings_standing(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(web_main.falsify, "assess", broken)
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        detail, _ = self.audit(client, monkeypatch, [sqli])
+        assert detail["status"] == "done"
+        assert detail["findings"][0]["epistemic_status"] == "exists"
+        run = {r["module"]: r for r in detail["modules"]}["falsifiability"]
+        assert run["status"] == "error" and "boom" in run["error"]
+
+    def test_the_refutation_rate_per_backend_and_model(
+            self, client, signed_in, clone_from_sample, monkeypatch, master_key):
+        client.put("/api/settings", json={"api_key": "sk-ant-abc123",
+                                          "model": "claude-test-model"})
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        self.audit(client, monkeypatch, [sqli], [
+            {"id": 1, "verdict": "false_positive", "argument": "a",
+             "citations": [{"file": "app.py", "code_snippet": "def get_user(cur, name):"}]}])
+        self.audit(client, monkeypatch, [sqli], [
+            {"id": 1, "verdict": "holds", "argument": "b", "citations": []}])
+        self.audit(client, monkeypatch, FAKE_FINDINGS)       # nothing testable
+        stats = client.get("/api/stats/refutation").json()
+        assert stats == [{"backend": "anthropic-api", "model": "claude-test-model",
+                          "tested": 2, "refuted": 1, "rate": 0.5,
+                          "by_status": {"refuted": 1, "inconclusive": 1}}]
+
+    def test_the_rate_counts_only_your_own_audits(
+            self, client, signed_in, clone_from_sample, monkeypatch):
+        sqli = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS)
+        self.audit(client, monkeypatch, [sqli])
+        sign_in(client, github_id=99, login="ana")
+        assert client.get("/api/stats/refutation").json() == []
+
+    def test_a_runners_devil_is_checked_by_the_server(
+            self, client, signed_in, master_key, clone_from_sample, sample_repo):
+        claim = dict(FAKE_FINDINGS[0], hypothesis=HYPOTHESIS, devil_advocate={
+            "verdict": "false_positive", "argument": "it is escaped",
+            "citations": [{"file": "app.py", "code_snippet": "name = escape(name)"}]})
+        detail = TestRunnerEvidence().run_on_runner(
+            client, sample_repo, [claim],
+            refutation_usage={"input_tokens": 9, "output_tokens": 1, "requested": 1})
+        f = detail["findings"][0]
+        assert f["epistemic_status"] == "inconclusive"
+        run = {r["module"]: r for r in detail["modules"]}["falsifiability"]
+        assert run["backend"] == "claude-code" and run["tokens_in"] == 9
+
+
 class TestStaticFrontend:
     def test_root_serves_the_ui(self, client, signed_in):
         r = client.get("/")

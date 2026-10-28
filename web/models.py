@@ -553,7 +553,17 @@ def finding_to_dict(f: Finding) -> dict:
         d["code_snippet"] = f.code_snippet
     if f.verification_note:
         d["verification_note"] = f.verification_note
+    if f.hypothesis is not None:
+        d["hypothesis"] = hypothesis_to_dict(f.hypothesis)
     return d
+
+
+def hypothesis_to_dict(h: "Hypothesis") -> dict:
+    return {"source": h.source, "sink": h.sink, "path": h.path or [],
+            "preconditions": h.preconditions or [], "complete": h.complete,
+            "attempts": [{"method": a.method, "result": a.result,
+                          "evidence": a.evidence, "note": a.note}
+                         for a in h.attempts]}
 
 
 def audit_to_dict(audit: Audit, include_findings: bool = False,
