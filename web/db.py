@@ -2,7 +2,7 @@
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # SQLite fallback keeps local development working without a PostgreSQL server;
@@ -30,8 +30,20 @@ def get_engine():
         if url.startswith("sqlite"):
             kwargs = {"connect_args": {"check_same_thread": False}}
         _engine = create_engine(url, **kwargs)
+        if url.startswith("sqlite"):
+            # SQLite ignores foreign keys unless told otherwise per connection,
+            # and then ON DELETE CASCADE does nothing: deleting an audit would
+            # leave its divergences, paths and runs behind. PostgreSQL always
+            # enforces them, so development behaves like production.
+            event.listen(_engine, "connect", _enable_sqlite_foreign_keys)
         _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
+
+
+def _enable_sqlite_foreign_keys(dbapi_connection, _record) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 def get_session():
