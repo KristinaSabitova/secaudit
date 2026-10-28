@@ -206,10 +206,53 @@ const TEXT = {
     "parallax.phase": "Arrives in phase 5, with the canaries that measure the " +
       "audit's integrity.",
     "falsifiability.question": "Does each finding survive a serious attempt to refute it?",
-    "falsifiability.what": "A source-to-sink hypothesis for every finding, the " +
-      "attempts made to refute it — call graph, sanitisers, reachability, a " +
-      "devil's advocate — and the evidence each one left.",
-    "falsifiability.phase": "Arrives in phase 4.",
+    "falsifiability.what": "Each finding backed by code is stated as a flow — " +
+      "where the input enters, the dangerous use it reaches, the functions " +
+      "between — and secaudit tries to refute it: by the call graph, by what " +
+      "actually reaches the sink, by whether anything outside can reach it, " +
+      "and by asking the model to argue it false, quoting code. Only what " +
+      "survives all four is corroborated.",
+    "falsify.statuses": "Where the findings stand",
+    "falsify.table": "Hypotheses and the attempts to refute them",
+    "falsify.none": "No finding in this audit was stated as a hypothesis. Audits " +
+      "from before this module have none.",
+    "falsify.flow": "source → sink",
+    "falsify.rate": "Refutation rate by model",
+    "falsify.rateintro": "Of the findings each model stated as a testable " +
+      "hypothesis, across all your audits, the share that fell: a measured " +
+      "false-positive rate.",
+    "falsify.ratenone": "Nothing has been tested yet.",
+    "falsify.model": "backend · model",
+    "falsify.tested": "tested",
+    "falsify.refuted": "refuted",
+    "falsify.ratecol": "rate",
+    "falsify.pythononly": "The flow analysis reads Python only: a finding in " +
+      "another language can be refuted, but goes no further than exists.",
+    "falsify.incomplete": "No complete hypothesis — a source and a sink — was " +
+      "given, so there was nothing to refute: it stays at exists.",
+    "falsify.notes": "The notes on each attempt are written by the analysis, in English.",
+    "method.callgraph": "call graph",
+    "method.sanitizer": "what reaches the sink",
+    "method.reachability": "reachability",
+    "method.devil_advocate": "devil's advocate",
+    "result.survived": "survived",
+    "result.refuted": "refuted",
+    "result.inconclusive": "inconclusive",
+    "result.none": "not tried",
+    "hyp.title": "Hypothesis",
+    "hyp.source": "source",
+    "hyp.sink": "sink",
+    "hyp.path": "path",
+    "hyp.preconditions": "preconditions",
+    "hyp.attempts": "Attempts to refute it",
+    "hyp.notfound": "not in the repository: this quote does not count",
+    "value.constant": "only literals reach it",
+    "value.sanitized": "it is sanitised on the way",
+    "value.tainted": "an unsanitised value reaches it",
+    "value.parameterised": "the values travel as query parameters",
+    "verdict.false_positive": "argued it is false",
+    "verdict.holds": "could not argue it false",
+    "verdict.unsure": "could not tell",
     "memory.question": "Has a flaw that was already fixed come back?",
     "memory.what": "Rules learnt from the project's own fixes, checked against " +
       "the commit that was vulnerable and the one that fixed it; the zombies " +
@@ -410,10 +453,53 @@ const TEXT = {
     "parallax.phase": "Llega en la fase 5, con los canarios que miden la " +
       "integridad de la auditoría.",
     "falsifiability.question": "¿Sobrevive cada hallazgo a un intento serio de refutarlo?",
-    "falsifiability.what": "Una hipótesis de origen a destino por cada " +
-      "hallazgo, los intentos de refutarla —grafo de llamadas, saneadores, " +
-      "alcanzabilidad, un abogado del diablo— y la evidencia de cada uno.",
-    "falsifiability.phase": "Llega en la fase 4.",
+    "falsifiability.what": "Cada hallazgo respaldado por código se enuncia " +
+      "como un flujo —dónde entra la entrada, el uso peligroso al que llega y " +
+      "las funciones de en medio— y secaudit intenta refutarlo: por el grafo " +
+      "de llamadas, por lo que de verdad llega al destino, por si algo de " +
+      "fuera puede alcanzarlo y pidiendo al modelo que demuestre que es falso " +
+      "citando código. Solo lo que sobrevive a los cuatro queda corroborado.",
+    "falsify.statuses": "En qué estado quedan los hallazgos",
+    "falsify.table": "Hipótesis e intentos de refutarlas",
+    "falsify.none": "Ningún hallazgo de esta auditoría se enunció como " +
+      "hipótesis. Las auditorías anteriores a este módulo no tienen.",
+    "falsify.flow": "origen → destino",
+    "falsify.rate": "Tasa de refutación por modelo",
+    "falsify.rateintro": "De los hallazgos que cada modelo enunció como " +
+      "hipótesis comprobable, en todas tus auditorías, la parte que cayó: una " +
+      "tasa de falsos positivos medida.",
+    "falsify.ratenone": "Todavía no se ha comprobado nada.",
+    "falsify.model": "motor · modelo",
+    "falsify.tested": "comprobados",
+    "falsify.refuted": "refutados",
+    "falsify.ratecol": "tasa",
+    "falsify.pythononly": "El análisis de flujo solo lee Python: un hallazgo " +
+      "en otro lenguaje puede refutarse, pero no pasa de «existe».",
+    "falsify.incomplete": "No se dio una hipótesis completa —origen y " +
+      "destino—, así que no había nada que refutar: se queda en «existe».",
+    "falsify.notes": "Las notas de cada intento las escribe el análisis, en inglés.",
+    "method.callgraph": "grafo de llamadas",
+    "method.sanitizer": "qué llega al destino",
+    "method.reachability": "alcanzabilidad",
+    "method.devil_advocate": "abogado del diablo",
+    "result.survived": "sobrevive",
+    "result.refuted": "refutado",
+    "result.inconclusive": "no concluyente",
+    "result.none": "sin intentar",
+    "hyp.title": "Hipótesis",
+    "hyp.source": "origen",
+    "hyp.sink": "destino",
+    "hyp.path": "camino",
+    "hyp.preconditions": "condiciones previas",
+    "hyp.attempts": "Intentos de refutarla",
+    "hyp.notfound": "no está en el repositorio: esta cita no cuenta",
+    "value.constant": "solo le llegan literales",
+    "value.sanitized": "se sanea por el camino",
+    "value.tainted": "le llega un valor sin sanear",
+    "value.parameterised": "los valores viajan como parámetros de la consulta",
+    "verdict.false_positive": "argumenta que es falso",
+    "verdict.holds": "no ha podido demostrar que sea falso",
+    "verdict.unsure": "no ha sabido decirlo",
     "memory.question": "¿Ha vuelto algún fallo que ya se había arreglado?",
     "memory.what": "Reglas aprendidas de los propios arreglos del proyecto, " +
       "comprobadas contra el commit vulnerable y el que lo arregló; los " +
@@ -673,6 +759,7 @@ const state = {
   drawerFinding: null,     // finding id shown in the detail panel
   drawerOpener: null,      // what gets focus back when the panel closes
   query: "",
+  stats: undefined,        // refutation rate per model; fetched per visit
 };
 
 let pollTimer = null;
@@ -740,6 +827,7 @@ function applyRoute() {
   renderSection();
   if (sectionChanged) el("content").scrollTop = 0;
   if (section === "settings") loadSettings();
+  if (section === "falsifiability" && sectionChanged) loadStats();
 }
 
 window.addEventListener("hashchange", applyRoute);
@@ -840,6 +928,7 @@ function renderSection() {
   renderIndicators();
   if (state.section === "summary") renderSummary();
   else if (state.section === "findings") renderFindings();
+  else if (state.section === "falsifiability") renderFalsifiability();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
 }
@@ -1094,6 +1183,7 @@ function findingBody(finding, { full }) {
     if (full) parts.append(node("h3", null, t("findings.description")));
     parts.append(node("p", "prose", finding.description));
   }
+  if (full) parts.append(hypothesisNodes(finding));
   return parts;
 }
 
@@ -1203,6 +1293,168 @@ el("search").addEventListener("input", () => {
 });
 
 // ---------------------------------------------------------------------------
+// falsifiability (module 2)
+// ---------------------------------------------------------------------------
+
+const METHODS = ["callgraph", "sanitizer", "reachability", "devil_advocate"];
+const EPISTEMIC_ORDER = ["corroborated", "reachable", "exists", "inconclusive",
+                         "refuted", null];
+
+function resultNode(result) {
+  return node("span", `result result-${result || "none"}`, t(`result.${result || "none"}`));
+}
+
+function isPython(finding) {
+  return String(finding.file || "").endsWith(".py");
+}
+
+function attemptNode(a) {
+  const item = node("li", "attempt");
+  const head = node("div", "attempt-head");
+  head.append(node("span", "attempt-method", t(`method.${a.method}`)), resultNode(a.result));
+  item.append(head);
+  const ev = a.evidence || {};
+  if (ev.verdict) item.append(node("div", null, t(`verdict.${ev.verdict}`)));
+  if (Array.isArray(ev.chain)) item.append(node("div", "where", ev.chain.join("  →  ")));
+  if (ev.value) {
+    const how = [t(`value.${ev.value}`)];
+    if (Array.isArray(ev.through) && ev.through.length) how.push(`(${ev.through.join(", ")})`);
+    item.append(node("div", null, how.join(" ")));
+  }
+  if (ev.call) item.append(node("div", "where", `${ev.call}${ev.line ? `  ·  ${ev.line}` : ""}`));
+  if (ev.why) item.append(node("div", "muted", ev.why));
+  if (ev.argument) item.append(node("p", "prose", ev.argument));
+  // What the second model quoted: shown as code only if it is in the repo.
+  for (const c of Array.isArray(ev.citations) ? ev.citations : []) {
+    const cite = node("div", c.found ? "citation" : "citation citation-missing");
+    cite.append(node("div", "where", c.found
+      ? `${c.file}:${c.line}${c.line_end && c.line_end !== c.line ? `-${c.line_end}` : ""}`
+      : `${c.file || "—"} — ${t("hyp.notfound")}`));
+    cite.append(node("pre", c.found ? "snippet" : "snippet snippet-claimed", c.code_snippet));
+    item.append(cite);
+  }
+  if (a.note) item.append(node("p", "note", a.note));
+  return item;
+}
+
+// The hypothesis of a finding and what was tried against it, for the panel.
+function hypothesisNodes(finding) {
+  const parts = document.createDocumentFragment();
+  const h = finding.hypothesis;
+  if (!h) return parts;
+  parts.append(node("h3", null, t("hyp.title")));
+  const pairs = [[t("hyp.source"), h.source || "—"], [t("hyp.sink"), h.sink || "—"]];
+  if (h.path && h.path.length) pairs.push([t("hyp.path"), h.path.join("  →  ")]);
+  if (h.preconditions && h.preconditions.length) {
+    pairs.push([t("hyp.preconditions"), h.preconditions.join("; ")]);
+  }
+  const dl = facts(pairs);
+  dl.classList.add("facts-wide");
+  parts.append(dl);
+  if (!h.complete) {
+    parts.append(node("p", "muted", t("falsify.incomplete")));
+    return parts;
+  }
+  if (!isPython(finding) && finding.verification_status === "verified") {
+    parts.append(node("p", "muted", t("falsify.pythononly")));
+  }
+  if (h.attempts && h.attempts.length) {
+    parts.append(node("h3", null, t("hyp.attempts")));
+    const list = node("ol", "attempts");
+    list.append(...h.attempts.map(attemptNode));
+    parts.append(list, node("p", "muted small", t("falsify.notes")));
+  }
+  return parts;
+}
+
+async function loadStats() {
+  state.stats = undefined;
+  try {
+    state.stats = await api("/api/stats/refutation");
+  } catch (_) {
+    state.stats = [];
+  }
+  if (state.section === "falsifiability") renderFalsifiability();
+}
+
+function ratesBlock() {
+  const section = block(t("falsify.rate"), node("p", "muted", t("falsify.rateintro")));
+  if (state.stats === undefined) {
+    section.append(node("p", "muted", t("summary.loading")));
+  } else if (!state.stats.length) {
+    section.append(node("p", "muted", t("falsify.ratenone")));
+  } else {
+    section.append(table(
+      [{ text: t("falsify.model") }, { text: t("falsify.tested"), className: "num" },
+       { text: t("falsify.refuted"), className: "num" },
+       { text: t("falsify.ratecol"), className: "num" }],
+      state.stats.map((r) => row([
+        [r.backend, r.model].filter(Boolean).join(" · ") || "—",
+        { className: "num", content: r.tested },
+        { className: "num", content: r.refuted },
+        { className: "num", content: `${Math.round(r.rate * 100)} %` },
+      ]))));
+  }
+  return section;
+}
+
+function renderFalsifiability() {
+  const target = el("falsifiability-body");
+  if (needsAudit(target)) return;
+  const findings = state.current.findings || [];
+  const order = new Map(SEVERITIES.map((s, i) => [s, i]));
+
+  const counts = new Map();
+  for (const f of findings) {
+    const key = f.epistemic_status || null;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const statuses = node("div", "counts");
+  for (const key of EPISTEMIC_ORDER) {
+    if (!counts.get(key)) continue;
+    const badge = epistemicNode({ epistemic_status: key });
+    badge.textContent = `${badge.textContent} ${counts.get(key)}`;
+    statuses.append(badge);
+  }
+  if (!findings.length) statuses.append(node("span", "muted", t("findings.nofindings")));
+
+  const tested = findings.filter((f) => f.hypothesis)
+    .sort((a, b) => (order.get(a.severity) ?? 99) - (order.get(b.severity) ?? 99));
+  const hypotheses = block(t("falsify.table"));
+  if (!tested.length) {
+    hypotheses.append(node("p", "muted", t("falsify.none")));
+  } else {
+    hypotheses.append(table(
+      [{ text: t("findings.severity") }, { text: t("findings.finding") },
+       { text: t("falsify.flow"), className: "hide-narrow" },
+       { text: t("findings.epistemic") },
+       ...METHODS.map((m) => ({ text: t(`method.${m}`), className: "hide-narrow" }))],
+      tested.map((f) => {
+        const byMethod = Object.fromEntries((f.hypothesis.attempts || [])
+          .map((a) => [a.method, a.result]));
+        const title = button(f.title, "link");
+        title.dataset.finding = String(f.id);
+        title.addEventListener("click", () => openFinding(f.id, title));
+        const r = row([
+          severityNode(f.severity),
+          title,
+          { className: "where hide-narrow",
+            content: `${f.hypothesis.source || "—"}  →  ${f.hypothesis.sink || "—"}` },
+          epistemicNode(f),
+          ...METHODS.map((m) => ({ className: "hide-narrow",
+                                   content: resultNode(byMethod[m]) })),
+        ], "finding-row");
+        r.setAttribute("aria-selected", String(state.drawerFinding === f.id));
+        return r;
+      })));
+    if (tested.some((f) => !isPython(f))) {
+      hypotheses.append(node("p", "muted", t("falsify.pythononly")));
+    }
+  }
+  target.replaceChildren(block(t("falsify.statuses"), statuses), hypotheses, ratesBlock());
+}
+
+// ---------------------------------------------------------------------------
 // detail panel
 // ---------------------------------------------------------------------------
 
@@ -1233,10 +1485,16 @@ function closeDrawer() {
   let opener = state.drawerOpener;
   state.drawerOpener = null;
   if ((!opener || !opener.isConnected) && shown !== null) {
-    opener = document.querySelector(`[data-finding="${CSS.escape(String(shown))}"]`);
+    opener = visibleFinding(shown);
   }
   if (opener && opener.isConnected) opener.focus();
   else el("content").focus();
+}
+
+// The same finding can have a link in several sections; only one is shown.
+function visibleFinding(id) {
+  return document.querySelector(
+    `[data-view="${state.section}"] [data-finding="${CSS.escape(String(id))}"]`);
 }
 
 function openFinding(id, opener) {

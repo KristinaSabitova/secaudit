@@ -339,6 +339,7 @@ Luego abre <http://127.0.0.1:8000>.
 | `GET /api/audits/{id}` | una auditoría con sus hallazgos |
 | `GET /api/audits/{id}?verified_only=true` | solo los hallazgos respaldados por código |
 | `GET /api/audits/{id}/coverage` | cada fichero del checkout: auditado, en parte, o no y por qué |
+| `GET /api/stats/refutation` | por cada motor y modelo, cuántos hallazgos comprobados se refutaron |
 | `POST /api/webhook/github` | entregas de push firmadas por GitHub |
 | `GET /api/health` | disponibilidad de git, la base de datos y el backend |
 
@@ -371,6 +372,35 @@ clona el commit exacto que auditó el runner y revisa lo que manda antes de
 guardarlo. `line` y `line_end` son donde se encontró el snippet; nunca lo que dice
 el modelo, y quedan a null si no se pudo localizar. Un secreto se encuentra
 aunque ya esté enmascarado en el snippet, por el hash que lleva la máscara.
+
+### Intentar refutar un hallazgo
+
+Un hallazgo respaldado por código es una hipótesis, no un veredicto. El modelo
+enuncia cada uno como un flujo —`source` (por dónde entra la entrada del
+atacante), `sink` (el uso peligroso al que llega), el `path` entre ambos y las
+`preconditions`— y el servidor intenta refutarlo sobre su propio checkout,
+leyendo el Python con `ast`, sin importarlo ni ejecutarlo nunca:
+
+- **grafo de llamadas**: ¿hay alguna cadena de llamadas o referencias del
+  origen al destino? El grafo enlaza nombres, así que sobreaproxima: que no
+  haya ninguna cadena es una evidencia fuerte.
+- **qué llega al destino**: ¿solo literales, valores pasados como parámetros
+  de la consulta, o algo que pasa antes por una conversión o un escapado?
+- **alcanzabilidad**: ¿puede llegar a él una ruta, un comando, un manejador o
+  un script? El código al que nada hace referencia es código muerto.
+- **abogado del diablo**: una petición más pide al modelo que argumente que
+  los hallazgos más fuertes son falsos, citando código
+  (`SECAUDIT_MAX_REFUTATIONS`, 8 por defecto; 0 lo desactiva). Sus citas se
+  buscan como cualquier snippet, y un argumento cuyas citas no están en el
+  repositorio no cuenta.
+
+Cada hallazgo acaba con un `epistemic_status`: `exists` (el código está ahí),
+`reachable` (lo alcanza un punto de entrada), `corroborated` (sobrevivió a
+todos los intentos), `refuted` (se guarda, con el motivo) o `inconclusive`. Un
+hallazgo sin hipótesis completa se queda en `exists`. El análisis de flujo
+solo lee Python: en otros lenguajes un hallazgo puede refutarse, pero no pasa
+de `exists`. `GET /api/stats/refutation` convierte todo esto en una tasa de
+falsos positivos medida por motor y modelo.
 
 ### Cómo llega el código al modelo
 

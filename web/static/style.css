@@ -754,6 +754,105 @@ dl.facts dd {
   color: var(--ok);
 }
 
+.badge-reachable,
+.badge-corroborated {
+  border-color: var(--sev-high);
+  color: var(--sev-high);
+}
+
+.badge-corroborated {
+  border-width: 2px;
+  font-weight: 600;
+}
+
+.badge-inconclusive {
+  border-style: dashed;
+}
+
+/* Refuted: struck through, so it never reads as a live finding. */
+.badge-refuted {
+  text-decoration: line-through;
+}
+
+/* --------------------------------------------------------- falsifiability */
+
+.result {
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.result::before {
+  display: inline-block;
+  width: 1.1em;
+  font-weight: 600;
+}
+
+.result-survived::before {
+  content: "\2713";
+}
+
+.result-refuted {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.result-refuted::before {
+  content: "\2717";
+}
+
+.result-inconclusive::before {
+  content: "?";
+}
+
+.result-none {
+  color: var(--muted);
+}
+
+.result-none::before {
+  content: "\2013";
+}
+
+.attempts {
+  margin: 0 0 8px;
+  padding-left: 1.2em;
+}
+
+.attempt {
+  margin-bottom: 12px;
+}
+
+.attempt-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  font-weight: 500;
+}
+
+.citation .where {
+  margin-top: 6px;
+}
+
+/* A quote that is not in the repository is the model's text, not code. */
+pre.snippet.snippet-claimed {
+  border-left-color: var(--line-strong);
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.citation-missing .where {
+  color: var(--muted);
+}
+
+dl.facts.facts-wide,
+.drawer-body dl.facts.facts-wide {
+  grid-template-columns: 1fr;
+}
+
+.small {
+  font-size: 0.85em;
+}
+
 /* ------------------------------------------------------------------ tables */
 
 .table-wrap {

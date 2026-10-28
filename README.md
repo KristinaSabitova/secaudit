@@ -333,6 +333,7 @@ Then open <http://127.0.0.1:8000>.
 | `GET /api/audits/{id}` | one audit including its findings |
 | `GET /api/audits/{id}?verified_only=true` | only the findings backed by code |
 | `GET /api/audits/{id}/coverage` | every file of the checkout: audited, in part, or not and why |
+| `GET /api/stats/refutation` | for each backend and model, how many tested findings were refuted |
 | `POST /api/webhook/github` | signed push deliveries from GitHub |
 | `GET /api/health` | git, database, and backend readiness |
 
@@ -366,6 +367,34 @@ exact commit the runner audited and checks what it sent before storing it.
 model's own claim, and stay null when the snippet could not be located. A
 secret is matched even after it has been masked in the snippet, by the hash
 the mask carries.
+
+### Trying to refute a finding
+
+A finding backed by code is a hypothesis, not a verdict. The model states each
+one as a flow — `source` (where attacker input enters), `sink` (the dangerous
+use it reaches), the `path` between and the `preconditions` — and the server
+tries to refute it on its own checkout, reading the Python with `ast` and
+never importing or running it:
+
+- **call graph**: is there any chain of calls or references from the source to
+  the sink? The graph links names, so it over-approximates: no chain at all is
+  strong evidence.
+- **what reaches the sink**: is it only literals, passed as query parameters,
+  or run through a cast or an escape first?
+- **reachability**: can a route, command, handler or script reach it? Code
+  nothing refers to is dead code.
+- **devil's advocate**: one more request asks the model to argue the strongest
+  findings false, quoting code (`SECAUDIT_MAX_REFUTATIONS`, default 8; 0 turns
+  it off). Its quotes are looked up like any snippet, and an argument whose
+  quotes are not in the repository counts for nothing.
+
+Each finding ends with an `epistemic_status`: `exists` (the code is there),
+`reachable` (an entry point reaches it), `corroborated` (it survived every
+attempt), `refuted` (kept, with the reason) or `inconclusive`. A finding with
+no complete hypothesis stays at `exists`. The flow analysis reads Python only:
+elsewhere a finding can be refuted but goes no further than `exists`.
+`GET /api/stats/refutation` turns this into a measured false-positive rate
+per backend and model.
 
 ### How the code reaches the model
 
