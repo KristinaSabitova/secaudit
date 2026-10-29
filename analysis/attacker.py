@@ -132,6 +132,9 @@ _KINDS = (
                      r"auth(entication)? bypass|bypass de autenticaci|"
                      r"(no|sin) (exige|requiere|pide)[a-z ]* (autenticaci|login|sesi)|"
                      r"(no|without) login|sin login", ("authz", "sessions")),
+    # Before idor: becoming an administrator gives every user's data too.
+    ("privilege", r"escalat|escalada|escalaci[oó]n|role\W{0,3}=\W{0,3}admin",
+     ("authz", "sessions")),
     ("idor", r"idor|insecure direct|ownership|propiedad|another user|otro usuario|"
              r"cualquier (pedido|usuario)|any (order|user)", ("authz",)),
     ("privilege", r"admin|privilege|privilegio|role|rol\b|escalat", ("authz",)),
@@ -190,7 +193,9 @@ _AUTH_NEEDED = re.compile(r"(?i)\b(authenticated|logged[- ]in|login required|mus
 _ADMIN_NEEDED = re.compile(r"(?i)(\b(only|solo|sólo)\b[^.;]{0,30}?\badmin|admins? only|requires? (an? )?admin|"
                            r"admin(istrator)? (role|account|session|privileges?) "
                            r"(is )?required|requiere (un |el )?(rol de )?admin|"
-                           r"(cuenta|sesi[oó]n|rol) de administrador)")
+                           r"(cuenta|sesi[oó]n|rol) de administrador|"
+                           r"role\W{0,4}==\W{0,4}admin|\bis_admin\b|"
+                           r"\badmin(istrator)? (role|account|session|privileges?)\b)")
 
 
 def kind_of(finding: dict) -> str | None:

@@ -48,6 +48,8 @@ class TestFindingsAsSteps:
         ("injection", "eval of user input", "code_injection", "CWE-94"),
         ("file_handling", "Path traversal in download", "path_traversal", "CWE-22"),
         ("authz", "IDOR: any order readable by id", "idor", "CWE-639"),
+        ("authz", "Asignación masiva en la sesión: escalada a admin y lectura de pedidos "
+         "de otro usuario", "privilege", "CWE-285"),
         ("authz", "Bypass de autenticación: usuario admin con contraseña vacía",
          "missing_auth", "CWE-306"),
         ("authz", "La ruta de depuración da la sesión de otro usuario y no exige "
@@ -133,6 +135,13 @@ class TestPaths:
                     hypothesis={"preconditions": ["requiere rol de administrador"]})
         [e] = attacker.finding_edges(f)
         assert e.source == attacker.ADMIN
+
+    @pytest.mark.parametrize("pre", ["session['role'] == 'admin', alcanzable vía /profile",
+                                     "an admin session", "is_admin must be true"])
+    def test_ways_of_saying_it_needs_an_admin(self, pre):
+        f = finding(1, "injection", "Command injection", description="shell=True",
+                    hypothesis={"preconditions": [pre]})
+        assert attacker.finding_edges(f)[0].source == attacker.ADMIN
 
     def test_a_missing_admin_check_does_not_need_an_admin(self):
         f = finding(1, "authz", "Exportación sin comprobación de rol",
