@@ -25,11 +25,12 @@ from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
 from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
-from .models import (LANGUAGES, AgentCapability, Audit, CanaryRun, FileLeverage,
-                     Finding, Hypothesis, ImmuneRule,
+from .models import (LANGUAGES, AgentCapability, AttackEdge, AttackNode, AttackPath,
+                     Audit, CanaryRun, CrownJewel, FileLeverage, Finding, Hypothesis,
+                     ImmuneRule,
                      ModuleRun, RefutationAttempt, User, ViewDivergence, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
-                     finding_to_dict, Project, project_for, summarize)
+                     finding_to_dict, jewel_to_dict, Project, project_for, summarize)
 from .settings import InvalidOllamaURL, SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
@@ -42,7 +43,7 @@ from .webhook import (
 )
 
 # Importable once .engine has put the repository root on sys.path.
-from analysis import evidence, falsify, immune, leverage, parallax  # noqa: E402
+from analysis import attacker, evidence, falsify, immune, leverage, parallax  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -580,6 +581,143 @@ def record_leverage(session: Session, audit: Audit, checkout: Path | None,
                           duration_ms=_ms_since(start), error=error, detail=detail))
 
 
+JEWEL_KINDS = tuple(attacker.JEWEL_KINDS)
+DISMISSED = "dismissed"         # a suggestion the owner turned down
+
+
+def suggest_crown_jewels(session: Session, audit: Audit, texts: dict,
+                         leverage_rows: list[dict], findings: list[dict]) -> None:
+    """Add what the repository points at as crown jewels, unless the owner
+    already declared or turned down a jewel of that kind."""
+    if audit.project is None:
+        return
+    taken = {j.kind for j in audit.project.crown_jewels}
+    for s in attacker.suggest_jewels(texts, leverage_rows, findings):
+        if s["kind"] not in taken:
+            audit.project.crown_jewels.append(CrownJewel(
+                kind=s["kind"], target=s["target"][:512], declared_by="suggested"))
+            taken.add(s["kind"])
+    session.flush()
+
+
+def record_attacker(session: Session, audit: Audit, checkout: Path | None,
+                    stored: list[tuple[Finding, dict]]) -> None:
+    """Module 5: the attack graph, the cheapest paths and the fix that cuts most.
+
+    Everything comes from what the other modules stored for this audit:
+    findings shown to hold, divergences, the leverage map and the agent
+    surface. No model is asked. A failure is the module's, never the audit's.
+    """
+    start = time.monotonic()
+    detail = {"items": 0}
+    try:
+        session.flush()
+        findings = []
+        for row, _ in stored:
+            d = finding_to_dict(row)
+            findings.append(d)
+        divergences = [{"id": v.id, "kind": v.kind, "file": v.file, "detail": v.detail}
+                       for v in session.scalars(select(ViewDivergence)
+                                                .where(ViewDivergence.audit_id == audit.id))]
+        lev_rows = list(session.scalars(select(FileLeverage)
+                                        .where(FileLeverage.audit_id == audit.id)))
+        leverage_rows = [{"id": r.id, "file": r.file, "leverage": r.leverage_score,
+                          "oversight": r.oversight_score, "reasons": r.reasons or []}
+                         for r in lev_rows]
+        caps = [{"id": c.id, "capability": c.capability, "source_file": c.source_file}
+                for c in session.scalars(select(AgentCapability)
+                                         .where(AgentCapability.audit_id == audit.id))]
+        lev_run = session.scalar(select(ModuleRun).where(
+            ModuleRun.audit_id == audit.id, ModuleRun.module == "leverage")
+            .order_by(ModuleRun.id.desc()).limit(1))
+        combos = ((lev_run.detail or {}).get("combinations") or []) if lev_run else []
+        texts = parallax.repository_texts(checkout) if checkout is not None else {}
+        suggest_crown_jewels(session, audit, texts, leverage_rows, findings)
+        jewels = [j for j in (audit.project.crown_jewels if audit.project else [])
+                  if j.declared_by != DISMISSED]
+        if not jewels:              # no project: what every application holds
+            jewels = [CrownJewel(kind="secrets", target="secrets", declared_by="suggested")]
+        result = attacker.analyze(findings, divergences, leverage_rows,
+                                  {"capabilities": caps, "combinations": combos},
+                                  [{"id": j.id, "kind": j.kind} for j in jewels])
+
+        jewel_of = {}
+        for j in jewels:
+            jewel_of.setdefault(attacker.JEWEL_KINDS.get(j.kind), j.id)
+        nodes = {}
+        for key in result["nodes"]:
+            persona = key.split(":", 1)[1] if key.startswith("start:") else None
+            label = (f"starts as {persona.replace('_', ' ')}" if persona
+                     else attacker.LABELS.get(key, key))
+            node = AttackNode(audit_id=audit.id, key=key, label=label, persona=persona,
+                              crown_jewel_id=jewel_of.get(key))
+            session.add(node)
+            nodes[key] = node
+        session.flush()
+        # Only the edges some path takes, and the steps of each flaw: the rest
+        # of the structural graph is the same for every repository.
+        keep = sorted(result["used"] | {i for i, e in enumerate(result["edges"])
+                                        if not e.structural})
+        edge_rows = {}
+        for i in keep:
+            e = result["edges"][i]
+            row = AttackEdge(audit_id=audit.id, source_node_id=nodes[e.source].id,
+                             target_node_id=nodes[e.target].id, finding_id=e.finding_id,
+                             divergence_id=e.divergence_id, leverage_id=e.leverage_id,
+                             persona=e.persona, cost=e.cost, cost_detail=e.cost_detail,
+                             tentative=e.tentative,
+                             explanation={**e.explanation,
+                                          "structural": e.structural,
+                                          "capability_ids": e.capability_ids})
+            session.add(row)
+            edge_rows[i] = row
+        session.flush()
+        for p in result["paths"]:
+            session.add(AttackPath(audit_id=audit.id, persona=p["persona"],
+                                   target_node_id=nodes[p["target"]].id, cost=p["cost"],
+                                   edges=[edge_rows[i].id for i in p["edges"]],
+                                   severity=p["severity"]))
+        for row, _ in stored:
+            c = result["contextual"].get(row.id)
+            if c:
+                row.contextual_severity = c["severity"]
+                row.personas = c["personas"]
+        # Module 4 counts being on an attack path as leverage.
+        for r in lev_rows:
+            if r.file in result["attack_files"] and not any(
+                    x.get("code") == "attack_path" for x in r.reasons or []):
+                r.leverage_score = round(min(1.0, r.leverage_score + 0.1), 3)
+                r.reasons = [*(r.reasons or []), {"side": "leverage", "code": "attack_path",
+                                                  "delta": 0.1, "args": {}}]
+
+        def fix_label(fix):
+            kind, ident = fix["type"], fix["id"]
+            if kind == "finding":
+                f = next((r for r, _ in stored if r.id == ident), None)
+                return {"title": f.title if f else None, "file": f.file if f else None}
+            if kind == "divergence":
+                v = next((d for d in divergences if d["id"] == ident), None)
+                return {"file": v["file"] if v else None, "kind": v["kind"] if v else None}
+            if kind == "leverage":
+                r = next((x for x in leverage_rows if x["id"] == ident), None)
+                return {"file": r["file"] if r else None}
+            return {"files": sorted({c["source_file"] for c in caps if c["id"] in ident})}
+
+        cut = [{**c, **fix_label(c["fix"])} for c in result["min_cut"]]
+        by_severity: dict[str, int] = {}
+        for p in result["paths"]:
+            by_severity[p["severity"]] = by_severity.get(p["severity"], 0) + 1
+        detail = {"items": len(result["paths"]), "by_severity": by_severity,
+                  "min_cut": cut, "jewels": sorted({j.kind for j in jewels}),
+                  "edges": len(edge_rows)}
+        status, error = "ok", None
+    except Exception as e:      # the audit stands without it
+        log.exception("attacker view failed for audit %s", audit.id)
+        status, error = "error", sanitize_error(str(e))[:500]
+    session.add(ModuleRun(audit_id=audit.id, module="attacker", status=status,
+                          duration_ms=_ms_since(start), error=error, detail=detail))
+
+
 def execute_audit(audit_id: str) -> None:
     """Background task: clone the repo, run the engine, persist the outcome."""
     session = get_session()
@@ -631,6 +769,7 @@ def execute_audit(audit_id: str) -> None:
                 record_immune(session, audit, dest, stored, result.get("immune"),
                               *backend_identity(config))
                 record_leverage(session, audit, dest, stored)
+                record_attacker(session, audit, dest, stored)
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
@@ -919,6 +1058,61 @@ def get_coverage(audit_id: str, user: User = Depends(require_user),
             "files": [coverage_to_dict(row) for row in audit.coverage]}
 
 
+def owned_project(session: Session, user: User, project_id: int) -> Project:
+    project = session.get(Project, project_id)
+    if project is None or not (user.is_admin or project.user_id == user.id):
+        raise HTTPException(status_code=404, detail="project not found")
+    return project
+
+
+class JewelIn(BaseModel):
+    kind: str
+    target: str
+
+
+@app.get("/api/projects/{project_id}/crown-jewels")
+def list_crown_jewels(project_id: int, user: User = Depends(require_user),
+                      session: Session = Depends(db_session)):
+    project = owned_project(session, user, project_id)
+    return [jewel_to_dict(j) for j in project.crown_jewels if j.declared_by != DISMISSED]
+
+
+@app.post("/api/projects/{project_id}/crown-jewels", status_code=201)
+def add_crown_jewel(project_id: int, jewel: JewelIn, user: User = Depends(require_user),
+                    session: Session = Depends(db_session)):
+    """What the owner says an attacker would be after. It counts from the next audit."""
+    project = owned_project(session, user, project_id)
+    target = jewel.target.strip()
+    if jewel.kind not in JEWEL_KINDS:
+        raise HTTPException(status_code=422, detail=f"kind must be one of {', '.join(JEWEL_KINDS)}")
+    if not target or len(target) > 512:
+        raise HTTPException(status_code=422, detail="describe the target in 1-512 characters")
+    for j in list(project.crown_jewels):
+        if j.kind == jewel.kind and j.declared_by in ("suggested", DISMISSED):
+            project.crown_jewels.remove(j)      # the owner's word replaces the guess
+    row = CrownJewel(kind=jewel.kind, target=target, declared_by="user")
+    project.crown_jewels.append(row)
+    session.commit()
+    return jewel_to_dict(row)
+
+
+@app.delete("/api/projects/{project_id}/crown-jewels/{jewel_id}", status_code=204)
+def delete_crown_jewel(project_id: int, jewel_id: int, user: User = Depends(require_user),
+                       session: Session = Depends(db_session)):
+    """Remove a jewel. A suggested one is remembered as turned down, so the
+    next audit does not suggest it again."""
+    project = owned_project(session, user, project_id)
+    jewel = next((j for j in project.crown_jewels if j.id == jewel_id), None)
+    if jewel is None or jewel.declared_by == DISMISSED:
+        raise HTTPException(status_code=404, detail="crown jewel not found")
+    if jewel.declared_by == "suggested":
+        jewel.declared_by = DISMISSED
+    else:
+        project.crown_jewels.remove(jewel)
+    session.commit()
+    return Response(status_code=204)
+
+
 @app.get("/api/projects/{project_id}/immune-rules.yaml")
 def export_immune_rules(project_id: int, user: User = Depends(require_user),
                         session: Session = Depends(db_session)):
@@ -1061,6 +1255,7 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             record_immune(session, audit, checkout, stored, result.get("immune"),
                           runnerqueue.RUNNER_BACKEND, None)
             record_leverage(session, audit, checkout, stored)
+            record_attacker(session, audit, checkout, stored)
         audit.runner_claimed_at = None
         session.commit()
     except Exception as e:  # never leave an audit stuck in "running"

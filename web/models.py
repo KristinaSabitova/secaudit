@@ -126,6 +126,16 @@ class Audit(Base):
     agent_capabilities: Mapped[list["AgentCapability"]] = relationship(
         cascade="all, delete-orphan", order_by="AgentCapability.id",
     )
+    # The graph refers to itself and to findings: the database deletes it.
+    attack_nodes: Mapped[list["AttackNode"]] = relationship(
+        cascade="all, delete-orphan", passive_deletes=True, order_by="AttackNode.id",
+    )
+    attack_edges: Mapped[list["AttackEdge"]] = relationship(
+        cascade="all, delete-orphan", passive_deletes=True, order_by="AttackEdge.id",
+    )
+    attack_paths: Mapped[list["AttackPath"]] = relationship(
+        cascade="all, delete-orphan", passive_deletes=True, order_by="AttackPath.id",
+    )
     project: Mapped["Project | None"] = relationship()
 
 
@@ -147,6 +157,9 @@ class Project(Base):
 
     immune_rules: Mapped[list["ImmuneRule"]] = relationship(
         cascade="all, delete-orphan", order_by="ImmuneRule.id",
+    )
+    crown_jewels: Mapped[list["CrownJewel"]] = relationship(
+        cascade="all, delete-orphan", order_by="CrownJewel.id",
     )
 
 
@@ -581,6 +594,9 @@ def finding_to_dict(f: Finding) -> dict:
                            "ai_declared": bool(f.ai_declared)}
     if f.fix_commit:
         d["fix_commit"] = f.fix_commit
+    if f.contextual_severity:
+        d["contextual_severity"] = f.contextual_severity
+        d["personas"] = f.personas or []
     if f.zombie_of:
         origin = f.zombie_origin
         d["zombie_of"] = {"finding_id": f.zombie_of,
@@ -631,6 +647,21 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         d["agent_capabilities"] = [{"id": c.id, "source_file": c.source_file,
                                     "capability": c.capability, "detail": c.detail}
                                    for c in audit.agent_capabilities]
+        d["attack"] = {
+            "nodes": [{"id": n.id, "key": n.key, "label": n.label, "persona": n.persona,
+                       "crown_jewel_id": n.crown_jewel_id} for n in audit.attack_nodes],
+            "edges": [{"id": e.id, "source": e.source_node_id, "target": e.target_node_id,
+                       "finding_id": e.finding_id, "divergence_id": e.divergence_id,
+                       "leverage_id": e.leverage_id, "cost": e.cost,
+                       "cost_detail": e.cost_detail, "tentative": e.tentative,
+                       "explanation": e.explanation} for e in audit.attack_edges],
+            "paths": [{"id": p.id, "persona": p.persona, "target": p.target_node_id,
+                       "cost": p.cost, "edges": p.edges, "severity": p.severity}
+                      for p in audit.attack_paths],
+        }
+        d["crown_jewels"] = ([jewel_to_dict(j) for j in audit.project.crown_jewels
+                              if j.declared_by != "dismissed"]
+                             if audit.project is not None else [])
         # The project's memory so far: every rule learnt from its fixes.
         d["immune_rules"] = ([immune_rule_to_dict(r) for r in audit.project.immune_rules]
                              if audit.project is not None else [])
@@ -646,6 +677,11 @@ def divergence_to_dict(v: "ViewDivergence") -> dict:
 def canary_run_to_dict(run: "CanaryRun") -> dict:
     return {"planted": run.canaries_planted, "found": run.canaries_found,
             "integrity_score": run.integrity_score, "detail": run.detail}
+
+
+def jewel_to_dict(j: "CrownJewel") -> dict:
+    return {"id": j.id, "kind": j.kind, "target": j.target,
+            "declared_by": j.declared_by}
 
 
 def leverage_to_dict(r: "FileLeverage") -> dict:

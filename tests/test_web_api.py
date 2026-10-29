@@ -2909,3 +2909,101 @@ class TestLeverageMap:
         assert session.scalars(select(web_models.FileLeverage)).all() == []
         assert session.scalars(select(web_models.AgentCapability)).all() == []
         session.close()
+
+
+class TestAttackerView:
+    """Module 5 over the API: the graph, its paths, and the crown jewels."""
+
+    @pytest.fixture(autouse=True)
+    def quiet(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_CANARIES", "0")
+        monkeypatch.setenv("SECAUDIT_MAX_REFUTATIONS", "0")
+
+    def audit(self, client, monkeypatch, status="reachable"):
+        monkeypatch.setattr(web_main.falsify, "assess", lambda project, f, index: {
+            "hypothesis": None, "attempts": [], "status": status})
+        audit_id = client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample"}).json()["id"]
+        return client.get(f"/api/audits/{audit_id}").json()
+
+    def test_paths_contextual_severity_and_the_cut(self, client, signed_in,
+                                                   clone_from_sample, monkeypatch):
+        detail = self.audit(client, monkeypatch)
+        attack = detail["attack"]
+        nodes = {n["id"]: n for n in attack["nodes"]}
+        pairs = {(p["persona"], nodes[p["target"]]["key"]): p for p in attack["paths"]}
+        sqli = pairs[("anonymous", "reads_user_data")]
+        assert sqli["severity"] == "critical"
+        edges = {e["id"]: e for e in attack["edges"]}
+        [step] = [edges[i] for i in sqli["edges"] if edges[i]["finding_id"]]
+        assert step["explanation"]["cwe"] == "CWE-89"
+        assert step["explanation"]["sees"]["where"] == "app.py:4"
+        # The hardcoded key: whoever reads the repository has the secret.
+        assert ("malicious_contributor", "reads_secret") in pairs
+        by_title = {f["title"]: f for f in detail["findings"]}
+        assert by_title["SQL injection in get_user"]["contextual_severity"] == "critical"
+        assert "anonymous" in by_title["SQL injection in get_user"]["personas"]
+        run = {r["module"]: r for r in detail["modules"]}["attacker"]
+        assert run["status"] == "ok" and run["detail"]["items"] == len(attack["paths"])
+        assert run["detail"]["min_cut"][0]["fix"]["type"] == "finding"
+        assert run["detail"]["min_cut"][0]["title"]
+        # Suggested from the evidence: secrets always, user data from the SQL.
+        assert {j["kind"] for j in detail["crown_jewels"]} == {"secrets", "user_data"}
+        assert {j["declared_by"] for j in detail["crown_jewels"]} == {"suggested"}
+        # Module 4 counts the files on a path.
+        app = {r["file"]: r for r in detail["leverage"]}["app.py"]
+        assert any(r["code"] == "attack_path" for r in app["reasons"])
+
+    def test_findings_not_shown_to_hold_make_no_path(self, client, signed_in,
+                                                     clone_from_sample, monkeypatch):
+        detail = self.audit(client, monkeypatch, status="exists")
+        assert detail["attack"]["paths"] == []
+        assert all("contextual_severity" not in f for f in detail["findings"])
+
+    def test_declaring_and_turning_down_jewels(self, client, signed_in,
+                                               clone_from_sample, monkeypatch):
+        detail = self.audit(client, monkeypatch)
+        project = detail["project_id"]
+        url = f"/api/projects/{project}/crown-jewels"
+        suggested = {j["kind"]: j for j in client.get(url).json()}
+        # Turning down a suggestion keeps it from coming back.
+        assert client.delete(f"{url}/{suggested['user_data']['id']}").status_code == 204
+        r = client.post(url, json={"kind": "administration", "target": "the /admin panel"})
+        assert r.status_code == 201 and r.json()["declared_by"] == "user"
+        assert client.post(url, json={"kind": "money", "target": "x"}).status_code == 422
+        again = self.audit(client, monkeypatch)
+        assert {j["kind"] for j in again["crown_jewels"]} == {"secrets", "administration"}
+        nodes = {n["id"]: n["key"] for n in again["attack"]["nodes"]}
+        assert "reads_user_data" not in {nodes[p["target"]] for p in again["attack"]["paths"]}
+        # Declaring one of a suggested kind replaces the suggestion.
+        client.post(url, json={"kind": "secrets", "target": "the Stripe key"})
+        kinds = [(j["kind"], j["declared_by"]) for j in client.get(url).json()]
+        assert ("secrets", "suggested") not in kinds and ("secrets", "user") in kinds
+
+    def test_someone_elses_jewels_are_not_found(self, client, signed_in,
+                                                clone_from_sample, monkeypatch):
+        detail = self.audit(client, monkeypatch)
+        sign_in(client, github_id=99, login="other")
+        url = f"/api/projects/{detail['project_id']}/crown-jewels"
+        assert client.get(url).status_code == 404
+        assert client.post(url, json={"kind": "secrets", "target": "x"}).status_code == 404
+
+    def test_a_failure_is_the_modules_not_the_audits(self, client, signed_in,
+                                                     clone_from_sample, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(web_main.attacker, "analyze", broken)
+        detail = self.audit(client, monkeypatch)
+        assert detail["status"] == "done"
+        run = {r["module"]: r for r in detail["modules"]}["attacker"]
+        assert run["status"] == "error" and "boom" in run["error"]
+
+    def test_deleting_the_audit_deletes_the_graph(self, client, signed_in,
+                                                  clone_from_sample, monkeypatch):
+        detail = self.audit(client, monkeypatch)
+        assert detail["attack"]["paths"]
+        assert client.delete(f"/api/audits/{detail['id']}").status_code == 204
+        session = web_db.get_session()
+        for model in (web_models.AttackNode, web_models.AttackEdge, web_models.AttackPath):
+            assert session.scalars(select(model)).all() == []
+        session.close()
