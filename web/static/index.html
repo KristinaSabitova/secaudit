@@ -156,6 +156,28 @@
               <option value="ai" data-i18n="filter.ai">AI participation declared</option>
             </select>
           </div>
+          <div class="field">
+            <label for="filter-context" data-i18n="filter.context">contextual severity</label>
+            <select id="filter-context">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="critical" data-i18n="severity.critical">critical</option>
+              <option value="high" data-i18n="severity.high">high</option>
+              <option value="medium" data-i18n="severity.medium">medium</option>
+              <option value="low" data-i18n="severity.low">low</option>
+              <option value="none" data-i18n="filter.onnopath">on no path</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="filter-persona" data-i18n="filter.persona">attacker profile</label>
+            <select id="filter-persona">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="anonymous" data-i18n="persona.anonymous">anonymous</option>
+              <option value="authenticated_user" data-i18n="persona.authenticated_user">authenticated user</option>
+              <option value="malicious_contributor" data-i18n="persona.malicious_contributor">malicious contributor</option>
+              <option value="compromised_dependency" data-i18n="persona.compromised_dependency">compromised dependency</option>
+              <option value="manipulated_agent" data-i18n="persona.manipulated_agent">manipulated agent</option>
+            </select>
+          </div>
         </form>
         <p id="findings-count" class="muted"></p>
         <div id="findings-body"></div>
@@ -192,10 +214,8 @@
       <section class="view module" data-view="attacker" aria-labelledby="h-attacker" hidden>
         <h1 id="h-attacker" data-i18n="nav.attacker">attacker</h1>
         <p class="question" data-i18n="attacker.question"></p>
-        <div class="empty-state">
-          <p data-i18n="attacker.what"></p>
-          <p class="muted" data-i18n="attacker.phase"></p>
-        </div>
+        <p class="muted settings-intro" data-i18n="attacker.what"></p>
+        <div id="attacker-body"></div>
       </section>
 
       <section class="view" data-view="history" aria-labelledby="h-history" hidden>
@@ -293,6 +313,7 @@
         <section class="block" aria-labelledby="h-jewels">
           <h2 id="h-jewels" data-i18n="jewels.title">crown jewels</h2>
           <p class="muted" data-i18n="jewels.phase"></p>
+          <div id="jewels-body"></div>
         </section>
       </section>
     </main>

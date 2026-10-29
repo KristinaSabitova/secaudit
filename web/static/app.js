@@ -107,9 +107,24 @@ const TEXT = {
     "settings.nobackend": "no backend",
     "settings.display": "Display",
     "jewels.title": "Crown jewels",
-    "jewels.phase": "What an attacker would want most from each project — " +
-      "secrets, user data, deployment, administration. Declared here from " +
-      "phase 8, together with the Attacker section.",
+    "jewels.phase": "What an attacker would want most from the selected audit's " +
+      "project. secaudit suggests the ones the repository points at; declared " +
+      "ones replace them, and a removed suggestion is not made again. They count " +
+      "from the next audit.",
+    "jewels.none": "Select an audit to see its project's crown jewels.",
+    "jewels.empty": "No crown jewel yet: the next audit suggests them.",
+    "jewels.kind": "kind",
+    "jewels.target": "what exactly",
+    "jewels.add": "add",
+    "jewels.remove": "remove",
+    "jewels.by.user": "declared",
+    "jewels.by.suggested": "suggested",
+    "jewels.removelabel": (k) => `remove ${k}`,
+    "jewel.secrets": "secrets",
+    "jewel.user_data": "user data",
+    "jewel.deployment": "deployment",
+    "jewel.administration": "administration",
+    "jewel.code_execution": "code execution",
     "runner.title": "Run audits on your own machine",
     "runner.intro": "The claude-code backend runs a program signed in on a " +
       "machine, which this server is not. Audits you queue are left waiting " +
@@ -150,7 +165,11 @@ const TEXT = {
     "summary.seefindings": "see the findings",
     "summary.paths": "Critical paths and the fix that cuts most",
     "summary.pathsphase": "The cheapest way in for each attacker profile and " +
-      "the single fix that closes most of them. Arrives in phase 8.",
+      "the single fix that closes most of them.",
+    "summary.nopaths": "No attacker profile reaches a crown jewel through what was shown to hold.",
+    "summary.pathcount": (n, c) => `${n} path(s) to a crown jewel, ${c} of them critical.`,
+    "summary.topfix": "The fix that cuts most:",
+    "summary.seeattacker": "see the paths",
     "summary.modules": "What ran",
     "summary.nomodules": "No module runs were recorded for this audit.",
     "module.name": "module",
@@ -452,7 +471,93 @@ const TEXT = {
     "attacker.question": "How far does each kind of attacker get, and which fix stops them first?",
     "attacker.what": "Choose a profile and a crown jewel to see the path " +
       "between them, step by step, with the evidence for each step.",
-    "attacker.phase": "Arrives in phase 8.",
+    "attacker.notrun": "The attacker's view did not run for this audit: it predates the module.",
+    "attacker.failed": "The attacker's view failed for this audit; the findings stand without it.",
+    "attacker.profile": "attacker profile",
+    "attacker.jewel": "crown jewel",
+    "attacker.cut": "the fix that cuts most",
+    "attacker.cutintro": "Removing it leaves these profile and jewel pairs with no " +
+      "path at all — not a longer one. Inconclusive steps never count.",
+    "attacker.cutsome": (n) => `cuts ${n} path(s)`,
+    "attacker.then": "then",
+    "attacker.nocut": "No single fix cuts a path: every pair has another way in.",
+    "attacker.matrix": "every profile against every jewel",
+    "attacker.matrixintro": "The cost of the cheapest path; empty where there is none.",
+    "attacker.nopath": "no path",
+    "attacker.path": "the path",
+    "attacker.nopathhere": "This profile has no path to this jewel through what was shown to hold.",
+    "attacker.cost": (c) => `cost ${c}`,
+    "attacker.tentative": "tentative: a step rests on an inconclusive finding",
+    "attacker.sees": "what they would see",
+    "attacker.works": "why it works",
+    "attacker.needs": "what it needs",
+    "attacker.gains": "what they gain",
+    "attacker.implied": "follows from holding the previous capability",
+    "attacker.costdetail": (d) => `${d.steps} step(s) · privileges: ${d.privileges}` +
+      `${d.interaction ? " · needs a victim's action" : ""}${d.trace ? " · leaves a trace" : ""}`,
+    "attacker.nofindings": "No finding shown to hold, no weakly watched file and no " +
+      "agent path: there is nothing to chain.",
+    "attacker.limits": "Paths are described, never armed: no exploit and no payload. " +
+      "They use only findings shown to hold (reachable or corroborated); inconclusive " +
+      "ones are dashed. Costs count steps, privileges, a victim's action and traces.",
+    "fix.finding": (x) => `fix the finding \u201c${x.title || "?"}\u201d (${x.file || "—"})`,
+    "fix.divergence": (x) => `remove the ${t(`kind.${x.kind}`)} in ${x.file || "—"}`,
+    "fix.leverage": (x) => `put ${x.file || "?"} under review (an owner, required approvals)`,
+    "fix.agent": (x) => `narrow the agent configuration in ${(x.files || []).join(", ")}`,
+    "persona.anonymous": "anonymous",
+    "persona.authenticated_user": "authenticated user",
+    "persona.malicious_contributor": "malicious contributor",
+    "persona.compromised_dependency": "compromised dependency",
+    "persona.manipulated_agent": "manipulated agent",
+    "personadesc.anonymous": "from the internet, without an account",
+    "personadesc.authenticated_user": "with a low-privilege account",
+    "personadesc.malicious_contributor": "can open pull requests",
+    "personadesc.compromised_dependency": "a package's code runs inside the application",
+    "personadesc.manipulated_agent": "an AI agent in the repository, with injected instructions",
+    "node.sends_requests": "sends requests to the application",
+    "node.user_account": "holds a user account",
+    "node.gets_session": "holds another user's session",
+    "node.accesses_admin": "administers the application",
+    "node.executes_code": "runs code where the application runs",
+    "node.reads_user_data": "reads user data",
+    "node.writes_db": "writes to the database",
+    "node.reads_files": "reads the server's files",
+    "node.reads_secret": "reads a secret",
+    "node.reaches_internal": "reaches the internal network",
+    "node.reads_repository": "reads the repository",
+    "node.changes_code": "gets a change into the default branch",
+    "node.runs_in_ci": "runs code in CI",
+    "node.executes_on_developer": "runs code on a developer's machine",
+    "node.controls_agent": "steers an AI agent in the repository",
+    "node.publishes_release": "publishes a release or deploys",
+    "works.sql_injection": "the query is built from input instead of bound parameters",
+    "works.command_injection": "input reaches a shell command",
+    "works.code_injection": "input is evaluated as code",
+    "works.deserialization": "untrusted data is deserialized into objects",
+    "works.path_traversal": "a path from input is not confined to its directory",
+    "works.ssrf": "the server fetches a URL the caller chooses",
+    "works.idor": "the record is fetched by its id with no check of whose it is",
+    "works.privilege": "the role is not checked before the action",
+    "works.missing_auth": "the endpoint does not require authentication",
+    "works.session": "sessions are not bound, rotated or protected",
+    "works.xss": "input is rendered as markup without escaping",
+    "works.csrf": "state-changing requests carry no anti-forgery token",
+    "works.brute_force": "attempts are not limited",
+    "works.hardcoded_secret": "a credential is kept in the source",
+    "works.info_disclosure": "errors reveal internals",
+    "works.cors": "other origins may make credentialed requests",
+    "works.pr_target": "the workflow runs on pull_request_target, with the base repository's secrets, for anyone's pull request",
+    "works.ci_secrets": "the workflow is handed repository secrets",
+    "works.ci_deploy": "the workflow deploys or publishes what it runs",
+    "works.merge": "changes to it land with little review",
+    "works.hidden_instructions": "the file says one thing to a person and another to the agent that reads it",
+    "works.runs_on_open": "code runs on install, checkout or opening the folder, without anyone asking",
+    "works.in_repository": "what is merged is what developers clone",
+    "filter.context": "contextual severity",
+    "filter.onnopath": "on no path",
+    "filter.persona": "attacker profile",
+    "findings.context": "contextual severity",
+    "findings.personas": "who can use it",
     "coverage.line": (c) => `${c.audited} of ${c.files} files audited in ` +
       `${c.requests} request${c.requests === 1 ? "" : "s"}` +
       (c.partial ? ` (${c.partial} in part)` : "") +
@@ -540,9 +645,24 @@ const TEXT = {
     "settings.nobackend": "sin motor",
     "settings.display": "Visualización",
     "jewels.title": "Joyas de la corona",
-    "jewels.phase": "Lo que un atacante querría por encima de todo en cada " +
-      "proyecto: secretos, datos de usuarios, despliegue, administración. Se " +
-      "declaran aquí a partir de la fase 8, junto con la sección Atacante.",
+    "jewels.phase": "Lo que un atacante querría por encima de todo en el proyecto " +
+      "de la auditoría seleccionada. secaudit sugiere las que señala el " +
+      "repositorio; las declaradas las sustituyen, y una sugerencia quitada no " +
+      "vuelve. Cuentan desde la siguiente auditoría.",
+    "jewels.none": "Selecciona una auditoría para ver las joyas de la corona de su proyecto.",
+    "jewels.empty": "Aún no hay joyas de la corona: la siguiente auditoría las sugiere.",
+    "jewels.kind": "tipo",
+    "jewels.target": "qué exactamente",
+    "jewels.add": "añadir",
+    "jewels.remove": "quitar",
+    "jewels.by.user": "declarada",
+    "jewels.by.suggested": "sugerida",
+    "jewels.removelabel": (k) => `quitar ${k}`,
+    "jewel.secrets": "secretos",
+    "jewel.user_data": "datos de usuarios",
+    "jewel.deployment": "despliegue",
+    "jewel.administration": "administración",
+    "jewel.code_execution": "ejecución de código",
     "runner.title": "Ejecutar auditorías en tu propia máquina",
     "runner.intro": "El motor claude-code ejecuta un programa con la sesión " +
       "iniciada en una máquina, cosa que este servidor no es. Las auditorías " +
@@ -584,7 +704,11 @@ const TEXT = {
     "summary.seefindings": "ver los hallazgos",
     "summary.paths": "Caminos críticos y el arreglo que más corta",
     "summary.pathsphase": "La entrada más barata para cada perfil de atacante " +
-      "y el arreglo único que cierra más caminos. Llega en la fase 8.",
+      "y el arreglo único que cierra más caminos.",
+    "summary.nopaths": "Ningún perfil de atacante llega a una joya de la corona con lo que se ha demostrado.",
+    "summary.pathcount": (n, c) => `${n} camino(s) a una joya de la corona, ${c} crítico(s).`,
+    "summary.topfix": "El arreglo que más corta:",
+    "summary.seeattacker": "ver los caminos",
     "summary.modules": "Qué se ejecutó",
     "summary.nomodules": "No hay ejecuciones de módulos registradas para esta auditoría.",
     "module.name": "módulo",
@@ -886,7 +1010,94 @@ const TEXT = {
     "attacker.question": "¿Hasta dónde llega cada tipo de atacante y qué arreglo lo frena antes?",
     "attacker.what": "Elige un perfil y una joya de la corona para ver el " +
       "camino entre ellos, paso a paso, con la evidencia de cada paso.",
-    "attacker.phase": "Llega en la fase 8.",
+    "attacker.notrun": "La mirada del atacante no se ejecutó en esta auditoría: es anterior al módulo.",
+    "attacker.failed": "La mirada del atacante falló en esta auditoría; los hallazgos siguen en pie sin ella.",
+    "attacker.profile": "perfil de atacante",
+    "attacker.jewel": "joya de la corona",
+    "attacker.cut": "el arreglo que más corta",
+    "attacker.cutintro": "Quitarlo deja estos pares de perfil y joya sin ningún " +
+      "camino, no con uno más largo. Los pasos no concluyentes nunca cuentan.",
+    "attacker.cutsome": (n) => `corta ${n} camino(s)`,
+    "attacker.then": "después",
+    "attacker.nocut": "Ningún arreglo único corta un camino: cada par tiene otra entrada.",
+    "attacker.matrix": "cada perfil frente a cada joya",
+    "attacker.matrixintro": "El coste del camino más barato; vacío donde no lo hay.",
+    "attacker.nopath": "sin camino",
+    "attacker.path": "el camino",
+    "attacker.nopathhere": "Este perfil no tiene camino a esta joya con lo que se ha demostrado.",
+    "attacker.cost": (c) => `coste ${c}`,
+    "attacker.tentative": "provisional: un paso se apoya en un hallazgo no concluyente",
+    "attacker.sees": "qué vería",
+    "attacker.works": "por qué funciona",
+    "attacker.needs": "qué necesita",
+    "attacker.gains": "qué gana",
+    "attacker.implied": "se sigue de tener la capacidad anterior",
+    "attacker.costdetail": (d) => `${d.steps} paso(s) · privilegios: ${d.privileges}` +
+      `${d.interaction ? " · necesita una acción de la víctima" : ""}${d.trace ? " · deja rastro" : ""}`,
+    "attacker.nofindings": "Ningún hallazgo demostrado, ningún fichero poco vigilado y " +
+      "ningún camino de agentes: no hay nada que encadenar.",
+    "attacker.limits": "Los caminos se describen, no se arman: ni exploits ni payloads. " +
+      "Solo usan hallazgos demostrados (alcanzables o corroborados); los no " +
+      "concluyentes van discontinuos. El coste cuenta pasos, privilegios, una acción " +
+      "de la víctima y el rastro.",
+    "fix.finding": (x) => `arreglar el hallazgo «${x.title || "?"}» (${x.file || "—"})`,
+    "fix.divergence": (x) => `quitar la ${t(`kind.${x.kind}`)} de ${x.file || "—"}`,
+    "fix.leverage": (x) => `poner ${x.file || "?"} bajo revisión (un responsable, aprobaciones obligatorias)`,
+    "fix.agent": (x) => `acotar la configuración de agentes de ${(x.files || []).join(", ")}`,
+    "persona.anonymous": "anónimo",
+    "persona.authenticated_user": "usuario autenticado",
+    "persona.malicious_contributor": "contribuidor malicioso",
+    "persona.compromised_dependency": "dependencia comprometida",
+    "persona.manipulated_agent": "agente manipulado",
+    "personadesc.anonymous": "desde internet, sin cuenta",
+    "personadesc.authenticated_user": "con una cuenta de pocos privilegios",
+    "personadesc.malicious_contributor": "puede abrir pull requests",
+    "personadesc.compromised_dependency": "el código de un paquete se ejecuta dentro de la aplicación",
+    "personadesc.manipulated_agent": "un agente de IA en el repositorio, con instrucciones inyectadas",
+    "node.sends_requests": "envía peticiones a la aplicación",
+    "node.user_account": "tiene una cuenta de usuario",
+    "node.gets_session": "tiene la sesión de otro usuario",
+    "node.accesses_admin": "administra la aplicación",
+    "node.executes_code": "ejecuta código donde corre la aplicación",
+    "node.reads_user_data": "lee datos de usuarios",
+    "node.writes_db": "escribe en la base de datos",
+    "node.reads_files": "lee ficheros del servidor",
+    "node.reads_secret": "lee un secreto",
+    "node.reaches_internal": "llega a la red interna",
+    "node.reads_repository": "lee el repositorio",
+    "node.changes_code": "consigue meter un cambio en la rama por defecto",
+    "node.runs_in_ci": "ejecuta código en CI",
+    "node.executes_on_developer": "ejecuta código en la máquina de un desarrollador",
+    "node.controls_agent": "dirige un agente de IA en el repositorio",
+    "node.publishes_release": "publica una versión o despliega",
+    "works.sql_injection": "la consulta se construye con la entrada en vez de con parámetros",
+    "works.command_injection": "la entrada llega a una orden de shell",
+    "works.code_injection": "la entrada se evalúa como código",
+    "works.deserialization": "se deserializan en objetos datos que no son de fiar",
+    "works.path_traversal": "una ruta que viene de la entrada no se limita a su directorio",
+    "works.ssrf": "el servidor pide una URL que elige quien llama",
+    "works.idor": "el registro se pide por su id sin comprobar de quién es",
+    "works.privilege": "no se comprueba el rol antes de la acción",
+    "works.missing_auth": "el endpoint no exige autenticación",
+    "works.session": "las sesiones no se atan, rotan ni protegen",
+    "works.xss": "la entrada se pinta como marcado sin escapar",
+    "works.csrf": "las peticiones que cambian estado no llevan token anti-falsificación",
+    "works.brute_force": "no se limitan los intentos",
+    "works.hardcoded_secret": "hay una credencial guardada en el código",
+    "works.info_disclosure": "los errores revelan detalles internos",
+    "works.cors": "otros orígenes pueden hacer peticiones con credenciales",
+    "works.pr_target": "el workflow corre con pull_request_target, con los secretos del repositorio base, para el PR de cualquiera",
+    "works.ci_secrets": "el workflow recibe secretos del repositorio",
+    "works.ci_deploy": "el workflow despliega o publica lo que ejecuta",
+    "works.merge": "los cambios entran con poca revisión",
+    "works.hidden_instructions": "el fichero dice una cosa a una persona y otra al agente que lo lee",
+    "works.runs_on_open": "hay código que se ejecuta al instalar, hacer checkout o abrir la carpeta, sin que nadie lo pida",
+    "works.in_repository": "lo que se fusiona es lo que clonan los desarrolladores",
+    "filter.context": "severidad contextual",
+    "filter.onnopath": "en ningún camino",
+    "filter.persona": "perfil de atacante",
+    "findings.context": "severidad contextual",
+    "findings.personas": "quién puede usarlo",
     "coverage.line": (c) => `${c.audited} de ${c.files} ficheros auditados en ` +
       `${c.requests} petici${c.requests === 1 ? "ón" : "ones"}` +
       (c.partial ? ` (${c.partial} en parte)` : "") +
@@ -1133,6 +1344,8 @@ const state = {
   drawerFinding: null,     // finding id shown in the detail panel
   drawerDivergence: null,  // or the divergence id shown there instead
   drawerFile: null,        // or the path whose leverage is shown there
+  persona: null,           // the attacker profile and jewel chosen
+  jewel: null,
   leverageAll: false,
   expandedViews: new Set(), // divergence ids whose views are open in the table
   viewMode: stored("secaudit.views") === "overlay" ? "overlay" : "side",
@@ -1311,6 +1524,8 @@ function renderSection() {
   else if (state.section === "parallax") renderParallax();
   else if (state.section === "memory") renderMemory();
   else if (state.section === "leverage") renderLeverage();
+  else if (state.section === "attacker") renderAttacker();
+  else if (state.section === "settings") renderJewels();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
 }
@@ -1519,7 +1734,7 @@ function renderSummary() {
     integrityBlock(audit, total),
     coverageBlock(audit),
     findings,
-    block(t("summary.paths"), node("p", "placeholder", t("summary.pathsphase"))),
+    pathsBlock(audit),
     moduleRunsBlock(audit),
   );
   for (const summary of target.querySelectorAll("details > summary")) {
@@ -1543,6 +1758,8 @@ function filteredFindings() {
   const evidence = el("filter-evidence").value;
   const epistemic = el("filter-epistemic").value;
   const origin = el("filter-origin").value;
+  const context = el("filter-context").value;
+  const persona = el("filter-persona").value;
   const query = state.query.trim().toLowerCase();
   const order = new Map(SEVERITIES.map((s, i) => [s, i]));
   return (state.current.findings || [])
@@ -1552,6 +1769,9 @@ function filteredFindings() {
             || (epistemic === "none" ? !f.epistemic_status : f.epistemic_status === epistemic))
     .filter((f) => origin !== "zombie" || f.zombie_of)
     .filter((f) => origin !== "ai" || (f.provenance && f.provenance.ai_declared))
+    .filter((f) => !context || (context === "none" ? !f.contextual_severity
+                                : f.contextual_severity === context))
+    .filter((f) => !persona || (f.personas || []).includes(persona))
     .filter((f) => !query || [f.title, f.file, f.anchor, f.description, f.category,
                               categoryLabel(f.category)]
       .some((v) => String(v || "").toLowerCase().includes(query)))
@@ -1583,6 +1803,11 @@ function findingBody(finding, { full }) {
       [t("findings.location"), node("span", "where", whereText(finding) || "—")],
     ];
     if (finding.anchor) pairs.push([t("findings.anchor"), node("span", "where", finding.anchor)]);
+    if (finding.contextual_severity) {
+      pairs.push([t("findings.context"), severityNode(finding.contextual_severity)],
+                 [t("findings.personas"),
+                  (finding.personas || []).map((x) => t(`persona.${x}`)).join(", ")]);
+    }
     const p = finding.provenance;
     if (p) {
       pairs.push([t("provenance.origin"), commitNode(p.origin_commit)],
@@ -1704,7 +1929,8 @@ function renderFindings() {
   }
 }
 
-for (const id of ["filter-severity", "filter-epistemic", "filter-origin"]) {
+for (const id of ["filter-severity", "filter-epistemic", "filter-origin", "filter-context",
+                  "filter-persona"]) {
   el(id).addEventListener("change", renderFindings);
 }
 
@@ -2707,6 +2933,300 @@ function renderLeverage() {
     const again = target.querySelector(`[data-leverage="${CSS.escape(focused)}"]`);
     if (again) again.focus();
   }
+}
+
+// ---------------------------------------------------------------------------
+// attacker's view (module 5)
+// ---------------------------------------------------------------------------
+
+const PERSONAS = ["anonymous", "authenticated_user", "malicious_contributor",
+                  "compromised_dependency", "manipulated_agent"];
+const JEWELS = ["secrets", "user_data", "deployment", "administration", "code_execution"];
+const JEWEL_NODES = { secrets: "reads_secret", user_data: "reads_user_data",
+                      deployment: "publishes_release", administration: "accesses_admin",
+                      code_execution: "executes_code" };
+
+function attackerRun(audit) {
+  return (audit.modules || []).filter((r) => r.module === "attacker").pop() || null;
+}
+
+function fixText(cut) {
+  return t(`fix.${cut.fix.type}`, cut);
+}
+
+function nodeLabel(node) {
+  if (!node) return "?";
+  if (node.persona) return t(`persona.${node.persona}`);
+  const value = t(`node.${node.key}`);
+  return value === `node.${node.key}` ? node.label : value;
+}
+
+function attackIndex(audit) {
+  const attack = audit.attack || { nodes: [], edges: [], paths: [] };
+  const nodes = new Map(attack.nodes.map((n) => [n.id, n]));
+  const edges = new Map(attack.edges.map((e) => [e.id, e]));
+  const paths = new Map();
+  for (const p of attack.paths) {
+    const target = nodes.get(p.target);
+    const jewel = Object.keys(JEWEL_NODES).find((k) => JEWEL_NODES[k] === (target || {}).key);
+    paths.set(`${p.persona}|${jewel}`, p);
+  }
+  return { attack, nodes, edges, paths };
+}
+
+function pathsBlock(audit) {
+  const section = block(t("summary.paths"));
+  const run = attackerRun(audit);
+  if (!run || run.status !== "ok") {
+    section.append(node("p", "muted", t("summary.pathsphase")));
+    return section;
+  }
+  const d = run.detail || {};
+  const n = d.items || 0;
+  if (!n) {
+    section.append(node("p", "muted", t("summary.nopaths")));
+    return section;
+  }
+  section.append(node("p", null, t("summary.pathcount", n, (d.by_severity || {}).critical || 0)));
+  const [first] = d.min_cut || [];
+  if (first) {
+    const p = node("p", "topfix");
+    p.append(node("strong", null, t("summary.topfix")), " ", fixText(first),
+             node("span", "muted", ` — ${t("attacker.cutsome", first.cuts.length)}`));
+    section.append(p);
+  }
+  section.append(button(t("summary.seeattacker"), "link", () => go("attacker")));
+  return section;
+}
+
+function cutBlock(run) {
+  const cut = (run.detail || {}).min_cut || [];
+  const section = block(t("attacker.cut"), node("p", "muted", t("attacker.cutintro")));
+  if (!cut.length) {
+    section.append(node("p", "muted", t("attacker.nocut")));
+    return section;
+  }
+  const list = node("ol", "cut-list");
+  cut.forEach((c, i) => {
+    const li = node("li", i === 0 ? "cut-first" : null);
+    li.append(node("span", null, `${i ? `${t("attacker.then")}: ` : ""}${fixText(c)}`),
+              node("div", "muted small", `${t("attacker.cutsome", c.cuts.length)}: ` +
+                   c.cuts.map(([p, j]) => `${t(`persona.${p}`)} → ${t(`jewel.${j}`)}`).join("; ")));
+    list.append(li);
+  });
+  section.append(list);
+  return section;
+}
+
+function matrixBlock(index) {
+  const section = block(t("attacker.matrix"), node("p", "muted", t("attacker.matrixintro")));
+  const jewels = JEWELS.filter((j) => PERSONAS.some((p) => index.paths.has(`${p}|${j}`))
+                               || (state.current.crown_jewels || []).some((x) => x.kind === j));
+  section.append(table(
+    [{ text: t("attacker.profile") }, ...jewels.map((j) => ({ text: t(`jewel.${j}`) }))],
+    PERSONAS.map((persona) => row([
+      t(`persona.${persona}`),
+      ...jewels.map((jewel) => {
+        const p = index.paths.get(`${persona}|${jewel}`);
+        if (!p) return node("span", "muted", "—");
+        const b = button("", `link matrix-cell${p.tentative ? " tentative" : ""}`, () => {
+          state.persona = persona;
+          state.jewel = jewel;
+          renderAttacker();
+          const target = document.getElementById("attack-path");
+          if (target) target.scrollIntoView({ block: "start" });
+        });
+        b.append(severityNode(p.severity), ` ${p.cost}`);
+        b.setAttribute("aria-label", `${t(`persona.${persona}`)} → ${t(`jewel.${jewel}`)}: ` +
+                       `${t(`severity.${p.severity}`)}, ${t("attacker.cost", p.cost)}`);
+        if (state.persona === persona && state.jewel === jewel) b.setAttribute("aria-current", "true");
+        return b;
+      }),
+    ]))));
+  return section;
+}
+
+function select(id, label, values, current, text, onChange) {
+  const field = node("div", "field");
+  const l = node("label", null, label);
+  l.htmlFor = id;
+  const s = document.createElement("select");
+  s.id = id;
+  for (const v of values) {
+    const o = node("option", null, text(v));
+    o.value = v;
+    if (v === current) o.selected = true;
+    s.append(o);
+  }
+  s.addEventListener("change", () => onChange(s.value));
+  field.append(l, s);
+  return field;
+}
+
+function stepNode(edge, index) {
+  const ex = edge.explanation || {};
+  const li = node("li", `attack-step${edge.tentative ? " tentative" : ""}` +
+                        `${ex.structural ? " implied" : ""}`);
+  const target = index.nodes.get(edge.target);
+  const head = node("div", "attack-step-head");
+  head.append(node("span", "attack-gain", nodeLabel(target)));
+  if (ex.cwe) head.append(node("span", "badge", ex.cwe));
+  if (ex.attack) head.append(node("span", "badge", `ATT&CK ${ex.attack}`));
+  head.append(node("span", "muted small", t("attacker.cost", edge.cost)));
+  li.append(head);
+  if (ex.structural) {
+    li.append(node("p", "muted small", ex.kind === "start"
+      ? t(`personadesc.${(index.nodes.get(edge.source) || {}).persona}`)
+      : `${t("attacker.implied")}: ${ex.works}`));
+    return li;
+  }
+  const sees = ex.sees || {};
+  const seen = [sees.where, sees.title, sees.entry].filter(Boolean).join(" — ");
+  const works = t(`works.${ex.kind}`);
+  const pairs = [
+    [t("attacker.sees"), node("span", "where", seen || "—")],
+    [t("attacker.works"), works === `works.${ex.kind}` ? ex.works || "—" : works],
+    [t("attacker.needs"), (ex.needs || []).join("; ") || "—"],
+    [t("attacker.gains"), nodeLabel(target)],
+  ];
+  li.append(facts(pairs));
+  if (edge.cost_detail) li.append(node("p", "muted small", t("attacker.costdetail", edge.cost_detail)));
+  if (edge.finding_id !== null && edge.finding_id !== undefined) {
+    const f = (state.current.findings || []).find((x) => x.id === edge.finding_id);
+    if (f) {
+      const b = button(f.title, "link");
+      b.dataset.finding = String(f.id);
+      b.addEventListener("click", () => openFinding(f.id, b));
+      li.append(b);
+    }
+  }
+  return li;
+}
+
+function pathBlock(index) {
+  const section = block(t("attacker.path"));
+  section.id = "attack-path";
+  const available = PERSONAS.filter((p) => JEWELS.some((j) => index.paths.has(`${p}|${j}`)));
+  if (!state.persona || !PERSONAS.includes(state.persona)) {
+    state.persona = available[0] || PERSONAS[0];
+  }
+  const jewels = JEWELS.filter((j) => index.paths.has(`${state.persona}|${j}`));
+  if (!state.jewel || !JEWELS.includes(state.jewel)) state.jewel = jewels[0] || JEWELS[0];
+  const controls = node("div", "filters");
+  controls.append(
+    select("attack-persona", t("attacker.profile"), PERSONAS, state.persona,
+           (p) => t(`persona.${p}`), (v) => { state.persona = v; renderAttacker(); }),
+    select("attack-jewel", t("attacker.jewel"), JEWELS, state.jewel,
+           (j) => t(`jewel.${j}`), (v) => { state.jewel = v; renderAttacker(); }));
+  section.append(controls, node("p", "muted small", t(`personadesc.${state.persona}`)));
+  const p = index.paths.get(`${state.persona}|${state.jewel}`);
+  if (!p) {
+    section.append(node("p", "muted", t("attacker.nopathhere")));
+    return section;
+  }
+  const head = node("p", "attack-path-head");
+  head.append(severityNode(p.severity), ` ${t("attacker.cost", p.cost)}`);
+  if (p.tentative) head.append(node("span", "muted", ` · ${t("attacker.tentative")}`));
+  const chain = node("ol", "attack-chain");
+  const start = index.nodes.get((index.edges.get(p.edges[0]) || {}).source);
+  const first = node("li", "attack-step attack-start");
+  first.append(node("span", "attack-gain", nodeLabel(start)));
+  chain.append(first);
+  for (const id of p.edges) {
+    const edge = index.edges.get(id);
+    if (edge) chain.append(stepNode(edge, index));
+  }
+  section.append(head, chain);
+  return section;
+}
+
+function renderAttacker() {
+  const target = el("attacker-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const run = attackerRun(audit);
+  if (!run) {
+    target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("attacker.notrun")));
+    return;
+  }
+  const parts = [];
+  if (run.status === "error") parts.push(node("p", "error", t("attacker.failed")));
+  const index = attackIndex(audit);
+  if (!index.attack.paths.length) {
+    parts.push(node("p", "muted", t("attacker.nofindings")));
+  } else {
+    parts.push(cutBlock(run), pathBlock(index), matrixBlock(index));
+  }
+  parts.push(node("p", "muted small", t("attacker.limits")));
+  target.replaceChildren(...parts);
+}
+
+// ---------------------------------------------------------------------------
+// crown jewels (settings)
+// ---------------------------------------------------------------------------
+
+async function jewelRequest(path, options) {
+  try {
+    await api(path, options);
+    if (state.selectedId) await loadDetail(state.selectedId);
+  } catch (e) {
+    el("settings-error").textContent = e.message;
+    el("settings-error").hidden = false;
+  }
+  renderJewels();
+}
+
+function renderJewels() {
+  const target = el("jewels-body");
+  if (!target) return;
+  const audit = state.current;
+  if (!audit || !audit.project_id) {
+    target.replaceChildren(node("p", "muted", t("jewels.none")));
+    return;
+  }
+  const base = `/api/projects/${encodeURIComponent(audit.project_id)}/crown-jewels`;
+  const jewels = audit.crown_jewels || [];
+  const parts = [node("p", "muted small", repoLabel(audit.repo_url))];
+  if (!jewels.length) {
+    parts.push(node("p", "muted", t("jewels.empty")));
+  } else {
+    parts.push(table(
+      [{ text: t("jewels.kind") }, { text: t("jewels.target") }, { text: "" }, { text: "" }],
+      jewels.map((j) => row([
+        t(`jewel.${j.kind}`), j.target,
+        node("span", "muted small", t(`jewels.by.${j.declared_by}`)),
+        (() => {
+          const b = button(t("jewels.remove"), "link", () =>
+            jewelRequest(`${base}/${j.id}`, { method: "DELETE" }));
+          b.setAttribute("aria-label", t("jewels.removelabel", t(`jewel.${j.kind}`)));
+          return b;
+        })(),
+      ]))));
+  }
+  const form = node("form", "filters jewel-form");
+  form.append(
+    select("jewel-kind", t("jewels.kind"), JEWELS, JEWELS[0], (j) => t(`jewel.${j}`), () => {}));
+  const field = node("div", "field");
+  const label = node("label", null, t("jewels.target"));
+  label.htmlFor = "jewel-target";
+  const input = document.createElement("input");
+  input.id = "jewel-target";
+  input.type = "text";
+  input.maxLength = 512;
+  input.required = true;
+  field.append(label, input);
+  const submit = node("button", null, t("jewels.add"));
+  submit.type = "submit";
+  form.append(field, submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    jewelRequest(base, { method: "POST", headers: { "Content-Type": "application/json" },
+                         body: JSON.stringify({ kind: form.querySelector("select").value,
+                                                target: input.value }) });
+  });
+  parts.push(form);
+  target.replaceChildren(...parts);
 }
 
 // ---------------------------------------------------------------------------

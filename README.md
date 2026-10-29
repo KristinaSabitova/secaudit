@@ -475,6 +475,30 @@ MCP servers (and whether they are approved in advance), and instruction files.
 Combinations that make a complete path — reading files, reaching the network,
 and something that runs without anyone asking — are reported as that path.
 
+**The attacker's view.** Findings stop being a list with a severity each. The
+capabilities an attacker can hold — sending requests, holding an account,
+running code, reading a secret, getting a change merged, steering an agent,
+publishing a release — are the nodes of a graph, and the edges between them
+are what makes each step possible: findings shown to hold (reachable or
+corroborated; inconclusive ones become dashed, tentative edges), divergences
+from the parallax, weakly watched high-leverage files and the agent surface.
+Each edge has a cost (steps, privileges, a victim's action, whether it leaves
+a trace) and an explanation: what the attacker would see, why it works (CWE
+and MITRE ATT&CK technique), what it needs (the hypothesis's preconditions)
+and what it gains. Paths are described, never armed: no exploit, no payload.
+
+From five profiles — `anonymous`, `authenticated_user`,
+`malicious_contributor`, `compromised_dependency`, `manipulated_agent` — the
+cheapest path to each **crown jewel** is found (Dijkstra). Crown jewels are
+suggested from what the repository shows (secrets always; user data, a
+deployment, administration when there is evidence) and can be declared or
+turned down in the settings (`/api/projects/{id}/crown-jewels`). A finding's
+**contextual severity** is the severity of the cheapest path it enables, so
+three low findings that chain into a critical path are critical. The **minimum
+cut** is the fix that leaves the most profile–jewel pairs with no path at all,
+recomputed without it so a mere detour is not counted; tentative edges never
+count. No model is asked: this module costs no tokens.
+
 ### How the code reaches the model
 
 No backend opens files itself, so the repository is sent as text, line-numbered

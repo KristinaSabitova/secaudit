@@ -1464,3 +1464,108 @@ tr.fragile td:first-child {
 .agent-steps li {
   margin: 0 0 0.5em;
 }
+
+/* --------------------------------------------------------------- attacker */
+
+.cut-list {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.cut-list li {
+  margin: 0 0 0.6em;
+}
+
+.cut-first > span:first-child {
+  font-weight: 600;
+}
+
+.attack-chain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.attack-step {
+  position: relative;
+  margin: 0 0 0 0.6em;
+  padding: 0.2em 0 1em 1.4em;
+  border-left: 2px solid var(--line-strong);
+}
+
+.attack-step::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 0.45em;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+.attack-start::before {
+  background: var(--panel);
+  border: 2px solid var(--accent);
+  width: 8px;
+  height: 8px;
+}
+
+.attack-step:last-child {
+  border-left-color: transparent;
+}
+
+.attack-step:last-child::before {
+  background: var(--sev-critical);
+}
+
+/* Inconclusive: a dashed step, never mistaken for a proved one. */
+.attack-step.tentative {
+  border-left-style: dashed;
+}
+
+.attack-step.tentative::before {
+  background: var(--panel);
+  border: 2px dashed var(--accent);
+  width: 8px;
+  height: 8px;
+}
+
+.attack-step.implied .attack-gain {
+  font-weight: 500;
+}
+
+.attack-step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5em;
+  margin-bottom: 0.3em;
+}
+
+.attack-gain {
+  font-weight: 600;
+}
+
+.attack-path-head {
+  margin: 0.4em 0 1em;
+}
+
+.matrix-cell {
+  white-space: nowrap;
+}
+
+.matrix-cell.tentative {
+  text-decoration-style: dashed;
+}
+
+.matrix-cell[aria-current="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.jewel-form {
+  margin-top: 0.8em;
+  align-items: flex-end;
+}

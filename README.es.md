@@ -485,6 +485,32 @@ instrucciones. Las combinaciones que forman un camino completo —leer
 ficheros, llegar a la red y algo que se ejecuta sin que nadie lo pida— se
 informan como ese camino.
 
+**La mirada del atacante.** Los hallazgos dejan de ser una lista con una
+severidad cada uno. Las capacidades que puede tener un atacante —enviar
+peticiones, tener una cuenta, ejecutar código, leer un secreto, conseguir que
+le fusionen un cambio, dirigir un agente, publicar una versión— son los nodos
+de un grafo, y las aristas son lo que hace posible cada paso: hallazgos
+demostrados (alcanzables o corroborados; los no concluyentes son aristas
+discontinuas, provisionales), divergencias del paralaje, ficheros de mucha
+palanca poco vigilados y la superficie de agentes. Cada arista tiene un coste
+(pasos, privilegios, una acción de la víctima, si deja rastro) y una
+explicación: qué vería el atacante, por qué funciona (CWE y técnica de MITRE
+ATT&CK), qué necesita (las precondiciones de la hipótesis) y qué gana. Los
+caminos se describen, no se arman: ni exploits ni payloads.
+
+Desde cinco perfiles —`anonymous`, `authenticated_user`,
+`malicious_contributor`, `compromised_dependency`, `manipulated_agent`— se
+busca el camino más barato a cada **joya de la corona** (Dijkstra). Las joyas
+se sugieren a partir de lo que muestra el repositorio (los secretos siempre;
+datos de usuarios, un despliegue o la administración cuando hay evidencia) y
+se pueden declarar o descartar en los ajustes
+(`/api/projects/{id}/crown-jewels`). La **severidad contextual** de un
+hallazgo es la del camino más barato que habilita, así que tres hallazgos de
+severidad baja que se encadenan en un camino crítico son críticos. El **corte
+mínimo** es el arreglo que deja más pares perfil–joya sin ningún camino,
+recalculado sin él para no contar un simple rodeo; las aristas provisionales
+nunca cuentan. No se pregunta a ningún modelo: este módulo no gasta tokens.
+
 ### Cómo llega el código al modelo
 
 Ningún backend abre ficheros por su cuenta, así que el repositorio se envía
