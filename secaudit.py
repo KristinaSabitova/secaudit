@@ -51,7 +51,7 @@ from pathlib import Path, PurePosixPath
 # The deterministic half of the audit lives next to this file. Run as a script,
 # this file's directory is already on sys.path; imported, it may not be.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analysis import chunking, evidence, falsify  # noqa: E402
+from analysis import canary, chunking, evidence, falsify  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Finding schema
@@ -1331,6 +1331,9 @@ def audit_repository(project: Path, backend: "AuditBackend", base_prompt: str,
         "manifest": plan.manifest(),
         "usage": usage,
         "server_config_present": not notices,
+        # For the canary request, which repeats one of these with decoys in it.
+        "plan": plan,
+        "notices": notices,
     }
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1473,82 @@ def devils_advocate(project: Path, backend: "AuditBackend", findings: list[dict]
                           for c in cites[:8] if isinstance(c, dict)],
         }
     return usage
+
+# ---------------------------------------------------------------------------
+# Canaries: the auditor's integrity (module 1)
+# ---------------------------------------------------------------------------
+
+def canaries_from(config: dict | None) -> int:
+    """How many decoys an audit may plant; 0 turns the check off."""
+    value = (config or {}).get("canaries")
+    if value is None:
+        value = os.environ.get("SECAUDIT_CANARIES")
+    try:
+        return max(0, int(value)) if value not in (None, "") else canary.DEFAULT_CANARIES
+    except (TypeError, ValueError):
+        return canary.DEFAULT_CANARIES
+
+
+def canary_check(project: Path, backend: "AuditBackend", base_prompt: str,
+                 plan, notices,
+                 timeout: int = 3600, limit: int = canary.DEFAULT_CANARIES,
+                 rng=None) -> dict:
+    """Repeat one request of the audit with decoys planted in it.
+
+    The request is chosen at random among those that carried a whole Python or
+    JavaScript file, and rendered exactly as the auditor saw it, with the
+    decoys added to a copy of its files in memory. The checkout is never
+    touched. The answer is read only to count the decoys found, then dropped:
+    nothing of it becomes a finding.
+    """
+    import random
+    from dataclasses import replace
+
+    rng = rng or random.SystemRandom()
+    out = {"planted": 0, "found": 0, "integrity_score": None, "decoys": [],
+           "usage": {"input_tokens": 0, "output_tokens": 0}, "error": None}
+    if limit <= 0:
+        out["skipped"] = "turned off (SECAUDIT_CANARIES=0)"
+        return out
+    eligible = [c for c in plan.chunks if not c.failed and any(
+        canary.language(s.entry.path) and not s.partial for s in c.segments)]
+    if not eligible:
+        out["skipped"] = ("no request carried a whole Python or JavaScript file "
+                          "to plant a decoy in")
+        return out
+    chunk = rng.choice(eligible)
+    whole = {s.entry.path: s.entry.text for s in chunk.segments
+             if canary.language(s.entry.path) and not s.partial}
+    count = rng.randint(min(canary.MIN_CANARIES, limit), limit)
+    planted, decoys = canary.plant_all(whole, count, rng)
+    segments = []
+    for s in chunk.segments:
+        if s.entry.path in planted:
+            text = planted[s.entry.path]
+            total = len(text.splitlines())
+            entry = replace(s.entry, text=text)
+            s = chunking.Segment(entry, 1, total, total, text)
+        segments.append(s)
+    prompt = chunking.render_chunk(plan, chunking.Chunk(chunk.index, segments),
+                                   base_prompt, notices)
+    out["request"] = chunk.index
+    print(f"[*] canaries: {len(decoys)} decoy(s) in part {chunk.index}",
+          file=sys.stderr)
+    backend.last_usage = None
+    try:
+        output = backend.run(project, prompt, timeout=timeout)
+    except SystemExit as e:
+        # The audit is done; what is lost is the measure of it, not the result.
+        out["error"] = str(e.code or "the backend aborted")[:200]
+        return out
+    for key in ("input_tokens", "output_tokens"):
+        out["usage"][key] += int((backend.last_usage or {}).get(key) or 0)
+    parsed = extract_json_findings(output)
+    if parsed is _PARSE_FAILED:
+        out["error"] = "the answer was not a JSON array"
+        return out
+    out.update(canary.score(decoys, parsed))
+    return out
 
 # ---------------------------------------------------------------------------
 # Display helpers

@@ -46,6 +46,7 @@ def clean_backend_env(monkeypatch):
     """Keep the developer's own backend config out of the tests."""
     for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
+                 "SECAUDIT_CANARIES",
                  web_auth.ADMIN_LOGIN_ENV, web_auth.ALLOWED_LOGINS_ENV,
                  web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
                  web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV,
@@ -59,6 +60,9 @@ def clean_backend_env(monkeypatch):
     # The tests clone local repositories, which production never does.
     # TestCloneHardening checks that file:// is refused by default.
     monkeypatch.setattr(web_gitclone, "ALLOWED_PROTOCOLS", ("https", "file"))
+    # The published view asks PyPI and npm; no test reaches the network.
+    # tests/test_parallax.py hands it a registry of its own.
+    monkeypatch.setenv("SECAUDIT_PUBLISHED_CHECK", "0")
 
 
 FAKE_FINDINGS = [
@@ -2070,6 +2074,9 @@ class TestFalsifiability:
         backend = DevilBackend(findings, list(verdicts))
         monkeypatch.setattr(web_engine.engine, "select_backend",
                             lambda flag, config=None: backend)
+        # The canary request has its own tests (TestParallax); here it would
+        # only be one more prompt to tell apart from the devil's.
+        monkeypatch.setenv("SECAUDIT_CANARIES", "0")
         audit_id = client.post("/api/audits", json={
             "repo_url": "https://github.com/acme/sample"}).json()["id"]
         return client.get(f"/api/audits/{audit_id}").json(), backend
@@ -2428,9 +2435,10 @@ class TestAuditLanguage:
         client.post("/api/audits", json={
             "repo_url": "https://github.com/acme/sample", "language": "es",
         })
-        assert len(backend_prompts) == 1
+        # The audit, and the same request again with the canaries in it.
+        assert len(backend_prompts) == 2
+        assert all("Spanish (castellano)" in p for p in backend_prompts)
         prompt = backend_prompts[0]
-        assert "Spanish (castellano)" in prompt
         # Only the prose is translated; the evidence is quoted as it is.
         assert "code_snippet" in prompt
         assert "never translated" in prompt

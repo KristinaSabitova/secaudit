@@ -45,7 +45,7 @@ _ENV_ALLOWLIST = (
     # left unset.
     "SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
     "SECAUDIT_CONTEXT_CHARS", "SECAUDIT_MAX_OUTPUT_TOKENS", "SECAUDIT_TIMEOUT",
-    "SECAUDIT_MAX_CHUNKS", "SECAUDIT_MAX_REFUTATIONS",
+    "SECAUDIT_MAX_CHUNKS", "SECAUDIT_MAX_REFUTATIONS", "SECAUDIT_CANARIES",
 )
 
 # Every backend option the CLI reads from its config file must also be
@@ -62,6 +62,8 @@ _ENV_CONFIG = {
     "SECAUDIT_MAX_CHUNKS": "max_chunks",
     # How many findings the devil's advocate argues against: one extra request.
     "SECAUDIT_MAX_REFUTATIONS": "max_refutations",
+    # How many decoys measure the auditor's integrity: one extra request.
+    "SECAUDIT_CANARIES": "canaries",
 }
 
 
@@ -119,7 +121,9 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
     Everything else goes through run_audit(), which isolates the credentials.
     Returns the findings with the coverage, the manifest of what each request
     carried, and the tokens spent — the audit's and, apart, the devil's
-    advocate's, whose arguments travel attached to the findings they target.
+    advocate's, whose arguments travel attached to the findings they target —
+    and how many planted decoys the auditor found. The decoys' findings never
+    leave this function.
     """
     language = config.get("language") or engine.LANGUAGES[0]
     try:
@@ -144,9 +148,13 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
     refutation = engine.devils_advocate(
         project, backend, findings, language, timeout,
         engine.max_refutations_from(config))
+    canaries = engine.canary_check(project, backend, prompt, result["plan"],
+                                   result["notices"], timeout,
+                                   engine.canaries_from(config))
     return {
         "findings": findings,
         "refutation_usage": refutation,
+        "canary": canaries,
         "coverage": result["coverage"],
         "coverage_summary": result["coverage_summary"],
         "manifest": result["manifest"],
