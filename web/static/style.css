@@ -1333,3 +1333,134 @@ tr.current td:first-child {
     scroll-behavior: auto !important;
   }
 }
+
+/* --------------------------------------------------------------- leverage */
+
+.chart {
+  position: relative;
+  max-width: 720px;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart-tick,
+.chart-axis,
+.chart-label,
+.chart-zone-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.chart-axis {
+  fill: var(--text);
+  font-size: 12px;
+}
+
+.chart-label {
+  fill: var(--text);
+}
+
+.chart-zone {
+  fill: var(--sev-high);
+  opacity: 0.08;
+}
+
+.chart-zone-label {
+  fill: var(--sev-high);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chart-mark {
+  fill: var(--accent);
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+
+.chart-hit {
+  fill: transparent;
+}
+
+.chart-dot {
+  cursor: pointer;
+}
+
+.chart-dot:hover .chart-mark {
+  stroke: var(--text);
+}
+
+.chart-tip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 14px));
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  box-shadow: var(--shadow);
+  padding: 0.4em 0.6em;
+  font-size: 0.85em;
+  pointer-events: none;
+  max-width: 320px;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+[data-leverage] {
+  overflow-wrap: normal;
+  word-break: keep-all;
+  text-align: left;
+}
+
+tr.fragile td:first-child {
+  box-shadow: inset 3px 0 0 var(--sev-high);
+}
+
+.reasons {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1em;
+}
+
+.reasons li {
+  display: flex;
+  gap: 0.5em;
+  padding: 0.2em 0;
+}
+
+.reason-delta {
+  font-variant-numeric: tabular-nums;
+  min-width: 3.2em;
+  color: var(--muted);
+}
+
+.reason-minus .reason-delta {
+  color: var(--sev-high);
+}
+
+.agent-path {
+  border-left: 3px solid var(--sev-high);
+  padding: 0.2em 0 0.2em 0.8em;
+  margin: 0 0 1em;
+}
+
+.agent-path-title {
+  margin: 0 0 0.4em;
+}
+
+.agent-steps {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.agent-steps li {
+  margin: 0 0 0.5em;
+}

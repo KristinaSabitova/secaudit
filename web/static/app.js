@@ -370,7 +370,85 @@ const TEXT = {
     "leverage.question": "Which files give the most power over the system with the least oversight?",
     "leverage.what": "A map of every file by leverage against oversight, and " +
       "what each agent configuration lets an agent do.",
-    "leverage.phase": "Arrives in phase 7.",
+    "leverage.notrun": "The leverage map did not run for this audit: it predates the module.",
+    "leverage.failed": "The leverage map failed for this audit; the findings stand without it.",
+    "leverage.map": "leverage against oversight",
+    "leverage.mapintro": "Each dot is a file. Further right, more damage a malicious " +
+      "change there could do; lower, less review it gets. The shaded corner is " +
+      "what to look at first.",
+    "leverage.zone": "much leverage, little oversight",
+    "leverage.axisx": "leverage",
+    "leverage.axisy": "oversight",
+    "leverage.files": "files, most exposed first",
+    "leverage.filesintro": "Ordered by leverage × (1 − oversight).",
+    "leverage.file": "file",
+    "leverage.leverage": "leverage",
+    "leverage.oversight": "oversight",
+    "leverage.priority": "exposure",
+    "leverage.why": "why",
+    "leverage.showall": (n) => `show all ${n}`,
+    "leverage.leftout": (n) => `${n} more files of little leverage are not listed.`,
+    "leverage.nogithub": "Without SECAUDIT_GITHUB_TOKEN on this server, approvals and " +
+      "branch protection are not known: oversight counts only CODEOWNERS and history.",
+    "leverage.githuberror": (e) => `GitHub could not be asked: ${e}. What only it knows is reported as unknown.`,
+    "leverage.githubok": (n) => `Asked GitHub (read-only, ${n} requests).`,
+    "leverage.shallow": (n) => `Read from the last ${n} commits: changes before them are not seen.`,
+    "leverage.codeowners": (f) => `CODEOWNERS: ${f}`,
+    "leverage.nocodeowners": "The repository has no CODEOWNERS.",
+    "leverage.leverageside": "leverage",
+    "leverage.oversightside": "oversight",
+    "leverage.lastcommit": "last change",
+    "agent.title": "agent surface",
+    "agent.intro": "What an AI agent opening this repository would inherit. A " +
+      "combination that makes a complete path is shown as that path.",
+    "agent.none": "No agent configuration: an agent opening it inherits nothing from it.",
+    "agent.nocombo": "No combination makes a complete path.",
+    "agent.source": "from",
+    "agent.capability": "capability",
+    "agent.detail": "what",
+    "agent.unattended": "without anyone asking",
+    "combo.exfiltration": "read files and send them out",
+    "combo.steered_tools": "instructions that steer the agent's tools",
+    "cap.reads_files": "reads files",
+    "cap.network": "reaches the network",
+    "cap.executes": "runs commands",
+    "cap.runs_on_start": "runs on its own",
+    "cap.mcp_server": "MCP server",
+    "cap.instructions": "instructions",
+    "reason.codeowners_file": "decides who must review everything else",
+    "reason.ci_workflow": "a CI workflow: runs with the repository's permissions",
+    "reason.ci_deploy": "deploys, releases or publishes",
+    "reason.ci_secrets": "uses repository secrets",
+    "reason.ci_pr_target": "runs on pull_request_target: other people's pull requests get the secrets",
+    "reason.ci_write_perms": "can write to the repository or its packages",
+    "reason.install_script": "runs on install or commit, on every developer's machine",
+    "reason.container": "builds or runs the containers",
+    "reason.lockfile": "decides which dependency code is installed",
+    "reason.env_file": "an environment file: configuration and secrets",
+    "reason.auto_execution": "runs on install, build, checkout or CI",
+    "reason.agent_config": "read by AI agents as instructions or configuration",
+    "reason.entry_point": "where outside input arrives",
+    "reason.auth": "authentication, authorization or secrets",
+    "reason.code": "application code",
+    "reason.tests_docs": "tests, documentation or data",
+    "reason.finding": (a) => `${a.count} finding(s) shown to hold`,
+    "reason.divergence": (a) => `a divergence: ${t(`kind.${a.kind}`)}`,
+    "reason.attack_path": "on an attack path",
+    "reason.run_by": (a) => `run by ${a.by}, which runs on its own`,
+    "reason.owner": (a) => `owned by ${(a.owners || []).join(", ")} in CODEOWNERS`,
+    "reason.owners_removed": (a) => `CODEOWNERS removes its owners (${a.pattern})`,
+    "reason.no_owner": "no owner in CODEOWNERS",
+    "reason.no_codeowners": "no CODEOWNERS in the repository",
+    "reason.approved": (a) => `${a.of === 1 ? "its last change" : `${a.count} of its last ${a.of} changes`} came through an approved pull request`,
+    "reason.pr_unapproved": (a) => `${a.of === 1 ? "its last change" : `${a.count} of its last ${a.of} changes`} came through a pull request nobody else approved`,
+    "reason.pr_approval_unknown": (a) => `${a.of === 1 ? "its last change" : `${a.count} of its last ${a.of} changes`} came through a pull request; whether it was approved is not known`,
+    "reason.direct": (a) => `${a.of === 1 ? "its last change" : `${a.count} of its last ${a.of} changes`} went in without a pull request`,
+    "reason.ai_unreviewed": "its last change declares AI participation and was not reviewed",
+    "reason.old": "not changed in the history that was read",
+    "reason.protected_reviews": (a) => `${a.branch} requires ${a.count} approving review(s)`,
+    "reason.protected": (a) => `${a.branch} is protected, without required reviews`,
+    "reason.unprotected": (a) => `${a.branch} is not protected`,
+    "reason.protection_unknown": "branch protection not known",
     "attacker.question": "How far does each kind of attacker get, and which fix stops them first?",
     "attacker.what": "Choose a profile and a crown jewel to see the path " +
       "between them, step by step, with the evidence for each step.",
@@ -726,7 +804,85 @@ const TEXT = {
     "leverage.question": "¿Qué ficheros dan más poder sobre el sistema con menos vigilancia?",
     "leverage.what": "Un mapa de todos los ficheros según su palanca frente a " +
       "su vigilancia, y lo que cada configuración de agente le permite hacer.",
-    "leverage.phase": "Llega en la fase 7.",
+    "leverage.notrun": "El mapa de palanca no se ejecutó en esta auditoría: es anterior al módulo.",
+    "leverage.failed": "El mapa de palanca falló en esta auditoría; los hallazgos siguen en pie sin él.",
+    "leverage.map": "palanca frente a vigilancia",
+    "leverage.mapintro": "Cada punto es un fichero. Más a la derecha, más daño haría " +
+      "un cambio malicioso ahí; más abajo, menos revisión recibe. La esquina " +
+      "sombreada es lo primero que mirar.",
+    "leverage.zone": "mucha palanca, poca vigilancia",
+    "leverage.axisx": "palanca",
+    "leverage.axisy": "vigilancia",
+    "leverage.files": "ficheros, los más expuestos primero",
+    "leverage.filesintro": "Ordenados por palanca × (1 − vigilancia).",
+    "leverage.file": "fichero",
+    "leverage.leverage": "palanca",
+    "leverage.oversight": "vigilancia",
+    "leverage.priority": "exposición",
+    "leverage.why": "por qué",
+    "leverage.showall": (n) => `ver los ${n}`,
+    "leverage.leftout": (n) => `No se listan ${n} ficheros más de poca palanca.`,
+    "leverage.nogithub": "Sin SECAUDIT_GITHUB_TOKEN en este servidor no se sabe de " +
+      "aprobaciones ni de protección de rama: la vigilancia solo cuenta CODEOWNERS y la historia.",
+    "leverage.githuberror": (e) => `No se pudo preguntar a GitHub: ${e}. Lo que solo sabe GitHub figura como desconocido.`,
+    "leverage.githubok": (n) => `Consultado GitHub (solo lectura, ${n} peticiones).`,
+    "leverage.shallow": (n) => `Leído de los últimos ${n} commits: los cambios anteriores no se ven.`,
+    "leverage.codeowners": (f) => `CODEOWNERS: ${f}`,
+    "leverage.nocodeowners": "El repositorio no tiene CODEOWNERS.",
+    "leverage.leverageside": "palanca",
+    "leverage.oversightside": "vigilancia",
+    "leverage.lastcommit": "último cambio",
+    "agent.title": "superficie de agentes",
+    "agent.intro": "Lo que heredaría un agente de IA al abrir este repositorio. Una " +
+      "combinación que forma un camino completo se muestra como ese camino.",
+    "agent.none": "No hay configuración de agentes: un agente que lo abra no hereda nada de él.",
+    "agent.nocombo": "Ninguna combinación forma un camino completo.",
+    "agent.source": "de",
+    "agent.capability": "capacidad",
+    "agent.detail": "qué",
+    "agent.unattended": "sin que nadie lo pida",
+    "combo.exfiltration": "leer ficheros y sacarlos fuera",
+    "combo.steered_tools": "instrucciones que dirigen las herramientas del agente",
+    "cap.reads_files": "lee ficheros",
+    "cap.network": "llega a la red",
+    "cap.executes": "ejecuta órdenes",
+    "cap.runs_on_start": "se ejecuta solo",
+    "cap.mcp_server": "servidor MCP",
+    "cap.instructions": "instrucciones",
+    "reason.codeowners_file": "decide quién debe revisar todo lo demás",
+    "reason.ci_workflow": "un workflow de CI: se ejecuta con los permisos del repositorio",
+    "reason.ci_deploy": "despliega, publica o saca versiones",
+    "reason.ci_secrets": "usa secretos del repositorio",
+    "reason.ci_pr_target": "corre con pull_request_target: los PR de otros reciben los secretos",
+    "reason.ci_write_perms": "puede escribir en el repositorio o en sus paquetes",
+    "reason.install_script": "se ejecuta al instalar o al hacer commit, en la máquina de cada desarrollador",
+    "reason.container": "construye o arranca los contenedores",
+    "reason.lockfile": "decide qué código de dependencias se instala",
+    "reason.env_file": "un fichero de entorno: configuración y secretos",
+    "reason.auto_execution": "se ejecuta al instalar, compilar, hacer checkout o en CI",
+    "reason.agent_config": "lo leen los agentes de IA como instrucciones o configuración",
+    "reason.entry_point": "por donde llega la entrada de fuera",
+    "reason.auth": "autenticación, autorización o secretos",
+    "reason.code": "código de la aplicación",
+    "reason.tests_docs": "tests, documentación o datos",
+    "reason.finding": (a) => `${a.count} hallazgo(s) demostrado(s)`,
+    "reason.divergence": (a) => `una divergencia: ${t(`kind.${a.kind}`)}`,
+    "reason.attack_path": "en un camino de ataque",
+    "reason.run_by": (a) => `lo ejecuta ${a.by}, que se ejecuta solo`,
+    "reason.owner": (a) => `responsable en CODEOWNERS: ${(a.owners || []).join(", ")}`,
+    "reason.owners_removed": (a) => `CODEOWNERS le quita los responsables (${a.pattern})`,
+    "reason.no_owner": "sin responsable en CODEOWNERS",
+    "reason.no_codeowners": "el repositorio no tiene CODEOWNERS",
+    "reason.approved": (a) => a.of === 1 ? "su último cambio entró por un PR aprobado" : `${a.count} de sus ${a.of} últimos cambios entraron por un PR aprobado`,
+    "reason.pr_unapproved": (a) => a.of === 1 ? "su último cambio entró por un PR que nadie más aprobó" : `${a.count} de sus ${a.of} últimos cambios entraron por un PR que nadie más aprobó`,
+    "reason.pr_approval_unknown": (a) => a.of === 1 ? "su último cambio entró por un PR; no se sabe si se aprobó" : `${a.count} de sus ${a.of} últimos cambios entraron por un PR; no se sabe si se aprobó`,
+    "reason.direct": (a) => a.of === 1 ? "su último cambio entró sin PR" : `${a.count} de sus ${a.of} últimos cambios entraron sin PR`,
+    "reason.ai_unreviewed": "su último cambio declara participación de IA y no se revisó",
+    "reason.old": "no ha cambiado en la historia leída",
+    "reason.protected_reviews": (a) => `${a.branch} exige ${a.count} revisión(es) aprobada(s)`,
+    "reason.protected": (a) => `${a.branch} está protegida, sin revisiones obligatorias`,
+    "reason.unprotected": (a) => `${a.branch} no está protegida`,
+    "reason.protection_unknown": "protección de rama desconocida",
     "attacker.question": "¿Hasta dónde llega cada tipo de atacante y qué arreglo lo frena antes?",
     "attacker.what": "Elige un perfil y una joya de la corona para ver el " +
       "camino entre ellos, paso a paso, con la evidencia de cada paso.",
@@ -976,6 +1132,8 @@ const state = {
   expanded: new Set(),     // finding ids whose row is open
   drawerFinding: null,     // finding id shown in the detail panel
   drawerDivergence: null,  // or the divergence id shown there instead
+  drawerFile: null,        // or the path whose leverage is shown there
+  leverageAll: false,
   expandedViews: new Set(), // divergence ids whose views are open in the table
   viewMode: stored("secaudit.views") === "overlay" ? "overlay" : "side",
   drawerOpener: null,      // what gets focus back when the panel closes
@@ -1152,6 +1310,7 @@ function renderSection() {
   else if (state.section === "falsifiability") renderFalsifiability();
   else if (state.section === "parallax") renderParallax();
   else if (state.section === "memory") renderMemory();
+  else if (state.section === "leverage") renderLeverage();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
 }
@@ -2008,6 +2167,7 @@ function renderParallax() {
 
 function openDivergence(id, opener) {
   state.drawerFinding = null;
+  state.drawerFile = null;
   state.drawerDivergence = id;
   for (const r of document.querySelectorAll(".finding-row")) {
     r.setAttribute("aria-selected", "false");
@@ -2054,10 +2214,12 @@ function closeDrawer() {
   if (el("drawer").hidden) return;
   const shown = state.drawerFinding;
   const shownDivergence = state.drawerDivergence;
+  const shownFile = state.drawerFile;
   el("drawer").hidden = true;
   el("app").classList.remove("drawer-open");
   state.drawerFinding = null;
   state.drawerDivergence = null;
+  state.drawerFile = null;
   for (const r of document.querySelectorAll(".finding-row")) {
     r.setAttribute("aria-selected", "false");
   }
@@ -2071,6 +2233,9 @@ function closeDrawer() {
     opener = document.querySelector(
       `[data-divergence="${CSS.escape(String(shownDivergence))}"]`);
   }
+  if ((!opener || !opener.isConnected) && shownFile !== null) {
+    opener = document.querySelector(`[data-leverage="${CSS.escape(shownFile)}"]`);
+  }
   if (opener && opener.isConnected) opener.focus();
   else el("content").focus();
 }
@@ -2083,6 +2248,7 @@ function visibleFinding(id) {
 
 function openFinding(id, opener) {
   state.drawerDivergence = null;
+  state.drawerFile = null;
   state.drawerFinding = id;
   for (const r of document.querySelectorAll(".finding-row")) {
     r.setAttribute("aria-selected", "false");
@@ -2093,6 +2259,10 @@ function openFinding(id, opener) {
 
 // Kept in step with polling: the finding shown is re-read from the latest data.
 function renderDrawerFinding(opener) {
+  if (state.drawerFile !== null) {
+    renderDrawerFile(opener);
+    return;
+  }
   if (state.drawerDivergence !== null) {
     renderDrawerDivergence(opener);
     return;
@@ -2256,6 +2426,286 @@ function renderMemory() {
   target.replaceChildren(...parts);
   for (const s of target.querySelectorAll("details > summary")) {
     if (open.has(s.textContent)) s.parentElement.open = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// leverage map (module 4)
+// ---------------------------------------------------------------------------
+
+const FRAGILE_LEVERAGE = 0.7;
+const FRAGILE_OVERSIGHT = 0.3;
+const SHOWN_FILES = 30;
+
+function reasonText(r) {
+  const value = t(`reason.${r.code}`, r.args || {});
+  return value === `reason.${r.code}` ? r.code : value;
+}
+
+// The reasons that explain the score, the ones that hurt first.
+function headline(entry) {
+  const lev = entry.reasons.filter((r) => r.side === "leverage")
+    .sort((a, b) => (b.delta || 0) - (a.delta || 0));
+  const lacks = entry.reasons.filter((r) => r.side === "oversight" && !(r.delta > 0)
+                                      && r.code !== "protection_unknown");
+  return [lev[0], ...lacks].filter(Boolean).map(reasonText).join("; ");
+}
+
+function score(value) {
+  return Number(value).toFixed(2);
+}
+
+function openLeverage(file, opener) {
+  state.drawerFinding = null;
+  state.drawerDivergence = null;
+  state.drawerFile = file;
+  for (const r of document.querySelectorAll(".finding-row")) {
+    r.setAttribute("aria-selected", "false");
+  }
+  const tr = opener && opener.closest("tr");
+  if (tr) tr.setAttribute("aria-selected", "true");
+  renderDrawerFinding(opener);
+}
+
+function reasonList(reasons) {
+  const ul = node("ul", "reasons");
+  for (const r of reasons) {
+    const li = node("li", r.delta < 0 ? "reason-minus" : r.delta > 0 ? "reason-plus" : "reason-none");
+    li.append(node("span", "reason-delta", r.delta ? `${r.delta > 0 ? "+" : "−"}${score(Math.abs(r.delta))}` : "·"),
+              " ", reasonText(r));
+    ul.append(li);
+  }
+  return ul;
+}
+
+function renderDrawerFile(opener) {
+  const entry = state.current && (state.current.leverage || [])
+    .find((x) => x.file === state.drawerFile);
+  if (!entry) {
+    closeDrawer();
+    return;
+  }
+  const content = document.createDocumentFragment();
+  content.append(facts([
+    [t("leverage.leverage"), score(entry.leverage)],
+    [t("leverage.oversight"), score(entry.oversight)],
+    [t("leverage.priority"), score(entry.priority)],
+    [t("leverage.lastcommit"), commitNode(entry.last_commit)],
+  ]));
+  content.append(node("h3", null, t("leverage.leverageside")),
+                 reasonList(entry.reasons.filter((r) => r.side === "leverage")),
+                 node("h3", null, t("leverage.oversightside")),
+                 reasonList(entry.reasons.filter((r) => r.side === "oversight")));
+  openDrawer(entry.file, content, opener);
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs, text) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+// Leverage on x, oversight on y, one dot per file. The table below is the
+// same data as text, so nothing here is reachable only by pointer.
+function leverageChart(files) {
+  const W = 640, H = 360, M = { top: 16, right: 24, bottom: 44, left: 52 };
+  // A little room past 0 and 1, so the dots on the edges are whole.
+  const PAD = 0.04;
+  const x = (v) => M.left + ((v + PAD) / (1 + 2 * PAD)) * (W - M.left - M.right);
+  const y = (v) => H - M.bottom - ((v + PAD) / (1 + 2 * PAD)) * (H - M.top - M.bottom);
+  const wrap = node("div", "chart");
+  const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+                             "aria-label": t("leverage.map") });
+  chart.append(svg("rect", { class: "chart-zone", x: x(FRAGILE_LEVERAGE), y: y(FRAGILE_OVERSIGHT),
+                             width: x(1 + PAD) - x(FRAGILE_LEVERAGE),
+                             height: y(-PAD) - y(FRAGILE_OVERSIGHT) }));
+  chart.append(svg("text", { class: "chart-zone-label", x: x(1 + PAD) - 4,
+                             y: y(FRAGILE_OVERSIGHT) + 13, "text-anchor": "end" },
+                   t("leverage.zone")));
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    chart.append(svg("line", { class: "chart-grid", x1: x(0), x2: x(1), y1: y(v), y2: y(v) }),
+                 svg("text", { class: "chart-tick", x: M.left - 8, y: y(v) + 4,
+                               "text-anchor": "end" }, v.toFixed(2)),
+                 svg("text", { class: "chart-tick", x: x(v), y: H - M.bottom + 18,
+                               "text-anchor": "middle" }, v.toFixed(2)));
+  }
+  chart.append(svg("text", { class: "chart-axis", x: x(0.5), y: H - 6, "text-anchor": "middle" },
+                   `${t("leverage.axisx")} →`),
+               svg("text", { class: "chart-axis", x: 14, y: y(0.5), "text-anchor": "middle",
+                             transform: `rotate(-90 14 ${y(0.5)})` }, `${t("leverage.axisy")} →`));
+  const tip = node("div", "chart-tip");
+  tip.hidden = true;
+  // Files that land on the same spot are drawn once, and listed together.
+  const spots = new Map();
+  for (const f of files) {
+    const key = `${f.leverage.toFixed(2)}|${f.oversight.toFixed(2)}`;
+    if (!spots.has(key)) spots.set(key, []);
+    spots.get(key).push(f);
+  }
+  const labelled = new Set(files.slice(0, 3).map((f) => f.file));
+  const placed = [];          // label boxes already drawn, to keep them apart
+  for (const group of spots.values()) {
+    const f = group[0];
+    const g = svg("g", { class: "chart-dot" });
+    g.append(svg("circle", { class: "chart-hit", cx: x(f.leverage), cy: y(f.oversight), r: 12 }),
+             svg("circle", { class: "chart-mark", cx: x(f.leverage), cy: y(f.oversight),
+                             r: Math.min(9, 4 + group.length) }));
+    const show = () => {
+      tip.replaceChildren(
+        ...group.slice(0, 6).map((e) => node("div", "where", e.file)),
+        ...(group.length > 6 ? [node("div", "muted", `+${group.length - 6}`)] : []),
+        node("div", "muted", `${t("leverage.leverage")} ${score(f.leverage)} · ` +
+                             `${t("leverage.oversight")} ${score(f.oversight)}`));
+      tip.style.left = `${(x(f.leverage) / W) * 100}%`;
+      tip.style.top = `${(y(f.oversight) / H) * 100}%`;
+      tip.hidden = false;
+    };
+    g.addEventListener("mouseenter", show);
+    g.addEventListener("mouseleave", () => { tip.hidden = true; });
+    g.addEventListener("click", () => {
+      const row = document.querySelector(`[data-leverage="${CSS.escape(f.file)}"]`);
+      openLeverage(f.file, row);
+    });
+    chart.append(g);
+    const named = group.find((e) => labelled.has(e.file));
+    if (named) {
+      const text = named.file.split("/").pop() + (group.length > 1 ? ` +${group.length - 1}` : "");
+      const width = text.length * 6.2;
+      const right = f.leverage < 0.6;
+      const left = right ? x(f.leverage) + 12 : x(f.leverage) - 12 - width;
+      let top = y(f.oversight) - 22;
+      while (placed.some((b) => left < b.left + b.width && b.left < left + width
+                                && top < b.top + 14 && b.top < top + 14)) {
+        top -= 15;
+      }
+      placed.push({ left, top, width });
+      chart.append(svg("text", { class: "chart-label", x: left, y: top + 11 }, text));
+    }
+  }
+  wrap.append(chart, tip);
+  return wrap;
+}
+
+function leverageTable(files, run) {
+  const shown = state.leverageAll ? files : files.slice(0, SHOWN_FILES);
+  const section = block(t("leverage.files"), node("p", "muted", t("leverage.filesintro")));
+  section.append(table(
+    [{ text: t("leverage.file") }, { text: t("leverage.leverage"), className: "num" },
+     { text: t("leverage.oversight"), className: "num" },
+     { text: t("leverage.priority"), className: "num" },
+     { text: t("leverage.why"), className: "hide-narrow" }],
+    shown.map((f) => {
+      // Long paths break at their slashes, not in the middle of a name.
+      const name = button("", "link where");
+      f.file.split("/").forEach((part, i, parts) => {
+        name.append(part + (i < parts.length - 1 ? "/" : ""));
+        if (i < parts.length - 1) name.append(document.createElement("wbr"));
+      });
+      name.dataset.leverage = f.file;
+      name.addEventListener("click", () => openLeverage(f.file, name));
+      const r = row([
+        name,
+        { className: "num", content: score(f.leverage) },
+        { className: "num", content: score(f.oversight) },
+        { className: "num", content: score(f.priority) },
+        { className: "hide-narrow small", content: headline(f) },
+      ], `finding-row${f.leverage >= FRAGILE_LEVERAGE && f.oversight < FRAGILE_OVERSIGHT
+                       ? " fragile" : ""}`);
+      r.setAttribute("aria-selected", String(state.drawerFile === f.file));
+      return r;
+    })));
+  if (files.length > shown.length) {
+    section.append(button(t("leverage.showall", files.length), "link", () => {
+      state.leverageAll = true;
+      renderLeverage();
+    }));
+  }
+  const left = (run.detail || {}).left_out;
+  if (left) section.append(node("p", "muted small", t("leverage.leftout", left)));
+  return section;
+}
+
+function agentBlock(audit, run) {
+  const caps = audit.agent_capabilities || [];
+  const byId = new Map(caps.map((c) => [c.id, c]));
+  const section = block(t("agent.title"), node("p", "muted", t("agent.intro")));
+  if (!caps.length) {
+    section.append(node("p", "muted", t("agent.none")));
+    return section;
+  }
+  const combos = (run.detail || {}).combinations || [];
+  if (!combos.length) section.append(node("p", "muted", t("agent.nocombo")));
+  for (const combo of combos) {
+    const path = node("div", "agent-path");
+    const head = node("p", "agent-path-title");
+    head.append(severityNode(combo.severity), " ", t(`combo.${combo.kind}`));
+    if (combo.unattended) head.append(" · ", node("strong", null, t("agent.unattended")));
+    const steps = node("ol", "agent-steps");
+    for (const id of combo.steps) {
+      const c = byId.get(id);
+      if (!c) continue;
+      const li = node("li");
+      li.append(node("span", "badge", t(`cap.${c.capability}`)), " ",
+                node("span", "where", c.source_file), node("div", "small", c.detail));
+      steps.append(li);
+    }
+    path.append(head, steps);
+    section.append(path);
+  }
+  section.append(table(
+    [{ text: t("agent.capability") }, { text: t("agent.source") },
+     { text: t("agent.detail"), className: "hide-narrow" }],
+    caps.map((c) => row([
+      node("span", "badge", t(`cap.${c.capability}`)),
+      { className: "where", content: c.source_file },
+      { className: "hide-narrow small", content: c.detail },
+    ]))));
+  return section;
+}
+
+function leverageNotes(run) {
+  const d = run.detail || {};
+  const notes = node("div", "notes");
+  const gh = d.github || {};
+  if (gh.error) notes.append(node("p", "note", t("leverage.githuberror", gh.error)));
+  else if (!gh.token) notes.append(node("p", "muted small", t("leverage.nogithub")));
+  else notes.append(node("p", "muted small", t("leverage.githubok", gh.calls || 0)));
+  notes.append(node("p", "muted small", d.codeowners
+    ? t("leverage.codeowners", d.codeowners) : t("leverage.nocodeowners")));
+  if (d.history && d.history.shallow) {
+    notes.append(node("p", "muted small", t("leverage.shallow", d.history.commits)));
+  }
+  return notes;
+}
+
+function renderLeverage() {
+  const target = el("leverage-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const run = (audit.modules || []).filter((r) => r.module === "leverage").pop();
+  if (!run) {
+    target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("leverage.notrun")));
+    return;
+  }
+  const files = audit.leverage || [];
+  const parts = [];
+  if (run.status === "error") parts.push(node("p", "error", t("leverage.failed")));
+  if (files.length) {
+    parts.push(block(t("leverage.map"), node("p", "muted", t("leverage.mapintro")),
+                     leverageChart(files)),
+               leverageTable(files, run));
+  }
+  parts.push(agentBlock(audit, run), leverageNotes(run));
+  const focused = document.activeElement && target.contains(document.activeElement)
+    ? document.activeElement.dataset.leverage : null;
+  target.replaceChildren(...parts);
+  if (focused) {
+    const again = target.querySelector(`[data-leverage="${CSS.escape(focused)}"]`);
+    if (again) again.focus();
   }
 }
 
