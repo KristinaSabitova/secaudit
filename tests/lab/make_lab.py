@@ -309,7 +309,7 @@ def admin_only(view):
 @app.route("/login", methods=["POST"])
 def login():
     user = db.user_by_name(request.form["user"])
-    if user is None or not check_password(user, request.form["password"]):
+    if not check_password(user, request.form["password"]):
         return {"ok": False}, 401
     session.clear()
     session["user_id"] = user["id"]
@@ -411,6 +411,25 @@ def make_backup(label):
 
 CODEOWNERS_CLEAN = "* @KristinaSabitova\n"
 
+# A missing user costs the same as a wrong password: no timing tells them apart.
+CLEAN_AUTH = '''\
+import hashlib
+import hmac
+
+NOBODY = {"salt": "00" * 16, "password_hash": "00" * 32}
+
+
+def check_password(user, password):
+    record = user or NOBODY
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                 bytes.fromhex(record["salt"]), 200_000)
+    return hmac.compare_digest(digest.hex(), record["password_hash"]) and user is not None
+'''
+
+# Actions pinned by commit, not by a tag that can be moved.
+CLEAN_TESTS_YML = TESTS_YML.replace(
+    "actions/checkout@v4", "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2")
+
 
 # ---------------------------------------------------------------------------
 
@@ -485,8 +504,8 @@ def make_clean(root: Path) -> dict[str, str]:
     shas = {}
     shas["skeleton"] = _commit(root, {
         "README.md": CLEAN_README, "src/__init__.py": "", "src/app.py": CLEAN_APP,
-        "src/db.py": CLEAN_DB, "src/auth.py": AUTH, "src/backup.py": CLEAN_BACKUP,
-        "tests/test_app.py": TEST_APP, ".github/workflows/tests.yml": TESTS_YML,
+        "src/db.py": CLEAN_DB, "src/auth.py": CLEAN_AUTH, "src/backup.py": CLEAN_BACKUP,
+        "tests/test_app.py": TEST_APP, ".github/workflows/tests.yml": CLEAN_TESTS_YML,
         ".github/CODEOWNERS": CODEOWNERS_CLEAN,
     }, "feat: shop with login, search, orders, profile and backups",
         "2026-09-01T10:00:00+02:00")
