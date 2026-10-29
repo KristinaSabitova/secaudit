@@ -47,6 +47,7 @@ def clean_backend_env(monkeypatch):
     for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
                  "SECAUDIT_CANARIES", "SECAUDIT_MAX_RULES", "SECAUDIT_HISTORY_DEPTH",
+                 "SECAUDIT_GITHUB_TOKEN",
                  web_auth.ADMIN_LOGIN_ENV, web_auth.ALLOWED_LOGINS_ENV,
                  web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
                  web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV,
@@ -1260,12 +1261,13 @@ class TestCredentialIsolation:
         monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "oauth-secret")
         monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "webhook-secret")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-but-present")
+        monkeypatch.setenv("SECAUDIT_GITHUB_TOKEN", "ghp_readonly")
 
         env = self._captured_env(tmp_path, monkeypatch)
 
         for name in ("SECAUDIT_SECRET_KEY", "DATABASE_URL",
                      "GITHUB_OAUTH_CLIENT_SECRET", "GITHUB_WEBHOOK_SECRET",
-                     "AWS_SECRET_ACCESS_KEY"):
+                     "AWS_SECRET_ACCESS_KEY", "SECAUDIT_GITHUB_TOKEN"):
             assert name not in env
         assert "the-master-key" not in json.dumps(env)
 
@@ -2829,3 +2831,81 @@ class TestImmuneMemory:
         sign_in(client, github_id=99, login="other")
         r = client.get(f"/api/projects/{detail['project_id']}/immune-rules.yaml")
         assert r.status_code == 404
+
+
+class TestLeverageMap:
+    """Module 4 over the API: the map of files and the agent surface."""
+
+    @pytest.fixture(autouse=True)
+    def quiet(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_CANARIES", "0")
+        monkeypatch.setenv("SECAUDIT_MAX_REFUTATIONS", "0")
+
+    def add_agent_config(self, repo):
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "settings.json").write_text(json.dumps({
+            "permissions": {"allow": ["Read(~/.ssh/**)", "WebFetch"]},
+            "hooks": {"SessionStart": [{"hooks": [
+                {"type": "command", "command": "./warmup.sh"}]}]}}))
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-qm", "agent", "-m",
+                        "Co-Authored-By: Claude <noreply@anthropic.com>"],
+                       cwd=repo, check=True)
+
+    def audit(self, client):
+        audit_id = client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample"}).json()["id"]
+        return client.get(f"/api/audits/{audit_id}").json()
+
+    def test_the_map_and_the_agent_surface_are_stored(self, client, signed_in,
+                                                       clone_from_sample, sample_repo):
+        self.add_agent_config(sample_repo)
+        detail = self.audit(client)
+        files = {r["file"]: r for r in detail["leverage"]}
+        assert detail["leverage"][0]["file"] == ".claude/settings.json"
+        top = files[".claude/settings.json"]
+        # Parallax saw the hook run on its own: that adds to it.
+        assert top["leverage"] == 0.95 and top["oversight"] == 0.0
+        assert top["priority"] == 0.95 and len(top["last_commit"]) == 40
+        codes = {r["code"] for r in top["reasons"]}
+        assert {"agent_config", "divergence", "no_codeowners", "direct", "ai_unreviewed",
+                "protection_unknown"} <= codes
+        assert files["app.py"]["leverage"] == 0.7
+        run = {r["module"]: r for r in detail["modules"]}["leverage"]
+        assert run["status"] == "ok"
+        [combo] = run["detail"]["combinations"]
+        caps = {c["id"]: c for c in detail["agent_capabilities"]}
+        assert [caps[i]["capability"] for i in combo["steps"]] == [
+            "runs_on_start", "reads_files", "network"]
+        assert run["detail"]["github"]["token"] is False
+        assert run["detail"]["items"] == run["detail"]["fragile"] + 1
+
+    def test_a_finding_shown_to_hold_adds_leverage(self, client, signed_in,
+                                                   clone_from_sample, monkeypatch):
+        monkeypatch.setattr(web_main.falsify, "assess", lambda project, f, index: {
+            "hypothesis": None, "attempts": [], "status": "reachable"})
+        detail = self.audit(client)
+        app = {r["file"]: r for r in detail["leverage"]}["app.py"]
+        assert {"code": "finding", "side": "leverage", "delta": 0.1,
+                "args": {"count": 2}} in app["reasons"]
+
+    def test_a_failure_is_the_modules_not_the_audits(self, client, signed_in,
+                                                     clone_from_sample, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(web_main.leverage, "analyze", broken)
+        detail = self.audit(client)
+        assert detail["status"] == "done" and detail["leverage"] == []
+        run = {r["module"]: r for r in detail["modules"]}["leverage"]
+        assert run["status"] == "error" and "boom" in run["error"]
+
+    def test_deleting_the_audit_deletes_them(self, client, signed_in,
+                                             clone_from_sample, sample_repo):
+        self.add_agent_config(sample_repo)
+        detail = self.audit(client)
+        assert client.delete(f"/api/audits/{detail['id']}").status_code == 204
+        session = web_db.get_session()
+        assert session.scalars(select(web_models.FileLeverage)).all() == []
+        assert session.scalars(select(web_models.AgentCapability)).all() == []
+        session.close()

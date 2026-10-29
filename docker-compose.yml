@@ -52,6 +52,8 @@ services:
       SECAUDIT_MAX_RULES: ${SECAUDIT_MAX_RULES:-}
       # History each clone fetches, for provenance and fixes.
       SECAUDIT_HISTORY_DEPTH: ${SECAUDIT_HISTORY_DEPTH:-}
+      # Read-only, for approvals and branch protection in the leverage map.
+      SECAUDIT_GITHUB_TOKEN: ${SECAUDIT_GITHUB_TOKEN:-}
       # 0 stops the server from asking PyPI and npm for published packages.
       SECAUDIT_PUBLISHED_CHECK: ${SECAUDIT_PUBLISHED_CHECK:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as

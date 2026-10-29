@@ -25,7 +25,8 @@ from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
 from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
-from .models import (LANGUAGES, Audit, CanaryRun, Finding, Hypothesis, ImmuneRule,
+from .models import (LANGUAGES, AgentCapability, Audit, CanaryRun, FileLeverage,
+                     Finding, Hypothesis, ImmuneRule,
                      ModuleRun, RefutationAttempt, User, ViewDivergence, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
                      finding_to_dict, Project, project_for, summarize)
@@ -41,7 +42,7 @@ from .webhook import (
 )
 
 # Importable once .engine has put the repository root on sys.path.
-from analysis import evidence, falsify, immune, parallax  # noqa: E402
+from analysis import evidence, falsify, immune, leverage, parallax  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -514,6 +515,71 @@ def record_immune(session: Session, audit: Audit, checkout: Path | None,
         duration_ms=_ms_since(start), error=error, detail=detail))
 
 
+def record_leverage(session: Session, audit: Audit, checkout: Path | None,
+                    stored: list[tuple[Finding, dict]]) -> None:
+    """Module 4: leverage against oversight per file, and the agent surface.
+
+    Computed on this server's checkout, with what the other modules already
+    established: the findings shown to hold and the divergences of this
+    audit add leverage to their files. GitHub is asked only with
+    SECAUDIT_GITHUB_TOKEN, which never leaves this process. A failure is the
+    module's, never the audit's.
+    """
+    start = time.monotonic()
+    detail = {"items": 0}
+    try:
+        if checkout is None:
+            raise RuntimeError("the audited commit could not be checked out")
+        findings: dict[str, int] = {}
+        for row, _ in stored:
+            if row.verification_status == "verified" and \
+                    row.epistemic_status in immune.EVIDENCED and row.file:
+                rel = immune._norm_path(row.file)
+                findings[rel] = findings.get(rel, 0) + 1
+        session.flush()
+        divergences: dict[str, list[str]] = {}
+        for d in session.scalars(select(ViewDivergence)
+                                 .where(ViewDivergence.audit_id == audit.id)):
+            divergences.setdefault(d.file, []).append(d.kind)
+        result = leverage.analyze(checkout, parallax.repository_texts(checkout),
+                                  findings, divergences, audit.repo_url)
+        for r in result["files"]:
+            reasons = list(r["reasons"])
+            if r["last_commit"]:
+                reasons.append({"side": "meta", "code": "last_commit", "delta": 0,
+                                "args": {"commit": r["last_commit"]}})
+            session.add(FileLeverage(audit_id=audit.id, file=r["file"][:512],
+                                     leverage_score=r["leverage_score"],
+                                     oversight_score=r["oversight_score"],
+                                     reasons=reasons))
+        caps = []
+        for c in result["agent"]["capabilities"]:
+            row = AgentCapability(audit_id=audit.id, source_file=c["source_file"][:512],
+                                  capability=c["capability"], detail=c["detail"])
+            session.add(row)
+            caps.append(row)
+        session.flush()
+        combos = [{"kind": c["kind"], "severity": c["severity"],
+                   "unattended": c["unattended"],
+                   "steps": [caps[i].id for i in c["steps"]]}
+                  for c in result["agent"]["combinations"]]
+        fragile = sum(1 for r in result["files"]
+                      if r["leverage_score"] >= 0.7 and r["oversight_score"] < 0.3)
+        github = result["github"]
+        detail = {"items": fragile + len(combos), "fragile": fragile,
+                  "files": len(result["files"]), "left_out": result["left_out"],
+                  "codeowners": result["codeowners"], "history": result["history"],
+                  "github": {**github, "error": sanitize_error(github["error"])[:200]
+                             if github["error"] else None},
+                  "capabilities": len(caps), "combinations": combos}
+        status, error = "ok", None
+    except Exception as e:      # the audit stands without it
+        log.exception("leverage failed for audit %s", audit.id)
+        status, error = "error", sanitize_error(str(e))[:500]
+    session.add(ModuleRun(audit_id=audit.id, module="leverage", status=status,
+                          duration_ms=_ms_since(start), error=error, detail=detail))
+
+
 def execute_audit(audit_id: str) -> None:
     """Background task: clone the repo, run the engine, persist the outcome."""
     session = get_session()
@@ -564,6 +630,7 @@ def execute_audit(audit_id: str) -> None:
                                 *backend_identity(config))
                 record_immune(session, audit, dest, stored, result.get("immune"),
                               *backend_identity(config))
+                record_leverage(session, audit, dest, stored)
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
@@ -993,6 +1060,7 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
                             runnerqueue.RUNNER_BACKEND, None, canary_source="runner")
             record_immune(session, audit, checkout, stored, result.get("immune"),
                           runnerqueue.RUNNER_BACKEND, None)
+            record_leverage(session, audit, checkout, stored)
         audit.runner_claimed_at = None
         session.commit()
     except Exception as e:  # never leave an audit stuck in "running"

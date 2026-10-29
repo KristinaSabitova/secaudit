@@ -120,6 +120,12 @@ class Audit(Base):
     canary_runs: Mapped[list["CanaryRun"]] = relationship(
         cascade="all, delete-orphan", order_by="CanaryRun.id",
     )
+    leverage: Mapped[list["FileLeverage"]] = relationship(
+        cascade="all, delete-orphan", order_by="FileLeverage.id",
+    )
+    agent_capabilities: Mapped[list["AgentCapability"]] = relationship(
+        cascade="all, delete-orphan", order_by="AgentCapability.id",
+    )
     project: Mapped["Project | None"] = relationship()
 
 
@@ -621,6 +627,10 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         d["divergences"] = [divergence_to_dict(v) for v in audit.divergences]
         d["canary"] = (canary_run_to_dict(audit.canary_runs[-1])
                        if audit.canary_runs else None)
+        d["leverage"] = [leverage_to_dict(r) for r in audit.leverage]
+        d["agent_capabilities"] = [{"id": c.id, "source_file": c.source_file,
+                                    "capability": c.capability, "detail": c.detail}
+                                   for c in audit.agent_capabilities]
         # The project's memory so far: every rule learnt from its fixes.
         d["immune_rules"] = ([immune_rule_to_dict(r) for r in audit.project.immune_rules]
                              if audit.project is not None else [])
@@ -636,6 +646,18 @@ def divergence_to_dict(v: "ViewDivergence") -> dict:
 def canary_run_to_dict(run: "CanaryRun") -> dict:
     return {"planted": run.canaries_planted, "found": run.canaries_found,
             "integrity_score": run.integrity_score, "detail": run.detail}
+
+
+def leverage_to_dict(r: "FileLeverage") -> dict:
+    reasons = r.reasons or []
+    meta = {x["code"]: x.get("args") for x in reasons
+            if isinstance(x, dict) and x.get("side") == "meta"}
+    return {"file": r.file, "leverage": r.leverage_score,
+            "oversight": r.oversight_score,
+            "priority": round(r.leverage_score * (1 - r.oversight_score), 3),
+            "reasons": [x for x in reasons
+                        if isinstance(x, dict) and x.get("side") != "meta"],
+            "last_commit": (meta.get("last_commit") or {}).get("commit")}
 
 
 def immune_rule_to_dict(r: "ImmuneRule") -> dict:

@@ -453,6 +453,28 @@ regression of a fixed finding, reported even if the model missed it. They can
 be downloaded as a Semgrep config from
 `GET /api/projects/{id}/immune-rules.yaml`.
 
+**The leverage map.** Every file gets two scores, each with its reasons.
+*Leverage* is how much damage a malicious change there could do: CI workflows
+(more if they deploy, use secrets, run on `pull_request_target` or can
+write), install scripts, agent configuration, CODEOWNERS itself, auth and
+secrets, entry points — high; application code — medium; tests and docs —
+low; plus a finding shown to hold or a divergence in the file. *Oversight* is
+how much real review it gets: an owner in `CODEOWNERS`; whether its last
+three changes came in through a pull request approved by someone other than
+its author; whether the default branch requires reviews (branch protection
+or rulesets); and less if its last change declares AI participation and was
+not reviewed. What only GitHub knows — approvals, protection — is asked
+read-only with `SECAUDIT_GITHUB_TOKEN` (a fine-grained token with read access
+to contents, metadata and pull requests; it never reaches the audit
+process), and without it is reported as unknown. The map is ordered by
+leverage × (1 − oversight).
+
+The **agent surface** is what an AI agent opening the repository would
+inherit: permissions allowed without asking in `.claude/settings.json`, hooks,
+MCP servers (and whether they are approved in advance), and instruction files.
+Combinations that make a complete path — reading files, reaching the network,
+and something that runs without anyone asking — are reported as that path.
+
 ### How the code reaches the model
 
 No backend opens files itself, so the repository is sent as text, line-numbered

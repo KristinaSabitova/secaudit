@@ -462,6 +462,29 @@ atrapan es un **zombi**, la regresión de un hallazgo arreglado, que se informa
 aunque el modelo no lo viera. Se pueden descargar como configuración de
 Semgrep en `GET /api/projects/{id}/immune-rules.yaml`.
 
+**Mapa de palanca.** Cada fichero recibe dos puntuaciones, cada una con sus
+motivos. La *palanca* es cuánto daño haría un cambio malicioso ahí: workflows
+de CI (más si despliegan, usan secretos, corren con `pull_request_target` o
+pueden escribir), scripts de instalación, configuración de agentes, el propio
+CODEOWNERS, autenticación y secretos, puntos de entrada —alta—; código de la
+aplicación —media—; tests y documentación —baja—; y suma un hallazgo
+demostrado o una divergencia en el fichero. La *vigilancia* es cuánta revisión
+real recibe: un responsable en `CODEOWNERS`; si sus tres últimos cambios
+entraron por un PR aprobado por alguien distinto de su autor; si la rama por
+defecto exige revisiones (protección de rama o rulesets); y resta si su último
+cambio declara participación de IA y no se revisó. Lo que solo sabe GitHub
+—aprobaciones, protección— se pregunta en solo lectura con
+`SECAUDIT_GITHUB_TOKEN` (un token de grano fino con lectura de contenidos,
+metadatos y pull requests; nunca llega al proceso de auditoría), y sin él se
+dice que no se sabe. El mapa se ordena por palanca × (1 − vigilancia).
+
+La **superficie de agentes** es lo que heredaría un agente de IA al abrir el
+repositorio: permisos concedidos sin preguntar en `.claude/settings.json`,
+hooks, servidores MCP (y si están aprobados de antemano) y ficheros de
+instrucciones. Las combinaciones que forman un camino completo —leer
+ficheros, llegar a la red y algo que se ejecuta sin que nadie lo pida— se
+informan como ese camino.
+
 ### Cómo llega el código al modelo
 
 Ningún backend abre ficheros por su cuenta, así que el repositorio se envía
