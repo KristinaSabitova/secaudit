@@ -148,6 +148,14 @@
               <option value="none" data-i18n="epistemic.none">not established</option>
             </select>
           </div>
+          <div class="field">
+            <label for="filter-origin" data-i18n="filter.origin">origin</label>
+            <select id="filter-origin">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="zombie" data-i18n="filter.zombie">zombies (fixed before)</option>
+              <option value="ai" data-i18n="filter.ai">AI participation declared</option>
+            </select>
+          </div>
         </form>
         <p id="findings-count" class="muted"></p>
         <div id="findings-body"></div>
@@ -170,10 +178,8 @@
       <section class="view module" data-view="memory" aria-labelledby="h-memory" hidden>
         <h1 id="h-memory" data-i18n="nav.memory">memory</h1>
         <p class="question" data-i18n="memory.question"></p>
-        <div class="empty-state">
-          <p data-i18n="memory.what"></p>
-          <p class="muted" data-i18n="memory.phase"></p>
-        </div>
+        <p class="muted settings-intro" data-i18n="memory.what"></p>
+        <div id="memory-body"></div>
       </section>
 
       <section class="view module" data-view="leverage" aria-labelledby="h-leverage" hidden>

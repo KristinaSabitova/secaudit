@@ -323,7 +323,50 @@ const TEXT = {
     "memory.what": "Rules learnt from the project's own fixes, checked against " +
       "the commit that was vulnerable and the one that fixed it; the zombies " +
       "they catch; and their export to Semgrep.",
-    "memory.phase": "Arrives in phase 6.",
+    "memory.notrun": "Immune memory did not run for this audit: it predates the module.",
+    "memory.failed": "Immune memory failed for this audit; the findings stand without it.",
+    "memory.zombies": "zombies",
+    "memory.zombiesintro": "Findings of this audit that a fix had already removed " +
+      "once: reported again by the model, or caught by a validated rule.",
+    "memory.nozombies": "No fixed finding has come back.",
+    "memory.fixedin": "fixed in",
+    "memory.rules": "rules learnt from fixes",
+    "memory.rulesintro": "One per finding shown to hold that a later commit removed. " +
+      "A rule is validated only if it matches the code just before the fix and " +
+      "not the fix itself.",
+    "memory.norules": "No rule yet: none of this project's findings shown to hold " +
+      "has been fixed between two audits.",
+    "memory.rule": "rule",
+    "memory.validation": "validation",
+    "memory.validated": "validated",
+    "memory.notvalidated": "not validated",
+    "memory.counts": (a, b) => `before ${a} · after ${b}`,
+    "memory.matches": "caught",
+    "memory.export": "download the validated rules (Semgrep YAML)",
+    "memory.noexport": "Nothing to export until a rule is validated.",
+    "memory.provenance": "provenance",
+    "memory.provenanceintro": "For each located finding, the oldest commit that " +
+      "touched its lines (git blame). AI participation is what the commit " +
+      "declares in its trailers: declared, not established.",
+    "memory.located": "with provenance",
+    "memory.aideclared": "AI participation declared",
+    "memory.fixedcount": "fixed since the previous audit",
+    "memory.nosemgrep": "Semgrep is not installed on this server: rules cannot " +
+      "be validated or run.",
+    "memory.proposalerror": (e) => `The rule request failed: ${e}`,
+    "provenance.origin": "introduced in",
+    "provenance.confidence": "confidence",
+    "provenance.ai": "AI participation declared",
+    "provenance.aiyes": "yes, in the commit's trailers",
+    "provenance.aino": "none declared",
+    "confidence.high": "high: one commit",
+    "confidence.medium": "medium: several commits",
+    "confidence.low": "low: history cut short",
+    "zombie.badge": "zombie",
+    "zombie.note": (title, sha) => `A fix had removed this finding before (\u201c${title}\u201d, fixed in ${sha}).`,
+    "filter.origin": "origin",
+    "filter.zombie": "zombies (fixed before)",
+    "filter.ai": "AI participation declared",
     "leverage.question": "Which files give the most power over the system with the least oversight?",
     "leverage.what": "A map of every file by leverage against oversight, and " +
       "what each agent configuration lets an agent do.",
@@ -636,7 +679,50 @@ const TEXT = {
     "memory.what": "Reglas aprendidas de los propios arreglos del proyecto, " +
       "comprobadas contra el commit vulnerable y el que lo arregló; los " +
       "zombis que detectan; y su exportación a Semgrep.",
-    "memory.phase": "Llega en la fase 6.",
+    "memory.notrun": "La memoria inmunológica no se ejecutó en esta auditoría: es anterior al módulo.",
+    "memory.failed": "La memoria inmunológica falló en esta auditoría; los hallazgos siguen en pie sin ella.",
+    "memory.zombies": "zombis",
+    "memory.zombiesintro": "Hallazgos de esta auditoría que un arreglo ya había " +
+      "quitado una vez: vueltos a informar por el modelo o atrapados por una regla validada.",
+    "memory.nozombies": "No ha vuelto ningún hallazgo arreglado.",
+    "memory.fixedin": "arreglado en",
+    "memory.rules": "reglas aprendidas de los arreglos",
+    "memory.rulesintro": "Una por cada hallazgo demostrado que un commit posterior " +
+      "quitó. Una regla solo se valida si encaja con el código justo antes del " +
+      "arreglo y no con el arreglo.",
+    "memory.norules": "Aún no hay reglas: ningún hallazgo demostrado de este " +
+      "proyecto se ha arreglado entre dos auditorías.",
+    "memory.rule": "regla",
+    "memory.validation": "validación",
+    "memory.validated": "validada",
+    "memory.notvalidated": "no validada",
+    "memory.counts": (a, b) => `antes ${a} · después ${b}`,
+    "memory.matches": "atrapados",
+    "memory.export": "descargar las reglas validadas (YAML de Semgrep)",
+    "memory.noexport": "No hay nada que exportar hasta que se valide una regla.",
+    "memory.provenance": "procedencia",
+    "memory.provenanceintro": "Para cada hallazgo localizado, el commit más " +
+      "antiguo que tocó sus líneas (git blame). La participación de IA es la que " +
+      "el commit declara en sus trailers: declarada, no demostrada.",
+    "memory.located": "con procedencia",
+    "memory.aideclared": "participación de IA declarada",
+    "memory.fixedcount": "arreglados desde la auditoría anterior",
+    "memory.nosemgrep": "Semgrep no está instalado en este servidor: las reglas " +
+      "no se pueden validar ni ejecutar.",
+    "memory.proposalerror": (e) => `La petición de reglas falló: ${e}`,
+    "provenance.origin": "introducido en",
+    "provenance.confidence": "confianza",
+    "provenance.ai": "participación de IA declarada",
+    "provenance.aiyes": "sí, en los trailers del commit",
+    "provenance.aino": "ninguna declarada",
+    "confidence.high": "alta: un commit",
+    "confidence.medium": "media: varios commits",
+    "confidence.low": "baja: historia cortada",
+    "zombie.badge": "zombi",
+    "zombie.note": (title, sha) => `Un arreglo ya había quitado este hallazgo («${title}», arreglado en ${sha}).`,
+    "filter.origin": "origen",
+    "filter.zombie": "zombis (arreglados antes)",
+    "filter.ai": "participación de IA declarada",
     "leverage.question": "¿Qué ficheros dan más poder sobre el sistema con menos vigilancia?",
     "leverage.what": "Un mapa de todos los ficheros según su palanca frente a " +
       "su vigilancia, y lo que cada configuración de agente le permite hacer.",
@@ -1065,6 +1151,7 @@ function renderSection() {
   else if (state.section === "findings") renderFindings();
   else if (state.section === "falsifiability") renderFalsifiability();
   else if (state.section === "parallax") renderParallax();
+  else if (state.section === "memory") renderMemory();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
 }
@@ -1296,6 +1383,7 @@ function filteredFindings() {
   const severity = el("filter-severity").value;
   const evidence = el("filter-evidence").value;
   const epistemic = el("filter-epistemic").value;
+  const origin = el("filter-origin").value;
   const query = state.query.trim().toLowerCase();
   const order = new Map(SEVERITIES.map((s, i) => [s, i]));
   return (state.current.findings || [])
@@ -1303,6 +1391,8 @@ function filteredFindings() {
     .filter((f) => evidence !== "unverified" || f.verification_status !== "verified")
     .filter((f) => !epistemic
             || (epistemic === "none" ? !f.epistemic_status : f.epistemic_status === epistemic))
+    .filter((f) => origin !== "zombie" || f.zombie_of)
+    .filter((f) => origin !== "ai" || (f.provenance && f.provenance.ai_declared))
     .filter((f) => !query || [f.title, f.file, f.anchor, f.description, f.category,
                               categoryLabel(f.category)]
       .some((v) => String(v || "").toLowerCase().includes(query)))
@@ -1334,7 +1424,18 @@ function findingBody(finding, { full }) {
       [t("findings.location"), node("span", "where", whereText(finding) || "—")],
     ];
     if (finding.anchor) pairs.push([t("findings.anchor"), node("span", "where", finding.anchor)]);
+    const p = finding.provenance;
+    if (p) {
+      pairs.push([t("provenance.origin"), commitNode(p.origin_commit)],
+                 [t("provenance.confidence"), t(`confidence.${p.confidence}`)],
+                 [t("provenance.ai"), t(p.ai_declared ? "provenance.aiyes" : "provenance.aino")]);
+    }
     parts.append(facts(pairs));
+  }
+  if (finding.zombie_of) {
+    const z = finding.zombie_of;
+    parts.append(node("p", "note zombie-note",
+                      t("zombie.note", z.title || "—", shortSha(z.fix_commit) || "—")));
   }
   // The snippet is code from an audited third-party repo: textContent only.
   // An unverified one is not shown as if it were the file's.
@@ -1368,11 +1469,14 @@ function findingRows(finding) {
   const title = button(finding.title, "link");
   title.dataset.finding = String(finding.id);
   title.addEventListener("click", () => openFinding(finding.id, title));
+  const titleCell = document.createDocumentFragment();
+  titleCell.append(title);
+  if (finding.zombie_of) titleCell.append(" ", node("span", "badge badge-zombie", t("zombie.badge")));
 
   const main = row([
     toggle,
     severityNode(finding.severity),
-    { className: "finding-title-cell", content: title },
+    { className: "finding-title-cell", content: titleCell },
     { className: "where hide-narrow", content: whereText(finding) },
     { className: "hide-narrow", content: evidenceNode(finding) },
     { className: "hide-narrow", content: epistemicNode(finding) },
@@ -1441,7 +1545,7 @@ function renderFindings() {
   }
 }
 
-for (const id of ["filter-severity", "filter-epistemic"]) {
+for (const id of ["filter-severity", "filter-epistemic", "filter-origin"]) {
   el(id).addEventListener("change", renderFindings);
 }
 
@@ -2023,6 +2127,137 @@ document.addEventListener("keydown", (event) => {
     el("search").focus();
   }
 });
+
+// ---------------------------------------------------------------------------
+// immune memory (module 3)
+// ---------------------------------------------------------------------------
+
+// A commit of the audited repository, linked to GitHub when it is there.
+function commitNode(sha) {
+  if (!sha) return node("span", "muted", "—");
+  const url = state.current && state.current.repo_url;
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+$/.test(String(url || "").replace(/\.git$/, ""))) {
+    return node("span", "where", shortSha(sha));
+  }
+  const a = node("a", "where", shortSha(sha));
+  a.href = `${String(url).replace(/\.git$/, "")}/commit/${encodeURIComponent(sha)}`;
+  a.rel = "noopener noreferrer";
+  a.target = "_blank";
+  a.title = sha;
+  return a;
+}
+
+function zombiesBlock(findings) {
+  const zombies = findings.filter((f) => f.zombie_of);
+  const section = block(t("memory.zombies"), node("p", "muted", t("memory.zombiesintro")));
+  if (!zombies.length) {
+    section.append(node("p", "muted", t("memory.nozombies")));
+    return section;
+  }
+  section.append(table(
+    [{ text: t("findings.severity") }, { text: t("findings.finding") },
+     { text: t("findings.location"), className: "hide-narrow" },
+     { text: t("memory.fixedin") },
+     { text: t("provenance.origin"), className: "hide-narrow" }],
+    zombies.map((f) => {
+      const title = button(f.title, "link");
+      title.dataset.finding = String(f.id);
+      title.addEventListener("click", () => openFinding(f.id, title));
+      const r = row([
+        severityNode(f.severity), title,
+        { className: "where hide-narrow", content: whereText(f) },
+        commitNode(f.zombie_of.fix_commit),
+        { className: "hide-narrow",
+          content: commitNode(f.provenance && f.provenance.origin_commit) },
+      ], "finding-row");
+      r.setAttribute("aria-selected", String(state.drawerFinding === f.id));
+      return r;
+    })));
+  return section;
+}
+
+function rulesBlock(audit) {
+  const rules = audit.immune_rules || [];
+  const section = block(t("memory.rules"), node("p", "muted", t("memory.rulesintro")));
+  if (!rules.length) {
+    section.append(node("p", "muted", t("memory.norules")));
+    return section;
+  }
+  section.append(table(
+    [{ text: t("memory.rule") }, { text: t("parallax.file"), className: "hide-narrow" },
+     { text: t("memory.validation") }, { text: t("memory.fixedin"), className: "hide-narrow" },
+     { text: t("memory.matches"), className: "num" }],
+    rules.map((r) => {
+      const name = node("details", "rule-yaml");
+      name.append(node("summary", "where", r.rule_id));
+      if (r.explanation) name.append(node("p", "muted", r.explanation));
+      if (r.yaml) name.append(node("pre", "snippet", r.yaml));
+      const verdict = node("span", null);
+      verdict.append(node("span", r.validated ? "badge badge-corroborated" : "badge badge-inconclusive",
+                          t(r.validated ? "memory.validated" : "memory.notvalidated")));
+      if (Number.isInteger(r.before)) {
+        verdict.append(" ", node("span", "muted small",
+                                 t("memory.counts", r.before, r.after ?? "—")));
+      }
+      if (!r.validated && r.reason) verdict.append(node("div", "muted small", r.reason));
+      return row([
+        name,
+        { className: "where hide-narrow", content: r.file || "—" },
+        verdict,
+        { className: "hide-narrow", content: commitNode(r.fix_commit) },
+        { className: "num", content: r.matches || 0 },
+      ]);
+    })));
+  if (rules.some((r) => r.validated) && audit.project_id) {
+    const a = node("a", null, t("memory.export"));
+    a.href = `/api/projects/${encodeURIComponent(audit.project_id)}/immune-rules.yaml`;
+    a.setAttribute("download", "");
+    const p = node("p", null);
+    p.append(a);
+    section.append(p);
+  } else {
+    section.append(node("p", "muted small", t("memory.noexport")));
+  }
+  return section;
+}
+
+function provenanceBlock(run) {
+  const d = run.detail || {};
+  const counts = node("div", "counts");
+  counts.append(node("span", "badge", `${t("memory.located")} ${d.provenance || 0}`),
+                node("span", d.ai_declared ? "badge badge-reachable" : "badge",
+                     `${t("memory.aideclared")} ${d.ai_declared || 0}`),
+                node("span", "badge", `${t("memory.fixedcount")} ${d.fixed || 0}`));
+  const section = block(t("memory.provenance"),
+                        node("p", "muted", t("memory.provenanceintro")), counts);
+  for (const note of d.notes || []) section.append(node("p", "muted small", note));
+  return section;
+}
+
+function renderMemory() {
+  const target = el("memory-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const run = (audit.modules || []).filter((r) => r.module === "immune").pop();
+  if (!run) {
+    target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("memory.notrun")));
+    return;
+  }
+  const parts = [];
+  if (run.status === "error") parts.push(node("p", "error", t("memory.failed")));
+  const d = run.detail || {};
+  if (d.semgrep === false) parts.push(node("p", "note", t("memory.nosemgrep")));
+  if (d.proposal_error) parts.push(node("p", "note", t("memory.proposalerror", d.proposal_error)));
+  parts.push(zombiesBlock(audit.findings || []), rulesBlock(audit), provenanceBlock(run));
+  // Keep open the rules the reader had open across the polling re-render.
+  const open = new Set([...target.querySelectorAll("details[open] > summary")]
+    .map((s) => s.textContent));
+  target.replaceChildren(...parts);
+  for (const s of target.querySelectorAll("details > summary")) {
+    if (open.has(s.textContent)) s.parentElement.open = true;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // sidebar

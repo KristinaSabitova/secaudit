@@ -774,6 +774,28 @@ dl.facts dd {
   text-decoration: line-through;
 }
 
+/* A fixed finding come back: marked by its word, and a double border. */
+.badge-zombie {
+  border-style: double;
+  border-width: 3px;
+  color: var(--sev-high);
+  font-weight: 600;
+}
+
+.zombie-note {
+  border-left: 3px double var(--sev-high);
+  padding-left: 0.6em;
+}
+
+.rule-yaml summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.rule-yaml pre {
+  max-width: 60ch;
+}
+
 /* --------------------------------------------------------- falsifiability */
 
 .result {
