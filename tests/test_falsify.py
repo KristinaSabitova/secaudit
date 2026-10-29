@@ -279,6 +279,21 @@ class TestNamesakes:
         assert outcome["status"] == REACHABLE
 
 
+class TestMissingChecks:
+    def test_a_check_with_a_literal_key_is_not_a_sanitised_value(self, tmp_path):
+        (tmp_path / "app.py").write_text(
+            "from flask import request, session\n\n@app.route('/profile', methods=['POST'])\n"
+            "def update_profile():\n    for key, value in request.form.items():\n"
+            "        session[key] = value\n\n@app.route('/admin')\ndef admin():\n"
+            "    if session.get('role') != 'admin':\n        abort(403)\n")
+        f = finding(tmp_path, "app.py", "if session.get('role') != 'admin':",
+                    "app.py:update_profile — request.form.items()",
+                    "app.py:admin — session.get(\"role\") != \"admin\"", category="authz")
+        outcome = assess(tmp_path, f)
+        assert results(outcome)["sanitizer"] == "inconclusive"
+        assert outcome["status"] == REACHABLE
+
+
 class TestFlowsThroughStoredState:
     def test_reading_the_request_is_not_the_sink(self, tmp_path):
         (tmp_path / "app.py").write_text(SESSIONS)

@@ -516,7 +516,16 @@ def _sink_call(fn: Function, hypothesis: dict, line: int | None,
     return None
 
 
+# Flaws that are a missing or wrong check, not a value reaching a call: that
+# session.get("role") takes a literal says nothing about who can set the role.
+CHECK_CATEGORIES = {"authz", "sessions", "csrf"}
+
+
 def try_sanitizer(index: Index, finding: dict, hypothesis: dict, sink: Function) -> dict:
+    if finding.get("category") in CHECK_CATEGORIES:
+        return {"result": INCONCLUSIVE,
+                "note": "the flaw is a missing check, not a value reaching a call: "
+                        "there is no value to find sanitised"}
     call = _sink_call(sink, hypothesis, finding.get("line"), finding.get("line_end"))
     if call is None:
         return {"result": INCONCLUSIVE,
