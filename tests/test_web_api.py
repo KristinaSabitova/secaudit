@@ -2787,6 +2787,25 @@ class TestImmuneMemory:
         run = {r["module"]: r for r in third["modules"]}["immune"]
         assert run["detail"]["zombies"] == 1 and run["detail"]["items"] == 1
 
+    def test_a_match_shown_safe_is_no_zombie(self, client, signed_in, clone_from_sample,
+                                             monkeypatch, sample_repo, semgrep):
+        first, sqli, second, _ = self.fixed_once(client, monkeypatch, sample_repo)
+        code = (sample_repo / "app.py").read_text()
+        self.commit(sample_repo, code + (
+            '\ndef by_id(cur, n):\n'
+            '    return cur.execute("SELECT 1 WHERE id = \'" + str(int(n)) + "\'")\n'),
+            "lookup by id")
+        safe = dict(FAKE_FINDINGS[0], anchor="by_id", title="SQL injection in by_id",
+                    code_snippet='return cur.execute("SELECT 1 WHERE id = \'" + str(int(n)) + "\'")',
+                    line=7)
+        monkeypatch.setattr(web_main.falsify, "assess", lambda project, f, index: {
+            "hypothesis": None, "attempts": [], "status": "refuted"})
+        third, _ = self.audit(client, monkeypatch, [safe])
+        [f] = third["findings"]
+        assert f.get("zombie_of") is None and f["epistemic_status"] == "refuted"
+        run = {r["module"]: r for r in third["modules"]}["immune"]
+        assert run["detail"]["zombies"] == 0 and run["detail"]["refuted_matches"] == 1
+
     def test_the_same_finding_reported_again_is_a_zombie(
             self, client, signed_in, clone_from_sample, monkeypatch, sample_repo):
         first, _ = self.audit(client, monkeypatch, [FAKE_FINDINGS[0]])

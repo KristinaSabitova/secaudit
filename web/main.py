@@ -472,7 +472,10 @@ def record_immune(session: Session, audit: Audit, checkout: Path | None,
                 origin = session.get(Finding, rule.finding_id) if rule.finding_id else None
                 hit = next((r for r, _ in stored if _overlaps(r, m)), None)
                 if hit is not None:
-                    if hit.zombie_of is None and origin is not None:
+                    # The pattern is back, but module 2 showed this one safe.
+                    if hit.epistemic_status == falsify.REFUTED:
+                        detail["refuted_matches"] = detail.get("refuted_matches", 0) + 1
+                    elif hit.zombie_of is None and origin is not None:
                         hit.zombie_of = origin.id
                         detail["zombies"] += 1
                     continue
