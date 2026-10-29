@@ -10,6 +10,12 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Semgrep validates and runs the rules learnt from fixes. Pinned, and in its
+# own environment so its dependencies never meet the app's.
+RUN python -m venv /opt/semgrep \
+    && /opt/semgrep/bin/pip install --no-cache-dir semgrep==1.180.0 \
+    && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
+
 COPY alembic.ini secaudit.py ./
 COPY analysis/ ./analysis/
 COPY migrations/ ./migrations/

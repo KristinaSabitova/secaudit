@@ -139,6 +139,10 @@ class Project(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False,
     )
 
+    immune_rules: Mapped[list["ImmuneRule"]] = relationship(
+        cascade="all, delete-orphan", order_by="ImmuneRule.id",
+    )
+
 
 class ModuleRun(Base):
     """One stage of an audit: what it did, what it cost, whether it worked."""
@@ -287,6 +291,10 @@ class Finding(Base):
     audit: Mapped[Audit] = relationship(back_populates="findings")
     hypothesis: Mapped["Hypothesis | None"] = relationship(
         cascade="all, delete-orphan", uselist=False,
+    )
+    # The fixed finding this one brings back, in an earlier audit.
+    zombie_origin: Mapped["Finding | None"] = relationship(
+        remote_side="Finding.id", foreign_keys=[zombie_of], lazy="joined",
     )
 
 
@@ -561,6 +569,18 @@ def finding_to_dict(f: Finding) -> dict:
         d["verification_note"] = f.verification_note
     if f.hypothesis is not None:
         d["hypothesis"] = hypothesis_to_dict(f.hypothesis)
+    if f.origin_commit:
+        d["provenance"] = {"origin_commit": f.origin_commit,
+                           "confidence": f.origin_confidence,
+                           "ai_declared": bool(f.ai_declared)}
+    if f.fix_commit:
+        d["fix_commit"] = f.fix_commit
+    if f.zombie_of:
+        origin = f.zombie_origin
+        d["zombie_of"] = {"finding_id": f.zombie_of,
+                          "audit_id": origin.audit_id if origin else None,
+                          "title": origin.title if origin else None,
+                          "fix_commit": origin.fix_commit if origin else None}
     return d
 
 
@@ -601,6 +621,9 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         d["divergences"] = [divergence_to_dict(v) for v in audit.divergences]
         d["canary"] = (canary_run_to_dict(audit.canary_runs[-1])
                        if audit.canary_runs else None)
+        # The project's memory so far: every rule learnt from its fixes.
+        d["immune_rules"] = ([immune_rule_to_dict(r) for r in audit.project.immune_rules]
+                             if audit.project is not None else [])
     return d
 
 
@@ -613,6 +636,18 @@ def divergence_to_dict(v: "ViewDivergence") -> dict:
 def canary_run_to_dict(run: "CanaryRun") -> dict:
     return {"planted": run.canaries_planted, "found": run.canaries_found,
             "integrity_score": run.integrity_score, "detail": run.detail}
+
+
+def immune_rule_to_dict(r: "ImmuneRule") -> dict:
+    v = r.validation or {}
+    return {"id": r.id, "rule_id": r.rule_id, "finding_id": r.finding_id,
+            "file": v.get("file"), "explanation": v.get("explanation"),
+            "validated": r.validated, "reason": v.get("reason") or v.get("error"),
+            "before": v.get("before"), "after": v.get("after"),
+            "fix_commit": r.source_fix_commit,
+            "vulnerable_commit": r.vulnerable_commit, "yaml": r.rule_yaml,
+            "matches": len(r.matches_history or []),
+            "created_at": isoformat_utc(r.created_at)}
 
 
 def coverage_from_dict(audit_id: str, row: dict) -> Coverage:

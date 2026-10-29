@@ -433,6 +433,26 @@ someone who knew about the decoys could let them through and still hide the
 real thing — and a clean audit whose auditor missed them is marked as not
 reliable.
 
+**Immune memory.** Every finding records its **provenance**: the oldest commit
+that touched its lines, by `git blame`, with a confidence — high when every
+line comes from one commit, medium when from several, low when the history
+the clone fetched stops there (`SECAUDIT_HISTORY_DEPTH`, default 200 commits)
+— and whether that commit *declares* AI participation in its trailers
+(`Co-authored-by`, `Assisted-by`, "Generated with Claude Code"…). Declared,
+not established: trailers are missing as often as they are present.
+
+When a finding shown to hold (reachable or corroborated) is gone from the next
+audit because its code really is gone, git says which commit removed it. The
+model is shown the code before that commit and its diff, and proposes a
+Semgrep rule (`SECAUDIT_MAX_RULES`, default 3; one more request). The server
+keeps the rule as validated only if it matches the file as it was just before
+the fix and does not match it after — a file Semgrep cannot parse proves
+nothing. Validated rules run on every later audit of the project, webhook
+audits included, at no token cost: what they catch is a **zombie**, a
+regression of a fixed finding, reported even if the model missed it. They can
+be downloaded as a Semgrep config from
+`GET /api/projects/{id}/immune-rules.yaml`.
+
 ### How the code reaches the model
 
 No backend opens files itself, so the repository is sent as text, line-numbered

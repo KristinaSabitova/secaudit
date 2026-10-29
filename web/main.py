@@ -25,10 +25,10 @@ from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
 from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
-from .models import (LANGUAGES, Audit, CanaryRun, Finding, Hypothesis, ModuleRun,
-                     RefutationAttempt, User, ViewDivergence, audit_to_dict,
+from .models import (LANGUAGES, Audit, CanaryRun, Finding, Hypothesis, ImmuneRule,
+                     ModuleRun, RefutationAttempt, User, ViewDivergence, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
-                     project_for, summarize)
+                     finding_to_dict, Project, project_for, summarize)
 from .settings import InvalidOllamaURL, SecretsUnavailable
 from .webhook import (
     EVENT_HEADER,
@@ -41,7 +41,7 @@ from .webhook import (
 )
 
 # Importable once .engine has put the repository root on sys.path.
-from analysis import evidence, falsify, parallax  # noqa: E402
+from analysis import evidence, falsify, immune, parallax  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -317,6 +317,203 @@ def record_parallax(session: Session, audit: Audit, checkout: Path | None,
     ))
 
 
+def previous_audit(session: Session, audit: Audit) -> Audit | None:
+    """The last finished audit of the same project before this one."""
+    if audit.project_id is None:
+        return None
+    return session.scalar(
+        select(Audit).where(Audit.project_id == audit.project_id,
+                            Audit.id != audit.id, Audit.status == "done",
+                            Audit.created_at <= audit.created_at,
+                            Audit.commit_sha.is_not(None))
+        .order_by(Audit.created_at.desc()).limit(1))
+
+
+def immune_context(session: Session, audit: Audit) -> dict | None:
+    """What the audit process needs to propose rules for the fixes since the
+    previous audit: that audit's commit and its findings shown to hold."""
+    previous = previous_audit(session, audit)
+    if previous is None:
+        return None
+    findings = []
+    for f in previous.findings:
+        d = finding_to_dict(f)
+        if immune.evidenced(d):
+            findings.append({k: d.get(k) for k in (
+                "id", "fingerprint", "title", "category", "severity", "file",
+                "line", "line_end", "code_snippet", "verification_status",
+                "epistemic_status")})
+    if not findings:
+        return None
+    return {"previous": findings, "previous_commit": previous.commit_sha}
+
+
+def _set_provenance(checkout: Path, row: Finding, rev: str = "HEAD") -> bool:
+    if row.verification_status != "verified" or not row.line:
+        return False
+    origin = immune.provenance(checkout, immune._norm_path(row.file), row.line,
+                               row.line_end or row.line, rev)
+    if not origin:
+        return False
+    row.origin_commit = origin["origin_commit"]
+    row.origin_confidence = origin["origin_confidence"]
+    row.ai_declared = origin["ai_declared"]
+    return True
+
+
+def _overlaps(row: Finding, match: dict) -> bool:
+    if immune._norm_path(row.file) != match["file"] or not row.line:
+        return False
+    return row.line <= match["line_end"] and match["line"] <= (row.line_end or row.line)
+
+
+def record_immune(session: Session, audit: Audit, checkout: Path | None,
+                  stored: list[tuple[Finding, dict]], proposals: dict | None,
+                  backend: str | None, model: str | None) -> None:
+    """Module 3: provenance, the fixes since the last audit, and their rules.
+
+    Everything decided here is decided on this server's checkout: which
+    findings were fixed and by which commit, whether a proposed rule passes
+    its test against the history, and what the project's validated rules
+    catch now. The model only proposes rules; it decides none of this. Like
+    the other modules, a failure is recorded and never fails the audit.
+    """
+    start = time.monotonic()
+    proposals = proposals if isinstance(proposals, dict) else {}
+    usage = proposals.get("usage") if isinstance(proposals.get("usage"), dict) else {}
+    offered = proposals.get("proposals") if isinstance(proposals.get("proposals"), dict) else {}
+    detail = {"items": 0, "provenance": 0, "ai_declared": 0, "fixed": 0,
+              "rules_proposed": 0, "rules_validated": 0, "zombies": 0,
+              "semgrep": bool(immune.semgrep_bin()), "notes": []}
+    try:
+        if checkout is None:
+            raise immune.SemgrepError("the audited commit could not be checked out")
+        for row, _ in stored:
+            if _set_provenance(checkout, row):
+                detail["provenance"] += 1
+                detail["ai_declared"] += bool(row.ai_declared)
+
+        previous = previous_audit(session, audit)
+        if previous is not None and audit.project_id is not None:
+            rows = {f.id: f for f in previous.findings}
+            fixed = immune.find_fixed(checkout, [finding_to_dict(f) for f in rows.values()],
+                                      previous.commit_sha)
+            for entry in fixed:
+                old = rows.get(entry["finding_id"])
+                if old is None:
+                    continue
+                if not entry.get("fix_commit"):
+                    if entry.get("reason"):
+                        detail["notes"].append(f"{old.file}: {entry['reason']}")
+                    continue
+                old.fix_commit = entry["fix_commit"]
+                detail["fixed"] += 1
+                proposal = offered.get(old.fingerprint)
+                if not isinstance(proposal, dict) or not entry.get("vulnerable_commit"):
+                    continue
+                rule = immune.normalize_rule(proposal.get("rule"), old.fingerprint,
+                                             entry["file"])
+                detail["rules_proposed"] += 1
+                if rule is None:
+                    validation = {"validated": False,
+                                  "reason": "not a rule made only of pattern operators"}
+                elif not detail["semgrep"]:
+                    validation = {"validated": False, "reason": "semgrep is not installed"}
+                else:
+                    validation = immune.validate(checkout, rule, entry["file"],
+                                                 entry["vulnerable_commit"],
+                                                 entry["fix_commit"])
+                validation["file"] = entry["file"]
+                validation["explanation"] = str(proposal.get("explanation") or "")[:500]
+                validation["rule"] = rule
+                session.add(ImmuneRule(
+                    project_id=audit.project_id, finding_id=old.id,
+                    rule_id=(rule or {}).get("id", f"secaudit-immune-{old.fingerprint[:8]}")[:64],
+                    rule_yaml=immune.to_yaml([rule]) if rule else "",
+                    source_fix_commit=entry["fix_commit"],
+                    vulnerable_commit=entry["vulnerable_commit"],
+                    validated=bool(validation.get("validated")),
+                    validation=validation, matches_history=[]))
+                detail["rules_validated"] += bool(validation.get("validated"))
+            session.flush()
+
+        # Zombies: the same finding again, after a fix.
+        fixed_before = {}
+        if audit.project_id is not None:
+            for f in session.scalars(
+                    select(Finding).join(Audit, Finding.audit_id == Audit.id)
+                    .where(Audit.project_id == audit.project_id,
+                           Audit.id != audit.id, Finding.fix_commit.is_not(None))):
+                fixed_before.setdefault(f.fingerprint, f)
+        for row, _ in stored:
+            old = fixed_before.get(row.fingerprint)
+            if old is not None and row.verification_status == "verified":
+                row.zombie_of = old.id
+                detail["zombies"] += 1
+
+        # And what the validated rules catch, whether the model saw it or not.
+        rules = list(session.scalars(select(ImmuneRule).where(
+            ImmuneRule.project_id == audit.project_id,
+            ImmuneRule.validated.is_(True)))) if audit.project_id is not None else []
+        by_id = {r.rule_id: r for r in rules if (r.validation or {}).get("rule")}
+        if by_id and detail["semgrep"]:
+            matches = immune.run_semgrep([r.validation["rule"] for r in by_id.values()],
+                                         checkout)
+            for m in matches:
+                rule = by_id.get(m["rule"])
+                if rule is None:
+                    continue
+                history = list(rule.matches_history or [])
+                history.append({"audit_id": audit.id, "file": m["file"],
+                                "line": m["line"]})
+                rule.matches_history = history[-50:]
+                origin = session.get(Finding, rule.finding_id) if rule.finding_id else None
+                hit = next((r for r, _ in stored if _overlaps(r, m)), None)
+                if hit is not None:
+                    if hit.zombie_of is None and origin is not None:
+                        hit.zombie_of = origin.id
+                        detail["zombies"] += 1
+                    continue
+                code = immune.snippet_at(checkout, m["file"], m["line"], m["line_end"])
+                if origin is None or not code.strip():
+                    continue
+                row = Finding(
+                    audit_id=audit.id, severity=origin.severity,
+                    category=origin.category,
+                    title=f"Regression: {origin.title}"[:255],
+                    description=(f"The validated rule {rule.rule_id}, learnt from the "
+                                 f"fix {rule.source_fix_commit[:12]}, matches this code "
+                                 f"again.\n\n{origin.description}"),
+                    file=m["file"], line=m["line"], line_end=m["line_end"],
+                    anchor=origin.anchor, fingerprint=origin.fingerprint,
+                    code_snippet=code, verification_status="verified",
+                    verification_note=f"matched by immune rule {rule.rule_id}"[:255],
+                    epistemic_status=falsify.EXISTS, zombie_of=origin.id)
+                session.add(row)
+                session.flush()
+                stored.append((row, finding_to_dict(row)))
+                _set_provenance(checkout, row)
+                detail["zombies"] += 1
+                detail["regressions"] = detail.get("regressions", 0) + 1
+            if detail.get("regressions"):
+                audit.summary = summarize([d for _, d in stored])
+        detail["items"] = detail["rules_validated"] + detail["zombies"]
+        status, error = "ok", None
+    except Exception as e:      # the audit stands without it
+        log.exception("immune memory failed for audit %s", audit.id)
+        status, error = "error", sanitize_error(str(e))[:500]
+    detail["notes"] = detail["notes"][:10]
+    if proposals.get("error"):
+        detail["proposal_error"] = sanitize_error(str(proposals["error"]))[:200]
+    requested = _count(proposals.get("requested"))
+    session.add(ModuleRun(
+        audit_id=audit.id, module="immune", status=status,
+        backend=backend if requested else None, model=model if requested else None,
+        tokens_in=_count(usage.get("input_tokens")),
+        tokens_out=_count(usage.get("output_tokens")),
+        duration_ms=_ms_since(start), error=error, detail=detail))
+
+
 def execute_audit(audit_id: str) -> None:
     """Background task: clone the repo, run the engine, persist the outcome."""
     session = get_session()
@@ -330,6 +527,7 @@ def execute_audit(audit_id: str) -> None:
             # Travels with the rest of the engine config into the audit
             # process, which builds the prompt from it.
             config["language"] = audit.language
+            config["immune"] = immune_context(session, audit)
             credentials = settings_store.credentials(session, owner)
         except SecretsUnavailable as e:
             audit.status = "error"
@@ -364,6 +562,8 @@ def execute_audit(audit_id: str) -> None:
                 record_parallax(session, audit, dest, result.get("coverage"),
                                 result.get("coverage_summary"), result.get("canary"),
                                 *backend_identity(config))
+                record_immune(session, audit, dest, stored, result.get("immune"),
+                              *backend_identity(config))
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
@@ -652,6 +852,20 @@ def get_coverage(audit_id: str, user: User = Depends(require_user),
             "files": [coverage_to_dict(row) for row in audit.coverage]}
 
 
+@app.get("/api/projects/{project_id}/immune-rules.yaml")
+def export_immune_rules(project_id: int, user: User = Depends(require_user),
+                        session: Session = Depends(db_session)):
+    """The project's validated rules, as a Semgrep config to run anywhere."""
+    project = session.get(Project, project_id)
+    if project is None or not (user.is_admin or project.user_id == user.id):
+        raise HTTPException(status_code=404, detail="project not found")
+    rules = [r.validation["rule"] for r in project.immune_rules
+             if r.validated and (r.validation or {}).get("rule")]
+    return Response(content=immune.to_yaml(rules), media_type="application/x-yaml",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="secaudit-immune-{project_id}.yaml"'})
+
+
 @app.delete("/api/audits/{audit_id}", status_code=204)
 def delete_audit(audit_id: str, user: User = Depends(require_user),
                  session: Session = Depends(db_session)):
@@ -726,6 +940,9 @@ class RunnerResult(BaseModel):
     refutation_usage: dict | None = None
     # How many planted decoys the auditor found, as the runner counted them.
     canary: dict | None = None
+    # The rules it proposed for the fixes since the last audit; the server
+    # works out the fixes itself and tests each rule before keeping it.
+    immune: dict | None = None
     duration_ms: int | None = None
     error: str | None = None
 
@@ -774,6 +991,8 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             record_parallax(session, audit, checkout, result.get("coverage"),
                             result.get("coverage_summary"), result.get("canary"),
                             runnerqueue.RUNNER_BACKEND, None, canary_source="runner")
+            record_immune(session, audit, checkout, stored, result.get("immune"),
+                          runnerqueue.RUNNER_BACKEND, None)
         audit.runner_claimed_at = None
         session.commit()
     except Exception as e:  # never leave an audit stuck in "running"
@@ -817,7 +1036,9 @@ def runner_claim(response: Response, user: User = Depends(runner_user),
     if audit is None:
         response.status_code = 204
         return Response(status_code=204)
-    return runnerqueue.to_dict(audit)
+    job = runnerqueue.to_dict(audit)
+    job["immune"] = immune_context(session, audit)
+    return job
 
 
 @app.post("/api/runner/result")

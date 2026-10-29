@@ -16,6 +16,14 @@ _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,254}$")
 
 CLONE_TIMEOUT = int(os.environ.get("SECAUDIT_CLONE_TIMEOUT", "120"))
 
+
+def history_depth() -> str:
+    """How many commits a clone fetches: provenance and fixes read history."""
+    try:
+        return str(max(1, int(os.environ.get("SECAUDIT_HISTORY_DEPTH") or 200)))
+    except ValueError:
+        return "200"
+
 # The repository being cloned is untrusted, and so is anything that could make
 # git act on it. Cloning runs on the server and also through the runner on the
 # owner's own computer, where git reads that person's global and system config:
@@ -121,7 +129,7 @@ def clone_at_commit(url: str, dest: Path, sha: str,
     if not _SHA_RE.match(sha or ""):
         raise CloneError("not a full commit sha")
     clone_repo(url, dest, timeout=timeout, no_checkout=True)
-    _git(["-C", str(dest), "fetch", "--depth", "1", "--no-recurse-submodules",
+    _git(["-C", str(dest), "fetch", "--depth", history_depth(), "--no-recurse-submodules",
           "origin", sha], timeout, "git fetch")
     _git(["-C", str(dest), "checkout", "-q", "--detach", sha], timeout,
          "git checkout")
@@ -130,11 +138,13 @@ def clone_at_commit(url: str, dest: Path, sha: str,
 
 def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
                branch: str | None = None, no_checkout: bool = False) -> str:
-    """Shallow-clone url into dest and return the HEAD commit sha.
+    """Clone url into dest and return the HEAD commit sha.
+
+    The clone keeps SECAUDIT_HISTORY_DEPTH commits, for provenance and fixes.
 
     With no branch, git checks out the repository's default branch.
     """
-    cmd = ["git", *git_config_args(), "clone", "--depth", "1",
+    cmd = ["git", *git_config_args(), "clone", "--depth", history_depth(),
            "--no-recurse-submodules",
            # No template: a template directory is where hooks would come from.
            "--template="]

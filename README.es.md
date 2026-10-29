@@ -442,6 +442,26 @@ solo se guarda su tipo, su fichero y si se encontró. Es una señal, no una
 garantía —quien supiera de los señuelos podría dejarlos pasar y ocultar lo
 real—, y una auditoría limpia cuyo auditor no los vio se marca como no fiable.
 
+**Memoria inmunológica.** Cada hallazgo guarda su **procedencia**: el commit
+más antiguo que tocó sus líneas, según `git blame`, con una confianza —alta si
+todas las líneas vienen de un commit, media si de varios, baja si ahí se acaba
+la historia que trajo el clon (`SECAUDIT_HISTORY_DEPTH`, 200 commits por
+defecto)— y si ese commit *declara* participación de IA en sus trailers
+(`Co-authored-by`, `Assisted-by`, "Generated with Claude Code"…). Declarada, no
+demostrada: los trailers faltan tan a menudo como aparecen.
+
+Cuando un hallazgo demostrado (alcanzable o corroborado) desaparece de la
+siguiente auditoría porque su código ya no está, git dice qué commit lo quitó.
+Al modelo se le enseña el código antes de ese commit y su diff, y propone una
+regla de Semgrep (`SECAUDIT_MAX_RULES`, 3 por defecto; una petición más). El
+servidor solo la da por validada si encaja con el fichero tal como estaba
+justo antes del arreglo y no encaja después —un fichero que Semgrep no puede
+leer no demuestra nada—. Las reglas validadas se ejecutan en cada auditoría
+posterior del proyecto, también las de webhook, sin coste de tokens: lo que
+atrapan es un **zombi**, la regresión de un hallazgo arreglado, que se informa
+aunque el modelo no lo viera. Se pueden descargar como configuración de
+Semgrep en `GET /api/projects/{id}/immune-rules.yaml`.
+
 ### Cómo llega el código al modelo
 
 Ningún backend abre ficheros por su cuenta, así que el repositorio se envía

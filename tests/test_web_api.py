@@ -46,7 +46,7 @@ def clean_backend_env(monkeypatch):
     """Keep the developer's own backend config out of the tests."""
     for name in ("SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
                  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_BIN",
-                 "SECAUDIT_CANARIES",
+                 "SECAUDIT_CANARIES", "SECAUDIT_MAX_RULES", "SECAUDIT_HISTORY_DEPTH",
                  web_auth.ADMIN_LOGIN_ENV, web_auth.ALLOWED_LOGINS_ENV,
                  web_auth.CLIENT_ID_ENV, web_auth.CLIENT_SECRET_ENV,
                  web_auth.SINGLE_USER_ENV, web_settings.SECRET_ENV,
@@ -2646,3 +2646,186 @@ class TestParallax:
         assert session.scalars(select(web_models.ViewDivergence)).all() == []
         assert session.scalars(select(web_models.CanaryRun)).all() == []
         session.close()
+
+
+IMMUNE_RULE = {"message": "SQL built by concatenation", "severity": "ERROR",
+               "patterns": [{"pattern": '$C.execute("..." + $X + "...")'}]}
+
+
+class ImmuneBackend(FakeBackend):
+    """Answers each audit with its own findings and the rule request with a rule."""
+
+    def __init__(self, findings, rule=IMMUNE_RULE):
+        super().__init__(json.dumps(findings))
+        self.rule = rule
+
+    def run(self, project, prompt, timeout=3600):
+        if "FIXED FINDINGS" in prompt:
+            self.prompts.append(prompt)
+            self.last_usage = {"input_tokens": 700, "output_tokens": 90}
+            return json.dumps([{"id": 1, "rule": self.rule,
+                                "explanation": "concatenated SQL"}])
+        return super().run(project, prompt, timeout)
+
+
+@pytest.fixture
+def semgrep(monkeypatch):
+    from tests.test_immune import find_semgrep
+    found = find_semgrep()
+    if not found:
+        pytest.skip("semgrep is not installed")
+    monkeypatch.setenv("SEMGREP_BIN", found)
+    return found
+
+
+class TestImmuneMemory:
+    """Module 3 over the API: a fix learnt as a rule, and the bug coming back."""
+
+    @pytest.fixture(autouse=True)
+    def quiet(self, monkeypatch):
+        monkeypatch.setenv("SECAUDIT_CANARIES", "0")
+        monkeypatch.setenv("SECAUDIT_MAX_REFUTATIONS", "0")
+
+    def audit(self, client, monkeypatch, findings, **kw):
+        backend = ImmuneBackend(findings, **kw)
+        monkeypatch.setattr(web_engine.engine, "select_backend",
+                            lambda flag, config=None: backend)
+        audit_id = client.post("/api/audits", json={
+            "repo_url": "https://github.com/acme/sample"}).json()["id"]
+        return client.get(f"/api/audits/{audit_id}").json(), backend
+
+    def commit(self, repo, text, message):
+        (repo / "app.py").write_text(text)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-qam", message], cwd=repo, check=True)
+
+    def shown_to_hold(self, finding_id):
+        # Module 2 would need an entry point for this; the sample has none.
+        session = web_db.get_session()
+        session.get(web_models.Finding, finding_id).epistemic_status = "reachable"
+        session.commit()
+        session.close()
+
+    def fixed_once(self, client, monkeypatch, sample_repo):
+        first, _ = self.audit(client, monkeypatch, [FAKE_FINDINGS[0]])
+        sqli = first["findings"][0]
+        self.shown_to_hold(sqli["id"])
+        code = (sample_repo / "app.py").read_text()
+        self.commit(sample_repo, code.replace(
+            '"SELECT * FROM users WHERE name = \'" + name + "\'"',
+            '"SELECT * FROM users WHERE name = ?", (name,)'), "bind the name")
+        second, backend = self.audit(client, monkeypatch, [])
+        return first, sqli, second, backend
+
+    def test_every_finding_gets_its_provenance(self, client, signed_in,
+                                               clone_from_sample, monkeypatch):
+        detail, _ = self.audit(client, monkeypatch, FAKE_FINDINGS)
+        f = detail["findings"][0]
+        assert f["provenance"]["origin_commit"] == detail["commit_sha"]
+        assert f["provenance"]["confidence"] == "high"
+        assert f["provenance"]["ai_declared"] is False
+        run = {r["module"]: r for r in detail["modules"]}["immune"]
+        assert run["status"] == "ok" and run["detail"]["provenance"] == 2
+        # No previous audit: nothing fixed, nothing asked of the model.
+        assert run["detail"]["fixed"] == 0 and run["tokens_in"] == 0
+
+    def test_a_fix_becomes_a_validated_rule(self, client, signed_in, clone_from_sample,
+                                            monkeypatch, sample_repo, semgrep):
+        first, sqli, second, backend = self.fixed_once(client, monkeypatch, sample_repo)
+        # The model was shown the code before the fix and the fix itself.
+        [prompt] = backend.prompts[1:]
+        assert "FIXED FINDINGS" in prompt and "+    return cur.execute(" in prompt
+        [rule] = second["immune_rules"]
+        assert rule["validated"] and (rule["before"], rule["after"]) == (1, 0)
+        assert rule["vulnerable_commit"] == first["commit_sha"]
+        assert rule["fix_commit"] == second["commit_sha"]
+        assert rule["finding_id"] == sqli["id"] and rule["file"] == "app.py"
+        run = {r["module"]: r for r in second["modules"]}["immune"]
+        assert run["detail"]["fixed"] == 1 and run["detail"]["rules_validated"] == 1
+        assert (run["tokens_in"], run["tokens_out"]) == (700, 90)
+        old = client.get(f"/api/audits/{first['id']}").json()["findings"][0]
+        assert old["fix_commit"] == second["commit_sha"]
+        yaml = client.get(f"/api/projects/{second['project_id']}/immune-rules.yaml")
+        assert yaml.status_code == 200 and rule["rule_id"] in yaml.text
+        assert '$C.execute(\\"...\\" + $X + \\"...\\")' in yaml.text
+
+    def test_a_rule_that_matches_the_fix_is_kept_as_not_validated(
+            self, client, signed_in, clone_from_sample, monkeypatch, sample_repo,
+            semgrep):
+        loose = {"pattern": "$C.execute(...)"}
+        first, _ = self.audit(client, monkeypatch, [FAKE_FINDINGS[0]], rule=loose)
+        self.shown_to_hold(first["findings"][0]["id"])
+        code = (sample_repo / "app.py").read_text()
+        self.commit(sample_repo, code.replace('\'" + name + "\'")', '?", (name,))'), "fix")
+        second, _ = self.audit(client, monkeypatch, [], rule=loose)
+        [rule] = second["immune_rules"]
+        assert not rule["validated"] and rule["reason"] == "it still matches the fix"
+        yaml = client.get(f"/api/projects/{second['project_id']}/immune-rules.yaml")
+        assert yaml.text == "rules: []\n"
+
+    def test_the_bug_written_again_is_a_zombie(self, client, signed_in, clone_from_sample,
+                                               monkeypatch, sample_repo, semgrep):
+        first, sqli, second, _ = self.fixed_once(client, monkeypatch, sample_repo)
+        code = (sample_repo / "app.py").read_text()
+        self.commit(sample_repo, code + (
+            '\ndef by_mail(cur, mail):\n'
+            '    return cur.execute("SELECT 1 WHERE m = \'" + mail + "\'")\n'),
+            "lookup by mail")
+        # The model misses it this time; the rule does not, at no token cost.
+        third, backend = self.audit(client, monkeypatch, [])
+        assert not any("FIXED FINDINGS" in p for p in backend.prompts)
+        [zombie] = third["findings"]
+        assert zombie["zombie_of"]["finding_id"] == sqli["id"]
+        assert zombie["zombie_of"]["fix_commit"] == second["commit_sha"]
+        assert zombie["title"] == "Regression: SQL injection in get_user"
+        assert zombie["file"] == "app.py" and zombie["line"] == 7
+        assert "mail" in zombie["code_snippet"]
+        assert zombie["provenance"]["origin_commit"] == third["commit_sha"]
+        assert third["summary"]["critical"] == 1
+        run = {r["module"]: r for r in third["modules"]}["immune"]
+        assert run["detail"]["zombies"] == 1 and run["detail"]["items"] == 1
+
+    def test_the_same_finding_reported_again_is_a_zombie(
+            self, client, signed_in, clone_from_sample, monkeypatch, sample_repo):
+        first, _ = self.audit(client, monkeypatch, [FAKE_FINDINGS[0]])
+        self.shown_to_hold(first["findings"][0]["id"])
+        original = (sample_repo / "app.py").read_text()
+        self.commit(sample_repo, original.replace('\'" + name + "\'")', '?", (name,))'),
+                    "fix")
+        self.audit(client, monkeypatch, [])
+        self.commit(sample_repo, original, "revert the fix")
+        third, _ = self.audit(client, monkeypatch, [FAKE_FINDINGS[0]])
+        [f] = third["findings"]
+        assert f["zombie_of"]["finding_id"] == first["findings"][0]["id"]
+
+    def test_the_runner_is_sent_the_previous_findings(
+            self, client, signed_in, master_key, clone_from_sample, monkeypatch,
+            sample_repo):
+        first, _ = self.audit(client, monkeypatch, [FAKE_FINDINGS[0]])
+        self.shown_to_hold(first["findings"][0]["id"])
+        client.put("/api/settings", json={"backend": "claude-code"})
+        token = client.post("/api/runner/token").json()["token"]
+        client.post("/api/audits", json={"repo_url": "https://github.com/acme/sample"})
+        job = client.post("/api/runner/claim",
+                          headers={"Authorization": f"Bearer {token}"}).json()
+        [prev] = job["immune"]["previous"]
+        assert prev["id"] == first["findings"][0]["id"]
+        assert job["immune"]["previous_commit"] == first["commit_sha"]
+        assert "description" not in prev
+
+    def test_a_failure_is_the_modules_not_the_audits(self, client, signed_in,
+                                                     clone_from_sample, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(web_main.immune, "provenance", broken)
+        detail, _ = self.audit(client, monkeypatch, FAKE_FINDINGS)
+        assert detail["status"] == "done" and len(detail["findings"]) == 2
+        run = {r["module"]: r for r in detail["modules"]}["immune"]
+        assert run["status"] == "error" and "boom" in run["error"]
+
+    def test_exporting_someone_elses_rules_is_not_found(self, client, signed_in,
+                                                       clone_from_sample, monkeypatch):
+        detail, _ = self.audit(client, monkeypatch, [])
+        sign_in(client, github_id=99, login="other")
+        r = client.get(f"/api/projects/{detail['project_id']}/immune-rules.yaml")
+        assert r.status_code == 404
