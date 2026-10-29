@@ -144,12 +144,17 @@ def _last_name(node) -> str | None:
     return None
 
 
-def _refs(node) -> set:
-    """Every name a piece of code mentions: called, passed or looked up."""
+def _refs(node, own: str | None = None) -> set:
+    """Every name a piece of code mentions: called, passed or looked up.
+
+    A function's own bare name is recursion and does not count; db.search
+    inside a view also called search is another function, and does.
+    """
     out = set()
     for n in ast.walk(node):
         if isinstance(n, ast.Name):
-            out.add(n.id)
+            if n.id != own:
+                out.add(n.id)
         elif isinstance(n, ast.Attribute):
             out.add(n.attr)
         elif isinstance(n, ast.Constant) and isinstance(n.value, str) \
@@ -212,7 +217,7 @@ class Index:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     fn = Function(".".join(stack + [child.name]), child.name, file,
                                   child.lineno, child.end_lineno or child.lineno, child)
-                    fn.refs = _refs(child) - {child.name}
+                    fn.refs = _refs(child, own=child.name)
                     for dec in child.decorator_list:
                         self.mentions.update(_refs(dec))
                         if _last_name(dec) in ENTRY_DECORATORS:

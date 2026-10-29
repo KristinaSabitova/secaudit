@@ -263,6 +263,22 @@ def export_users():
 '''
 
 
+class TestNamesakes:
+    def test_a_view_calling_its_namesake_query_is_linked(self, tmp_path):
+        (tmp_path / "app.py").write_text(
+            "from flask import request\nimport db\n\n@app.route('/search')\n"
+            "def search():\n    return db.search(request.args['q'])\n")
+        (tmp_path / "db.py").write_text(
+            "def search(term):\n"
+            "    return cur.execute(\"SELECT * FROM t WHERE n = '\" + term + \"'\")\n")
+        f = finding(tmp_path, "db.py", "return cur.execute(", "app.py:search — request.args",
+                    "db.py:search — cur.execute")
+        outcome = assess(tmp_path, f)
+        assert results(outcome) == {"callgraph": "survived", "sanitizer": "survived",
+                                    "reachability": "survived"}
+        assert outcome["status"] == REACHABLE
+
+
 class TestFlowsThroughStoredState:
     def test_reading_the_request_is_not_the_sink(self, tmp_path):
         (tmp_path / "app.py").write_text(SESSIONS)
