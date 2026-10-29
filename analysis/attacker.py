@@ -186,6 +186,11 @@ TECHNIQUES = {
 _AUTH_NEEDED = re.compile(r"(?i)\b(authenticated|logged[- ]in|login required|must be "
                           r"signed in|any (logged|signed)|autenticad|con sesi[oó]n|"
                           r"usuario registrado|low[- ]privilege)")
+# Behind the admin door: a step that starts from administering the application.
+_ADMIN_NEEDED = re.compile(r"(?i)(\b(only|solo|sólo)\b[^.;]{0,30}?\badmin|admins? only|requires? (an? )?admin|"
+                           r"admin(istrator)? (role|account|session|privileges?) "
+                           r"(is )?required|requiere (un |el )?(rol de )?admin|"
+                           r"(cuenta|sesi[oó]n|rol) de administrador)")
 
 
 def kind_of(finding: dict) -> str | None:
@@ -217,6 +222,12 @@ def finding_edges(f: dict) -> list[Edge]:
     if kind == "hardcoded_secret":
         source = REPO
         needs = preconditions or ["read access to the repository or to a copy of it"]
+    # Only what it needs says so: a description of a missing admin check
+    # talks about administrators too.
+    elif kind not in ("privilege", "missing_auth") and \
+            _ADMIN_NEEDED.search(" ".join(preconditions)):
+        source = ADMIN
+        needs = preconditions or ["an administrator's account or session"]
     elif kind in ("idor", "privilege", "csrf") or _AUTH_NEEDED.search(text):
         source = ACCOUNT
         needs = preconditions or ["a low-privilege account"]
@@ -576,19 +587,31 @@ _ADMIN = re.compile(r"(?i)(/admin\b|is_admin|isadmin|role\s*==\s*['\"]admin|supe
                     r"@admin|admin_required)")
 
 
+# What a suggested jewel says, in the language of the audit that suggests it.
+_JEWEL_TEXT = {
+    "en": {"secrets": "the secrets the running application holds",
+           "user_data": "the user data in the database", "used_in": "used in {}",
+           "deployment": "deployment ({})", "administration": "administration ({})"},
+    "es": {"secrets": "los secretos que tiene la aplicación en marcha",
+           "user_data": "los datos de usuarios de la base de datos", "used_in": "se usa en {}",
+           "deployment": "el despliegue ({})", "administration": "la administración ({})"},
+}
+
+
 def suggest_jewels(texts: dict[str, str], leverage: list[dict],
-                   findings: list[dict]) -> list[dict]:
+                   findings: list[dict], language: str = "en") -> list[dict]:
     """The crown jewels the repository itself points at, with the evidence."""
-    out = [{"kind": "secrets", "target": "the secrets the running application holds"}]
+    t = _JEWEL_TEXT.get(language, _JEWEL_TEXT["en"])
+    out = [{"kind": "secrets", "target": t["secrets"]}]
     db = next((rel for rel, text in texts.items() if _DB.search(text)), None)
     if db or any(kind_of(f) in ("sql_injection", "idor") for f in findings):
-        out.append({"kind": "user_data", "target": f"the user data in the database"
-                    + (f" (used in {db})" if db else "")})
+        out.append({"kind": "user_data", "target": t["user_data"]
+                    + (f" ({t['used_in'].format(db)})" if db else "")})
     codes = {(r["file"], c.get("code")) for r in leverage for c in r.get("reasons") or []}
     deploy = sorted(f for f, c in codes if c == "ci_deploy")
     if deploy:
-        out.append({"kind": "deployment", "target": f"deployment ({deploy[0]})"})
+        out.append({"kind": "deployment", "target": t["deployment"].format(deploy[0])})
     admin = next((rel for rel, text in texts.items() if _ADMIN.search(text)), None)
     if admin:
-        out.append({"kind": "administration", "target": f"administration ({admin})"})
+        out.append({"kind": "administration", "target": t["administration"].format(admin)})
     return out

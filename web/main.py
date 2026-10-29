@@ -592,7 +592,7 @@ def suggest_crown_jewels(session: Session, audit: Audit, texts: dict,
     if audit.project is None:
         return
     taken = {j.kind for j in audit.project.crown_jewels}
-    for s in attacker.suggest_jewels(texts, leverage_rows, findings):
+    for s in attacker.suggest_jewels(texts, leverage_rows, findings, audit.language or "en"):
         if s["kind"] not in taken:
             audit.project.crown_jewels.append(CrownJewel(
                 kind=s["kind"], target=s["target"][:512], declared_by="suggested"))

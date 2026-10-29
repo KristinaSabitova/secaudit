@@ -15,7 +15,8 @@ def finding(id, category, title, status="reachable", severity="low", **kw):
             "epistemic_status": status, "hypothesis": kw.pop("hypothesis", None), **kw}
 
 
-# Three low findings that, together, give an anonymous visitor the user data.
+# Two low findings that, together, give an anonymous visitor the user data,
+# and a third that gives nobody anything.
 LOW_CHAIN = [
     finding(1, "authz", "Debug endpoint without authentication",
             description="/debug/login issues a session without auth (unauthenticated)"),
@@ -96,7 +97,7 @@ class TestFindingsAsSteps:
 
 
 class TestPaths:
-    def test_three_low_findings_make_a_critical_path(self):
+    def test_two_low_findings_make_a_critical_path(self):
         result = run(LOW_CHAIN)
         p = path(result, "anonymous", "user_data")
         assert steps(result, p) == [("start:anonymous", "sends_requests"),
@@ -109,6 +110,36 @@ class TestPaths:
                                           "personas": ["anonymous"]}
         assert result["contextual"][2]["severity"] == "critical"
         assert 3 not in result["contextual"]       # it is on no path
+
+    def test_three_low_findings_make_a_critical_path(self):
+        # Each one is needed: no account without the first, no admin without
+        # the second, no code without the third.
+        injection = finding(4, "injection", "Command injection in the backup tool",
+                            description="the file name reaches subprocess with shell=True",
+                            hypothesis={"preconditions": ["only reachable to an admin"]})
+        result = run(LOW_CHAIN[:2] + [injection],
+                     jewels=[{"kind": "code_execution", "target": "the server"}])
+        p = path(result, "anonymous", "code_execution")
+        assert [result["edges"][i].finding_id for i in p["edges"]] == [None, 1, 2, 4]
+        assert p["severity"] == "critical"
+        assert all(result["contextual"][f]["severity"] == "critical" for f in (1, 2, 4))
+        [cut] = attacker.min_cut(result["edges"], result["goals"], result["paths"])[:1]
+        assert ["anonymous", "code_execution"] in cut["cuts"]
+        assert cut["fix"]["type"] == "finding" and cut["fix"]["id"] in (1, 2, 4)
+
+    def test_an_admin_only_flaw_starts_behind_the_admin_door(self):
+        f = finding(1, "injection", "Inyección de comandos",
+                    description="subprocess con shell=True",
+                    hypothesis={"preconditions": ["requiere rol de administrador"]})
+        [e] = attacker.finding_edges(f)
+        assert e.source == attacker.ADMIN
+
+    def test_a_missing_admin_check_does_not_need_an_admin(self):
+        f = finding(1, "authz", "Exportación sin comprobación de rol",
+                    description="Corrección: comprobar un rol de administrador en el servidor",
+                    hypothesis={"preconditions": ["cualquier sesión"]})
+        [e] = attacker.finding_edges(f)
+        assert e.source == attacker.ACCOUNT
 
     def test_the_flaw_that_loses_a_tie_is_worth_as_much(self):
         twin = finding(4, "authz", "Login bypass", description="authentication bypass")
@@ -218,6 +249,12 @@ class TestJewels:
         kinds = {j["kind"]: j["target"] for j in attacker.suggest_jewels(texts, leverage, [])}
         assert set(kinds) == {"secrets", "user_data", "deployment", "administration"}
         assert "app.py" in kinds["user_data"] and "deploy.yml" in kinds["deployment"]
+
+    def test_in_the_language_of_the_audit(self):
+        texts = {"app.py": "import sqlite3\n"}
+        kinds = {j["kind"]: j["target"] for j in attacker.suggest_jewels(texts, [], [], "es")}
+        assert kinds["secrets"].startswith("los secretos")
+        assert kinds["user_data"] == "los datos de usuarios de la base de datos (se usa en app.py)"
 
     def test_nothing_to_point_at_only_the_secrets(self):
         assert [j["kind"] for j in attacker.suggest_jewels({"a.py": "x=1"}, [], [])] == ["secrets"]
