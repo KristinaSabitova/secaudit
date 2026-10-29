@@ -633,3 +633,19 @@ See [DEPLOY.md](DEPLOY.md) for running it in production.
 ```bash
 python3 -m pytest tests/ -v
 ```
+
+### The lab
+
+`tests/lab/make_lab.py` builds two inert repositories: `secaudit-lab`, with a
+case for every module (instructions hidden in `CLAUDE.md`, a hook that runs on
+its own, padding, two prepared false positives, a fix and its reintroduction,
+an unwatched deploy workflow, and three low-severity flaws that together make
+a critical path), and `secaudit-lab-clean`, the same shop written with care,
+to count false positives against. Hooks and scripts do nothing and the
+applications refuse to start. What each case should produce is in
+`tests/lab/EXPECTED.md`, and `tests/test_lab.py` checks it by auditing both
+through the server.
+
+```bash
+python3 tests/lab/make_lab.py ../secaudit-lab ../secaudit-lab-clean
+```
