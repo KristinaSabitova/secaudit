@@ -243,6 +243,46 @@ class TestWhatTheCallerPasses:
         assert results(assess(tmp_path, f))["sanitizer"] == "survived"
 
 
+SESSIONS = '''\
+from flask import Flask, jsonify, request, session
+
+app = Flask(__name__)
+
+
+@app.route("/debug/impersonate")
+def impersonate():
+    session["user"] = request.args.get("user", "guest")
+    return {"ok": True}
+
+
+@app.route("/admin/export")
+def export_users():
+    if "user" not in session:
+        return {"error": "sign in"}, 401
+    return jsonify(db().execute("SELECT id, email FROM users").fetchall())
+'''
+
+
+class TestFlowsThroughStoredState:
+    def test_reading_the_request_is_not_the_sink(self, tmp_path):
+        (tmp_path / "app.py").write_text(SESSIONS)
+        f = finding(tmp_path, "app.py", 'session["user"] = request.args.get',
+                    'app.py:impersonate — request.args.get("user")',
+                    'app.py:impersonate — session["user"] = ...', category="authz")
+        outcome = assess(tmp_path, f)
+        assert results(outcome)["sanitizer"] == "inconclusive"
+        assert outcome["status"] == REACHABLE
+
+    def test_two_routes_joined_by_the_session_are_not_refuted(self, tmp_path):
+        (tmp_path / "app.py").write_text(SESSIONS)
+        f = finding(tmp_path, "app.py", "return jsonify(db()",
+                    'app.py:impersonate — request.args.get("user")',
+                    "app.py:export_users — jsonify(rows)", category="authz")
+        outcome = assess(tmp_path, f)
+        assert results(outcome)["callgraph"] == "inconclusive"
+        assert outcome["status"] != REFUTED
+
+
 class TestDeadCodeWithoutAHypothesis:
     def test_a_flow_finding_in_dead_code_is_refuted(self, lab):
         f = finding(lab, "app/db.py",

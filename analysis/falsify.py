@@ -332,6 +332,13 @@ def try_callgraph(index: Index, hypothesis: dict, sink: Function) -> dict:
     if path:
         return {"result": SURVIVED, "evidence": {"chain": _steps(path)},
                 "note": "a chain of calls links the source to the sink"}
+    # Two doors of their own: one request leaves state (a session, a row)
+    # that another reads, so no call joins them and none is expected to.
+    if source.entry and sink.entry:
+        return {"result": INCONCLUSIVE,
+                "evidence": {"source": source.where(), "sink": sink.where()},
+                "note": f"{source.where()} and {sink.where()} are separate entry "
+                        f"points: what links them is stored state, not a call"}
     return {"result": REFUTED, "evidence": {"source": source.where(), "sink": sink.where()},
             "note": f"nothing in {source.where()} calls or refers to anything "
                     f"that leads to {sink.where()}"}
@@ -350,6 +357,8 @@ DANGEROUS = {"execute", "executemany", "executescript", "raw", "extra",
              "urlopen", "get", "post", "request", "Template", "from_string",
              "text", "write", "unlink", "remove", "rmtree"}
 QUERY_CALLS = {"execute", "executemany", "raw", "text"}
+# The objects a web framework hands the incoming request in.
+INPUT_OBJECTS = {"request", "req"}
 # A value passed through one of these comes out unable to carry the attack.
 GENERIC_SANITIZERS = {"int", "float", "bool", "UUID", "abs", "len", "ord",
                       "hex", "Decimal", "date", "fromisoformat", "strptime"}
@@ -477,10 +486,20 @@ class _Values:
         return max(values, key=_ORDER.get) if values else CONSTANT
 
 
+def _reads_input(call: ast.Call) -> bool:
+    """request.args.get(...) and the like: where input comes in, never the
+    dangerous use, however literal its arguments are."""
+    node = call.func
+    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return isinstance(node, ast.Name) and node.id in INPUT_OBJECTS
+
+
 def _sink_call(fn: Function, hypothesis: dict, line: int | None,
                line_end: int | None) -> ast.Call | None:
     wanted = set(re.findall(r"[A-Za-z_]\w*", hypothesis["sink"]))
-    calls = [n for n in ast.walk(fn.node) if isinstance(n, ast.Call)]
+    calls = [n for n in ast.walk(fn.node) if isinstance(n, ast.Call)
+             and not _reads_input(n)]
     in_evidence = [c for c in calls if line and
                    line <= c.lineno <= (line_end or line)]
     for group in (in_evidence, calls):
