@@ -397,6 +397,42 @@ elsewhere a finding can be refuted but goes no further than `exists`.
 `GET /api/stats/refutation` turns this into a measured false-positive rate
 per backend and model.
 
+### Where the views of a repository disagree
+
+The same file is several things at once, and deception lives in the gap
+between them. The server compares five views of every file of its own
+checkout, without running any of it:
+
+- **what a person sees ≠ the bytes** (`hidden_content`): invisible Unicode —
+  tag characters, which are decoded and shown, bidirectional controls,
+  zero-width characters, variation selectors carrying bytes — and Markdown
+  comments that read like instructions, which a rendered page never shows.
+- **the bytes ≠ what runs** (`unexpected_execution`): npm install scripts and
+  `binding.gyp`, VS Code tasks that run on opening the folder, agent hooks and
+  MCP servers, dev container commands, git hooks and `.gitattributes` drivers,
+  code at the top of `setup.py` (parsed with `ast`, never run), in-tree build
+  backends, `.pth` files, and links pointing out of the repository.
+- **the bytes ≠ what the auditor was sent** (`audit_blind_spot`): from the
+  coverage report — high-risk files left out or cut short, committed
+  dependency directories, and padding that pushed something out.
+- **git ≠ the published package** (`release_mismatch`): for a Python or npm
+  package declared at the root, the version on PyPI or npm is compared with
+  the source at its git tag (`v1.2.3`, `1.2.3`…). Only the official registries
+  are asked, archives are read in memory and never extracted, and with no tag
+  nothing is compared — it is said, not guessed. `SECAUDIT_PUBLISHED_CHECK=0`
+  turns this view off.
+
+**The auditor's integrity.** After the audit, one of its requests is sent
+again with two or three decoy vulnerabilities planted in a copy of its files,
+different in kind and place on every run (`SECAUDIT_CANARIES`, default 3; 0
+turns it off). If the auditor misses them where it was looking, that
+repository's context is degrading it. The decoys live only in memory: they
+never touch the checkout and never become findings, and only their kind,
+file and whether each was found are kept. It is a signal, not a guarantee —
+someone who knew about the decoys could let them through and still hide the
+real thing — and a clean audit whose auditor missed them is marked as not
+reliable.
+
 ### How the code reaches the model
 
 No backend opens files itself, so the repository is sent as text, line-numbered

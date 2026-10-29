@@ -404,6 +404,44 @@ solo lee Python: en otros lenguajes un hallazgo puede refutarse, pero no pasa
 de `exists`. `GET /api/stats/refutation` convierte todo esto en una tasa de
 falsos positivos medida por motor y modelo.
 
+### Dónde no coinciden las vistas de un repositorio
+
+Un mismo fichero es varias cosas a la vez, y el engaño vive en la distancia
+entre ellas. El servidor compara cinco vistas de cada fichero de su propio
+checkout, sin ejecutar nada:
+
+- **lo que ve una persona ≠ los bytes** (`hidden_content`): Unicode invisible
+  —caracteres de etiqueta, que se decodifican y se muestran, controles
+  bidireccionales, caracteres de anchura cero, selectores de variación que
+  transportan bytes— y comentarios de Markdown que parecen instrucciones, que
+  una página renderizada nunca enseña.
+- **los bytes ≠ lo que se ejecuta** (`unexpected_execution`): scripts de
+  instalación de npm y `binding.gyp`, tareas de VS Code que se lanzan al abrir
+  la carpeta, hooks y servidores MCP de agentes, comandos de dev container,
+  hooks de git y drivers de `.gitattributes`, código en lo alto de `setup.py`
+  (leído con `ast`, nunca ejecutado), backends de build dentro del repo,
+  ficheros `.pth` y enlaces que apuntan fuera del repositorio.
+- **los bytes ≠ lo que se envió al auditor** (`audit_blind_spot`): a partir
+  del informe de cobertura —ficheros de alto riesgo que se quedaron fuera o
+  cortados, directorios de dependencias subidos al repo y relleno que empujó
+  algo fuera.
+- **git ≠ el paquete publicado** (`release_mismatch`): para un paquete de
+  Python o npm declarado en la raíz, la versión de PyPI o npm se compara con
+  el código de su tag de git (`v1.2.3`, `1.2.3`…). Solo se consulta a los
+  registros oficiales, los archivos se leen en memoria sin extraerlos y, sin
+  tag, no se compara nada: se dice, no se supone. `SECAUDIT_PUBLISHED_CHECK=0`
+  desactiva esta vista.
+
+**Integridad del auditor.** Tras la auditoría se repite una de sus peticiones
+con dos o tres vulnerabilidades señuelo plantadas en una copia de sus
+ficheros, de tipo y lugar distintos en cada ejecución (`SECAUDIT_CANARIES`, 3
+por defecto; 0 lo desactiva). Si el auditor no las ve donde estaba mirando, el
+contexto de ese repositorio lo está degradando. Los señuelos solo existen en
+memoria: no tocan el checkout ni se convierten en hallazgos, y de cada uno
+solo se guarda su tipo, su fichero y si se encontró. Es una señal, no una
+garantía —quien supiera de los señuelos podría dejarlos pasar y ocultar lo
+real—, y una auditoría limpia cuyo auditor no los vio se marca como no fiable.
+
 ### Cómo llega el código al modelo
 
 Ningún backend abre ficheros por su cuenta, así que el repositorio se envía

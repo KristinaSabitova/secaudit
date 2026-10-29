@@ -25,8 +25,8 @@ from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
 from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
-from .models import (LANGUAGES, Audit, Finding, Hypothesis, ModuleRun,
-                     RefutationAttempt, User, audit_to_dict,
+from .models import (LANGUAGES, Audit, CanaryRun, Finding, Hypothesis, ModuleRun,
+                     RefutationAttempt, User, ViewDivergence, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
                      project_for, summarize)
 from .settings import InvalidOllamaURL, SecretsUnavailable
@@ -41,7 +41,7 @@ from .webhook import (
 )
 
 # Importable once .engine has put the repository root on sys.path.
-from analysis import evidence, falsify  # noqa: E402
+from analysis import evidence, falsify, parallax  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -249,6 +249,74 @@ def record_falsifiability(session: Session, audit: Audit, checkout: Path | None,
     ))
 
 
+def _count(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def record_parallax(session: Session, audit: Audit, checkout: Path | None,
+                    coverage: list[dict] | None, coverage_summary: dict | None,
+                    canary: dict | None, backend: str | None, model: str | None,
+                    canary_source: str = "audit process") -> None:
+    """Module 1: where the views of the repository disagree, and the canaries.
+
+    The divergences are computed here, on this server's own checkout. The
+    canary count comes from whoever held the key — the audit process or the
+    owner's runner — and is recorded as what they reported. Like module 2, a
+    failure is recorded on the module and never fails the audit.
+    """
+    start = time.monotonic()
+    canary = canary if isinstance(canary, dict) else {}
+    usage = canary.get("usage") if isinstance(canary.get("usage"), dict) else {}
+    by_kind: dict[str, int] = {}
+    items, release, integrity, left_out = 0, None, None, 0
+    try:
+        result = parallax.analyze(checkout, coverage, coverage_summary)
+        for d in result["divergences"]:
+            row = parallax.normalize_kind_severity(d)
+            session.add(ViewDivergence(audit_id=audit.id, **row))
+            by_kind[row["kind"]] = by_kind.get(row["kind"], 0) + 1
+            items += 1
+        release = result["published"]
+        left_out = result.get("left_out") or 0
+        status, error = "ok", None
+    except Exception as e:      # the audit stands without it
+        log.exception("parallax failed for audit %s", audit.id)
+        status, error = "error", sanitize_error(str(e))[:500]
+
+    planted, found = _count(canary.get("planted")), _count(canary.get("found"))
+    if planted and not canary.get("error"):
+        found = min(found, planted)
+        integrity = round(found / planted, 3)
+        decoys = canary.get("decoys") if isinstance(canary.get("decoys"), list) else []
+        session.add(CanaryRun(
+            audit_id=audit.id, canaries_planted=planted, canaries_found=found,
+            integrity_score=integrity,
+            # Kind, file and whether it was found: nothing of the decoy itself.
+            detail={"decoys": [{"kind": str(d.get("kind") or "")[:40],
+                                "file": str(d.get("file") or "")[:512],
+                                "found": bool(d.get("found"))}
+                               for d in decoys[:10] if isinstance(d, dict)],
+                    "request": _count(canary.get("request")) or None,
+                    "source": canary_source}))
+    session.add(ModuleRun(
+        audit_id=audit.id, module="parallax", status=status,
+        backend=backend if planted else None, model=model if planted else None,
+        tokens_in=_count(usage.get("input_tokens")),
+        tokens_out=_count(usage.get("output_tokens")),
+        duration_ms=_ms_since(start), error=error,
+        detail={"items": items, "by_kind": by_kind, "published": release,
+                "left_out": left_out,
+                "integrity_score": integrity,
+                "canary_skipped": str(canary.get("skipped"))[:200]
+                if canary.get("skipped") else None,
+                "canary_error": sanitize_error(str(canary["error"]))[:200]
+                if canary.get("error") else None},
+    ))
+
+
 def execute_audit(audit_id: str) -> None:
     """Background task: clone the repo, run the engine, persist the outcome."""
     session = get_session()
@@ -293,6 +361,9 @@ def execute_audit(audit_id: str) -> None:
                 record_falsifiability(session, audit, dest, stored,
                                       *backend_identity(config),
                                       result.get("refutation_usage"))
+                record_parallax(session, audit, dest, result.get("coverage"),
+                                result.get("coverage_summary"), result.get("canary"),
+                                *backend_identity(config))
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
@@ -653,6 +724,8 @@ class RunnerResult(BaseModel):
     usage: dict | None = None
     # The devil's advocate's request; its verdicts ride on the findings.
     refutation_usage: dict | None = None
+    # How many planted decoys the auditor found, as the runner counted them.
+    canary: dict | None = None
     duration_ms: int | None = None
     error: str | None = None
 
@@ -698,6 +771,9 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             record_falsifiability(session, audit, checkout, stored,
                                   runnerqueue.RUNNER_BACKEND, None,
                                   result.get("refutation_usage"))
+            record_parallax(session, audit, checkout, result.get("coverage"),
+                            result.get("coverage_summary"), result.get("canary"),
+                            runnerqueue.RUNNER_BACKEND, None, canary_source="runner")
         audit.runner_claimed_at = None
         session.commit()
     except Exception as e:  # never leave an audit stuck in "running"

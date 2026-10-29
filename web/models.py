@@ -114,6 +114,12 @@ class Audit(Base):
     module_runs: Mapped[list["ModuleRun"]] = relationship(
         cascade="all, delete-orphan", order_by="ModuleRun.id",
     )
+    divergences: Mapped[list["ViewDivergence"]] = relationship(
+        cascade="all, delete-orphan", order_by="ViewDivergence.id",
+    )
+    canary_runs: Mapped[list["CanaryRun"]] = relationship(
+        cascade="all, delete-orphan", order_by="CanaryRun.id",
+    )
     project: Mapped["Project | None"] = relationship()
 
 
@@ -592,7 +598,21 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
             findings = [f for f in findings if f.verification_status == VERIFIED]
         d["findings"] = [finding_to_dict(f) for f in findings]
         d["modules"] = [module_run_to_dict(r) for r in audit.module_runs]
+        d["divergences"] = [divergence_to_dict(v) for v in audit.divergences]
+        d["canary"] = (canary_run_to_dict(audit.canary_runs[-1])
+                       if audit.canary_runs else None)
     return d
+
+
+def divergence_to_dict(v: "ViewDivergence") -> dict:
+    return {"id": v.id, "file": v.file, "view_a": v.view_a, "view_b": v.view_b,
+            "kind": v.kind, "detail": v.detail, "severity": v.severity,
+            "evidence": v.evidence}
+
+
+def canary_run_to_dict(run: "CanaryRun") -> dict:
+    return {"planted": run.canaries_planted, "found": run.canaries_found,
+            "integrity_score": run.integrity_score, "detail": run.detail}
 
 
 def coverage_from_dict(audit_id: str, row: dict) -> Coverage:

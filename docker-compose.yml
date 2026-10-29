@@ -46,6 +46,10 @@ services:
       # the cost ceiling of an audit.
       SECAUDIT_MAX_CHUNKS: ${SECAUDIT_MAX_CHUNKS:-}
       SECAUDIT_MAX_REFUTATIONS: ${SECAUDIT_MAX_REFUTATIONS:-}
+      # Decoys planted to measure the auditor's integrity: one more request.
+      SECAUDIT_CANARIES: ${SECAUDIT_CANARIES:-}
+      # 0 stops the server from asking PyPI and npm for published packages.
+      SECAUDIT_PUBLISHED_CHECK: ${SECAUDIT_PUBLISHED_CHECK:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
     # http://host.docker.internal:11434.
     extra_hosts:
