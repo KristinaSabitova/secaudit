@@ -51,7 +51,7 @@ from pathlib import Path, PurePosixPath
 # The deterministic half of the audit lives next to this file. Run as a script,
 # this file's directory is already on sys.path; imported, it may not be.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analysis import canary, chunking, evidence, falsify  # noqa: E402
+from analysis import canary, chunking, evidence, falsify, immune  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Finding schema
@@ -1548,6 +1548,96 @@ def canary_check(project: Path, backend: "AuditBackend", base_prompt: str,
         out["error"] = "the answer was not a JSON array"
         return out
     out.update(canary.score(decoys, parsed))
+    return out
+
+# ---------------------------------------------------------------------------
+# Immune memory: a rule for every fix (module 3)
+# ---------------------------------------------------------------------------
+
+IMMUNE_PROMPT = """\
+Each block below is a security finding that this project FIXED. It shows the
+vulnerable code and the diff of the commit that fixed it. Write, for each one,
+a Semgrep rule that catches the vulnerable pattern, so that the same mistake
+is caught if it comes back.
+
+{notice}
+
+The rule is tested against this project's history and thrown away unless it
+matches the file as it was before the fix and does NOT match it after the fix.
+Make it general enough to catch the same mistake written slightly differently
+(use metavariables such as $X, and "..."), and narrow enough to leave the fixed
+code alone (use "pattern-not" for the safe form when it helps).
+
+Output ONLY a valid JSON array, one element per finding, with these fields:
+  "id":       the finding's id, exactly as given
+  "rule":     the rule as a JSON object with "message", "severity" (ERROR,
+              WARNING or INFO) and exactly one of "pattern", "patterns",
+              "pattern-either" or "pattern-regex", written as in Semgrep's
+              YAML. Only pattern operators: no "fix", "paths" or "options".
+              Omit "id" and "languages": they are set from the file.
+  "explanation": one sentence on what the rule looks for
+
+FIXED FINDINGS
+"""
+
+
+def _immune_block(n: int, finding: dict, fixed: dict) -> str:
+    language = immune.language_of(fixed["file"]) or "?"
+    return "\n".join([
+        f"### id {n}",
+        f"title: {finding.get('title', '')}",
+        f"category: {finding.get('category', '')}   language: {language}",
+        f"file: {fixed['file']}",
+        "vulnerable code:", str(finding.get("code_snippet") or "")[:1500],
+        "file before the fix:", fixed.get("before", "")[:4000],
+        "diff of the fix:", fixed.get("diff", "")[:3000]]) + "\n"
+
+
+def propose_rules(project: Path, backend: "AuditBackend", previous: list[dict],
+                  previous_commit: str | None, timeout: int = 3600,
+                  limit: int = immune.DEFAULT_MAX_RULES) -> dict:
+    """Ask the backend for a Semgrep rule for each finding fixed since the last audit.
+
+    Which findings were fixed, and by which commit, is read from git, not from
+    the model. The rules come back as proposals: the server validates each one
+    against the history before keeping it.
+    """
+    out = {"fixed": [], "proposals": {}, "requested": 0,
+           "usage": {"input_tokens": 0, "output_tokens": 0}, "error": None}
+    fixed = immune.find_fixed(project, previous, previous_commit)
+    out["fixed"] = [{k: v for k, v in f.items() if k not in ("before", "diff")}
+                    for f in fixed]
+    by_print = {f.get("fingerprint"): f for f in previous if isinstance(f, dict)}
+    candidates = [(by_print.get(f["fingerprint"]), f) for f in fixed
+                  if f.get("fix_commit") and f.get("vulnerable_commit")
+                  and immune.language_of(f["file"])]
+    candidates = [c for c in candidates if c[0]][:max(0, limit)]
+    if not candidates:
+        return out
+    prompt = (IMMUNE_PROMPT.format(notice=chunking.DATA_NOTICE)
+              + "\n".join(_immune_block(n, f, x)
+                          for n, (f, x) in enumerate(candidates, 1)))
+    out["requested"] = len(candidates)
+    print(f"[*] immune memory: {len(candidates)} fixed finding(s)", file=sys.stderr)
+    backend.last_usage = None
+    try:
+        output = backend.run(project, prompt, timeout=timeout)
+    except SystemExit as e:
+        out["error"] = str(e.code or "the backend aborted")[:200]
+        return out
+    for key in ("input_tokens", "output_tokens"):
+        out["usage"][key] += int((backend.last_usage or {}).get(key) or 0)
+    parsed = extract_json_findings(output)
+    if parsed is _PARSE_FAILED:
+        out["error"] = "the answer was not a JSON array"
+        return out
+    answers = {str(a.get("id")).strip(): a for a in parsed if isinstance(a, dict)}
+    for n, (f, _) in enumerate(candidates, 1):
+        a = answers.get(str(n))
+        if a and isinstance(a.get("rule"), dict):
+            out["proposals"][f["fingerprint"]] = {
+                "rule": a["rule"],
+                "explanation": str(a.get("explanation") or "")[:500]}
     return out
 
 # ---------------------------------------------------------------------------

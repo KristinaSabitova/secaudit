@@ -46,6 +46,7 @@ _ENV_ALLOWLIST = (
     "SECAUDIT_BACKEND", "SECAUDIT_MODEL", "SECAUDIT_OLLAMA_URL",
     "SECAUDIT_CONTEXT_CHARS", "SECAUDIT_MAX_OUTPUT_TOKENS", "SECAUDIT_TIMEOUT",
     "SECAUDIT_MAX_CHUNKS", "SECAUDIT_MAX_REFUTATIONS", "SECAUDIT_CANARIES",
+    "SECAUDIT_MAX_RULES", "SEMGREP_BIN",
 )
 
 # Every backend option the CLI reads from its config file must also be
@@ -64,6 +65,8 @@ _ENV_CONFIG = {
     "SECAUDIT_MAX_REFUTATIONS": "max_refutations",
     # How many decoys measure the auditor's integrity: one extra request.
     "SECAUDIT_CANARIES": "canaries",
+    # How many fixed findings get a Semgrep rule proposed: one extra request.
+    "SECAUDIT_MAX_RULES": "max_rules",
 }
 
 
@@ -123,7 +126,9 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
     carried, and the tokens spent — the audit's and, apart, the devil's
     advocate's, whose arguments travel attached to the findings they target —
     and how many planted decoys the auditor found. The decoys' findings never
-    leave this function.
+    leave this function. With config["immune"] — the previous audit's
+    findings and commit — it also proposes a Semgrep rule for each finding
+    fixed since, which the server validates before keeping.
     """
     language = config.get("language") or engine.LANGUAGES[0]
     try:
@@ -151,10 +156,16 @@ def run_audit_in_process(project: Path, config: dict, timeout: int) -> dict:
     canaries = engine.canary_check(project, backend, prompt, result["plan"],
                                    result["notices"], timeout,
                                    engine.canaries_from(config))
+    memory = config.get("immune") or {}
+    rules = engine.propose_rules(
+        project, backend, memory.get("previous") or [],
+        memory.get("previous_commit"), timeout,
+        engine.immune.max_rules_from(config)) if memory.get("previous") else None
     return {
         "findings": findings,
         "refutation_usage": refutation,
         "canary": canaries,
+        "immune": rules,
         "coverage": result["coverage"],
         "coverage_summary": result["coverage_summary"],
         "manifest": result["manifest"],

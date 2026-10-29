@@ -70,14 +70,17 @@ def run_one(server: str, token: str, job: dict, timeout: int) -> None:
             result["commit_sha"] = clone_repo(job["repo_url"], dest,
                                               branch=job.get("branch"))
             config = backend_config({"backend": "claude-code",
-                                     "language": job.get("language") or "en"})
+                                     "language": job.get("language") or "en",
+                                     # The previous audit's findings, for the
+                                     # fixes since: their rules are proposed here.
+                                     "immune": job.get("immune")})
             start = time.monotonic()
             audit = run_audit_in_process(dest, config, timeout)
             result["duration_ms"] = int((time.monotonic() - start) * 1000)
             # The server checks the evidence again against its own checkout
             # of this commit; the manifest says what each request was shown.
             for key in ("findings", "coverage", "coverage_summary", "manifest",
-                        "usage", "refutation_usage", "canary"):
+                        "usage", "refutation_usage", "canary", "immune"):
                 result[key] = audit[key]
         except (CloneError, AuditError) as e:
             result["error"] = str(e)
