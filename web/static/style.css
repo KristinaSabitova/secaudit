@@ -853,6 +853,152 @@ dl.facts.facts-wide,
   font-size: 0.85em;
 }
 
+/* ---------------------------------------------------------------- parallax */
+
+.integrity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.integrity-score {
+  font-family: var(--mono);
+  font-size: 1.4rem;
+  font-weight: 500;
+}
+
+.kind-block > summary {
+  font-weight: 600;
+}
+
+.segmented {
+  display: inline-flex;
+  margin: 4px 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.segmented button {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--line-strong);
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Two views of the same lines, read like slices of one study: the gutter
+   holds the line number, the annotation colour marks what differs. */
+.viewer-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.viewer {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.viewer-head,
+.viewer-row {
+  display: grid;
+  grid-template-columns: 3.5em minmax(0, 1fr);
+}
+
+.viewer-side .viewer-head,
+.viewer-side .viewer-row {
+  grid-template-columns: 3.5em minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.viewer-head {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-family: var(--sans);
+}
+
+.viewer-head > span,
+.viewer-row > span {
+  padding: 1px 10px;
+}
+
+.viewer-side .viewer-row > .view-line + .view-line,
+.viewer-side .viewer-head > span + span + span {
+  border-left: 1px solid var(--line);
+}
+
+.viewer-gutter {
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+}
+
+/* Wrapped, never scrolled: a line of hidden characters can be thousands
+   long, and it must not widen the table it is shown in. */
+.view-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.divergence-file {
+  white-space: nowrap;
+}
+
+.viewer-marked {
+  box-shadow: inset 3px 0 0 var(--annotation);
+  background: var(--selected);
+}
+
+.viewer-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+/* What the other view shows of the same line, under it. */
+.view-under {
+  color: var(--muted);
+}
+
+.view-under::before {
+  content: "\21B3  ";
+}
+
+.view-missing {
+  color: var(--muted);
+  font-style: italic;
+}
+
+mark.glyph {
+  padding: 0 1px;
+  border-bottom: 2px solid var(--annotation);
+  background: transparent;
+  /* Text, so the 4.5:1 colour; the annotation colour is the mark under it. */
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.file-list {
+  margin: 4px 0 8px;
+  padding-left: 1.2em;
+  max-height: 16em;
+  overflow-y: auto;
+}
+
 /* ------------------------------------------------------------------ tables */
 
 .table-wrap {

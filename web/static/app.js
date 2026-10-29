@@ -135,8 +135,12 @@ const TEXT = {
     "summary.start": "start an audit",
     "summary.loading": "loading…",
     "summary.integrity": "Integrity of the audit",
-    "summary.integrityphase": "Whether the auditor really read what it was " +
-      "given, measured with planted canaries. Arrives in phase 5.",
+    "summary.integritynone": "Not measured: see Parallax for why.",
+    "summary.divergences": (n) => `${n} place(s) where the views of the ` +
+      `repository disagree.`,
+    "summary.seeparallax": "see the divergences",
+    "summary.unreliable": "No findings, but the auditor missed decoys planted " +
+      "where it was looking: do not take this clean result as reliable.",
     "summary.coverage": "Coverage",
     "summary.nocoverage": "This audit predates coverage: what the auditor saw " +
       "was not recorded.",
@@ -156,6 +160,8 @@ const TEXT = {
     "module.duration": "duration",
     "module.audit": "audit",
     "module.evidence": "evidence check",
+    "module.falsifiability": "falsifiability",
+    "module.parallax": "parallax",
     "coverage.file": "file",
     "coverage.reason": "reason",
     "coverage.tier": "risk",
@@ -203,8 +209,66 @@ const TEXT = {
       "bytes, as the machine runs it, as the model was shown it, as it was " +
       "published — and every place where those views disagree, annotated over " +
       "the code.",
-    "parallax.phase": "Arrives in phase 5, with the canaries that measure the " +
-      "audit's integrity.",
+    "parallax.integrity": "Integrity of the auditor",
+    "parallax.integrityline": (found, planted) => `The auditor found ${found} ` +
+      `of the ${planted} decoys planted in a copy of one of its own requests.`,
+    "parallax.integritynote": "A signal, not a guarantee: a context that degrades " +
+      "the model shows up as missed decoys, but someone who knew about them could " +
+      "let them through and still hide the real thing. Decoys are never findings.",
+    "parallax.integritynone": "Not measured for this audit.",
+    "parallax.runner": "Counted by your runner, on your machine.",
+    "parallax.decoy": "decoy",
+    "parallax.found": "found",
+    "parallax.missed": "missed",
+    "decoy.sql_injection": "SQL injection",
+    "decoy.command_injection": "command injection",
+    "decoy.code_eval": "evaluated input",
+    "decoy.insecure_deserialization": "insecure deserialisation",
+    "decoy.path_traversal": "path traversal",
+    "kind.hidden_content": "Hidden content",
+    "kind.unexpected_execution": "Unexpected execution",
+    "kind.audit_blind_spot": "Blind spots of the audit",
+    "kind.release_mismatch": "Release that is not the source",
+    "kinddesc.hidden_content": "What a person sees is not what the bytes say: " +
+      "invisible characters, comments the rendered page drops.",
+    "kinddesc.unexpected_execution": "Something runs — on install, on opening " +
+      "the folder, when an agent starts — that does not look like it would.",
+    "kinddesc.audit_blind_spot": "What the auditor was not sent, saw only in " +
+      "part, or saw drowned in filler.",
+    "kinddesc.release_mismatch": "The package on the registry is not the " +
+      "source at its git tag.",
+    "parallax.nokind": "Nothing of this kind.",
+    "parallax.notrun": "Parallax did not run for this audit: it predates the module.",
+    "parallax.failed": "Parallax failed for this audit; the findings stand without it.",
+    "parallax.published": "Published package",
+    "parallax.nopackage": "The repository declares no Python or npm package at its root.",
+    "parallax.publishedoff": "The published view is not checked on this instance.",
+    "parallax.compared": (name, tag, n) => `${name}: compared with tag ${tag} — ` +
+      `${n} difference(s).`,
+    "parallax.notcompared": (name) => `${name}: not compared.`,
+    "parallax.notes": "The descriptions are written by the analysis, in English.",
+    "parallax.file": "file",
+    "parallax.divergence": "divergence",
+    "parallax.views": "views",
+    "parallax.whole": "the repository",
+    "parallax.sidebyside": "side by side",
+    "parallax.overlay": "overlaid",
+    "parallax.notshown": "(not shown)",
+    "parallax.absent": "(absent)",
+    "parallax.trigger": "runs on",
+    "parallax.command": "what runs",
+    "parallax.decoded": "what the hidden characters say",
+    "parallax.files": "files",
+    "parallax.more": (n) => `… and ${n} more`,
+    "parallax.truncated": "Only the first lines that differ are shown.",
+    "parallax.nocheckout": "Not checked: the server could not check out the " +
+      "audited commit.",
+    "parallax.expand": (what) => `show the views of: ${what}`,
+    "view.human": "what a person sees",
+    "view.bytes": "the bytes",
+    "view.machine": "what runs",
+    "view.llm": "what the auditor was sent",
+    "view.published": "the published package",
     "falsifiability.question": "Does each finding survive a serious attempt to refute it?",
     "falsifiability.what": "Each finding backed by code is stated as a flow — " +
       "where the input enters, the dangerous use it reaches, the functions " +
@@ -384,8 +448,12 @@ const TEXT = {
     "summary.start": "empezar una auditoría",
     "summary.loading": "cargando…",
     "summary.integrity": "Integridad de la auditoría",
-    "summary.integrityphase": "Si el auditor leyó de verdad lo que se le dio, " +
-      "medido con canarios plantados. Llega en la fase 5.",
+    "summary.integritynone": "Sin medir: en Paralaje se explica por qué.",
+    "summary.divergences": (n) => `${n} punto(s) donde las vistas del ` +
+      `repositorio no coinciden.`,
+    "summary.seeparallax": "ver las divergencias",
+    "summary.unreliable": "Sin hallazgos, pero el auditor no vio señuelos " +
+      "plantados donde estaba mirando: este resultado limpio no es fiable.",
     "summary.coverage": "Cobertura",
     "summary.nocoverage": "Esta auditoría es anterior a la cobertura: no se " +
       "registró qué vio el auditor.",
@@ -405,6 +473,8 @@ const TEXT = {
     "module.duration": "duración",
     "module.audit": "auditoría",
     "module.evidence": "comprobación de evidencia",
+    "module.falsifiability": "falsabilidad",
+    "module.parallax": "paralaje",
     "coverage.file": "fichero",
     "coverage.reason": "motivo",
     "coverage.tier": "riesgo",
@@ -452,8 +522,66 @@ const TEXT = {
       "persona, como bytes, como lo ejecuta la máquina, como se le mostró al " +
       "modelo, como se publicó— y cada punto donde esas vistas no coinciden, " +
       "anotado sobre el código.",
-    "parallax.phase": "Llega en la fase 5, con los canarios que miden la " +
-      "integridad de la auditoría.",
+    "parallax.integrity": "Integridad del auditor",
+    "parallax.integrityline": (found, planted) => `El auditor encontró ${found} ` +
+      `de los ${planted} señuelos plantados en una copia de una de sus propias peticiones.`,
+    "parallax.integritynote": "Es una señal, no una garantía: un contexto que " +
+      "degrada al modelo se nota en señuelos que no ve, pero quien supiera de " +
+      "ellos podría dejarlos pasar y ocultar lo real. Los señuelos nunca son hallazgos.",
+    "parallax.integritynone": "No se midió en esta auditoría.",
+    "parallax.runner": "Contado por tu runner, en tu máquina.",
+    "parallax.decoy": "señuelo",
+    "parallax.found": "encontrado",
+    "parallax.missed": "no visto",
+    "decoy.sql_injection": "inyección SQL",
+    "decoy.command_injection": "inyección de comandos",
+    "decoy.code_eval": "evaluación de la entrada",
+    "decoy.insecure_deserialization": "deserialización insegura",
+    "decoy.path_traversal": "recorrido de rutas",
+    "kind.hidden_content": "Contenido oculto",
+    "kind.unexpected_execution": "Ejecución inesperada",
+    "kind.audit_blind_spot": "Puntos ciegos de la auditoría",
+    "kind.release_mismatch": "Publicación que no es el código",
+    "kinddesc.hidden_content": "Lo que ve una persona no es lo que dicen los " +
+      "bytes: caracteres invisibles, comentarios que la página renderizada no muestra.",
+    "kinddesc.unexpected_execution": "Algo se ejecuta —al instalar, al abrir la " +
+      "carpeta, al arrancar un agente— sin que lo parezca.",
+    "kinddesc.audit_blind_spot": "Lo que no se envió al auditor, lo que vio solo " +
+      "en parte o ahogado en relleno.",
+    "kinddesc.release_mismatch": "El paquete del registro no es el código de su " +
+      "tag de git.",
+    "parallax.nokind": "Nada de este tipo.",
+    "parallax.notrun": "Paralaje no se ejecutó en esta auditoría: es anterior al módulo.",
+    "parallax.failed": "Paralaje falló en esta auditoría; los hallazgos siguen en pie sin él.",
+    "parallax.published": "Paquete publicado",
+    "parallax.nopackage": "El repositorio no declara ningún paquete de Python ni de npm en su raíz.",
+    "parallax.publishedoff": "Esta instancia no comprueba la vista publicada.",
+    "parallax.compared": (name, tag, n) => `${name}: comparado con el tag ${tag} — ` +
+      `${n} diferencia(s).`,
+    "parallax.notcompared": (name) => `${name}: sin comparar.`,
+    "parallax.notes": "Las descripciones las escribe el análisis, en inglés.",
+    "parallax.file": "fichero",
+    "parallax.divergence": "divergencia",
+    "parallax.views": "vistas",
+    "parallax.whole": "el repositorio",
+    "parallax.sidebyside": "lado a lado",
+    "parallax.overlay": "superpuestas",
+    "parallax.notshown": "(no se ve)",
+    "parallax.absent": "(no está)",
+    "parallax.trigger": "se ejecuta al",
+    "parallax.command": "qué se ejecuta",
+    "parallax.decoded": "lo que dicen los caracteres ocultos",
+    "parallax.files": "ficheros",
+    "parallax.more": (n) => `… y ${n} más`,
+    "parallax.truncated": "Solo se muestran las primeras líneas que difieren.",
+    "parallax.nocheckout": "Sin comprobar: el servidor no pudo obtener el " +
+      "commit auditado.",
+    "parallax.expand": (what) => `ver las vistas de: ${what}`,
+    "view.human": "lo que ve una persona",
+    "view.bytes": "los bytes",
+    "view.machine": "lo que se ejecuta",
+    "view.llm": "lo que se envió al auditor",
+    "view.published": "el paquete publicado",
     "falsifiability.question": "¿Sobrevive cada hallazgo a un intento serio de refutarlo?",
     "falsifiability.what": "Cada hallazgo respaldado por código se enuncia " +
       "como un flujo —dónde entra la entrada, el uso peligroso al que llega y " +
@@ -761,6 +889,9 @@ const state = {
   coverage: new Map(),     // audit id -> coverage rows, fetched when opened
   expanded: new Set(),     // finding ids whose row is open
   drawerFinding: null,     // finding id shown in the detail panel
+  drawerDivergence: null,  // or the divergence id shown there instead
+  expandedViews: new Set(), // divergence ids whose views are open in the table
+  viewMode: stored("secaudit.views") === "overlay" ? "overlay" : "side",
   drawerOpener: null,      // what gets focus back when the panel closes
   query: "",
   stats: undefined,        // refutation rate per model; fetched per visit
@@ -933,6 +1064,7 @@ function renderSection() {
   if (state.section === "summary") renderSummary();
   else if (state.section === "findings") renderFindings();
   else if (state.section === "falsifiability") renderFalsifiability();
+  else if (state.section === "parallax") renderParallax();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
 }
@@ -1088,6 +1220,37 @@ function moduleRunsBlock(audit) {
   return details;
 }
 
+function parallaxRun(audit) {
+  return (audit.modules || []).filter((r) => r.module === "parallax").pop() || null;
+}
+
+function integrityBlock(audit, total) {
+  const section = block(t("summary.integrity"));
+  const c = audit.canary;
+  const run = parallaxRun(audit);
+  if (!run) {
+    section.append(node("p", "placeholder", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("parallax.notrun")));
+    return section;
+  }
+  if (c) {
+    section.append(node("p", null, t("parallax.integrityline", c.found, c.planted)));
+    // "Clean" from an auditor that missed what was planted in front of it is
+    // not a clean bill: said in so many words.
+    if (audit.status === "done" && total === 0 && c.found < c.planted) {
+      section.append(node("p", "coverage-warning", t("summary.unreliable")));
+    }
+  } else {
+    section.append(node("p", "muted", t("summary.integritynone")));
+  }
+  const n = (audit.divergences || []).length;
+  if (n) {
+    section.append(node("p", null, t("summary.divergences", n)),
+                   button(t("summary.seeparallax"), "link", () => go("parallax")));
+  }
+  return section;
+}
+
 function renderSummary() {
   const target = el("summary-body");
   if (needsAudit(target)) return;
@@ -1107,7 +1270,7 @@ function renderSummary() {
     .map((s) => s.textContent));
   target.replaceChildren(
     auditHead(audit),
-    block(t("summary.integrity"), node("p", "placeholder", t("summary.integrityphase"))),
+    integrityBlock(audit, total),
     coverageBlock(audit),
     findings,
     block(t("summary.paths"), node("p", "placeholder", t("summary.pathsphase"))),
@@ -1458,6 +1621,314 @@ function renderFalsifiability() {
 }
 
 // ---------------------------------------------------------------------------
+// parallax (module 1)
+// ---------------------------------------------------------------------------
+
+const KINDS = ["hidden_content", "unexpected_execution", "audit_blind_spot",
+               "release_mismatch"];
+
+// The bytes view writes each invisible character as <U+XXXX>: those are the
+// marks drawn over the code, in the annotation colour.
+function markedText(text) {
+  const out = document.createDocumentFragment();
+  const parts = String(text).split(/(<U\+[0-9A-F]{4,6}>)/);
+  for (const part of parts) {
+    if (!part) continue;
+    if (/^<U\+[0-9A-F]{4,6}>$/.test(part)) out.append(node("mark", "glyph", part));
+    else out.append(document.createTextNode(part));
+  }
+  return out;
+}
+
+function viewLine(text, missing, marked) {
+  const cell = node("span", "view-line");
+  if (text === null || text === undefined) {
+    cell.classList.add("view-missing");
+    cell.textContent = missing;
+  } else if (marked) {
+    cell.append(markedText(text));
+  } else {
+    cell.textContent = text;
+  }
+  return cell;
+}
+
+function viewModeToggle(onChange) {
+  const group = node("div", "segmented");
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", t("parallax.views"));
+  for (const mode of ["side", "overlay"]) {
+    const b = button(t(mode === "side" ? "parallax.sidebyside" : "parallax.overlay"));
+    b.setAttribute("aria-pressed", String(state.viewMode === mode));
+    b.addEventListener("click", () => {
+      state.viewMode = mode;
+      store("secaudit.views", mode === "overlay" ? "overlay" : null);
+      onChange();
+    });
+    group.append(b);
+  }
+  return group;
+}
+
+// The two views of the lines that differ: side by side, or overlaid like two
+// slices of the same study, with the difference annotated on the code.
+function excerptNode(d, mode) {
+  const ex = d.evidence && d.evidence.excerpt;
+  if (!ex || !Array.isArray(ex.lines) || !ex.lines.length) return null;
+  const single = d.kind === "unexpected_execution";
+  const missing = t(d.kind === "release_mismatch" ? "parallax.absent" : "parallax.notshown");
+  const viewer = node("div", `viewer viewer-${single ? "single" : mode}`);
+  const head = node("div", "viewer-head");
+  head.append(node("span", "viewer-gutter"));
+  if (single) {
+    head.append(node("span", null, t("view.bytes")));
+  } else if (mode === "side") {
+    head.append(node("span", null, t(`view.${d.view_a}`)), node("span", null, t(`view.${d.view_b}`)));
+  } else {
+    head.append(node("span", null, `${t(`view.${d.view_b}`)} / ${t(`view.${d.view_a}`)}`));
+  }
+  viewer.append(head);
+  for (const line of ex.lines) {
+    const r = node("div", `viewer-row${line.marked ? " viewer-marked" : ""}`);
+    r.append(node("span", "viewer-gutter", line.n === null || line.n === undefined ? "" : line.n));
+    if (single) {
+      r.append(viewLine(line.b, missing, true));
+    } else if (mode === "side") {
+      r.append(viewLine(line.a, missing, false), viewLine(line.b, missing, true));
+    } else {
+      const stack = node("span", "viewer-stack");
+      stack.append(viewLine(line.b, missing, true));
+      if (line.marked && line.a !== line.b) {
+        const under = viewLine(line.a, missing, false);
+        under.classList.add("view-under");
+        stack.append(under);
+      }
+      r.append(stack);
+    }
+    viewer.append(r);
+  }
+  const wrap = node("div", "viewer-wrap");
+  wrap.append(viewer);
+  if (ex.truncated) wrap.append(node("p", "muted small", t("parallax.truncated")));
+  return wrap;
+}
+
+function fileListNode(files, more) {
+  const list = node("ul", "file-list");
+  for (const f of files) list.append(node("li", "where", f));
+  if (more) list.append(node("li", "muted", t("parallax.more", more)));
+  return list;
+}
+
+// Everything known of one divergence, for the expanded row and the panel.
+function divergenceBody(d, { mode, onMode }) {
+  const parts = document.createDocumentFragment();
+  const ev = d.evidence || {};
+  parts.append(node("p", "prose", d.detail));
+  const pairs = [];
+  if (ev.trigger) pairs.push([t("parallax.trigger"), ev.trigger]);
+  if (ev.command) pairs.push([t("parallax.command"), node("span", "where", ev.command)]);
+  if (pairs.length) {
+    const dl = facts(pairs);
+    dl.classList.add("facts-wide");
+    parts.append(dl);
+  }
+  const decoded = (ev.occurrences || []).map((o) => o.decoded).filter(Boolean);
+  if (decoded.length) {
+    parts.append(node("h3", null, t("parallax.decoded")));
+    for (const text of decoded.slice(0, 5)) parts.append(node("pre", "snippet", text));
+  }
+  if (ev.excerpt) {
+    const viewer = excerptNode(d, mode);
+    if (viewer) {
+      if (onMode && d.kind !== "unexpected_execution") parts.append(viewModeToggle(onMode));
+      parts.append(viewer);
+    }
+  }
+  if (Array.isArray(ev.files) && ev.files.length) {
+    parts.append(node("h3", null, t("parallax.files")), fileListNode(ev.files, ev.more));
+  }
+  return parts;
+}
+
+function divergenceRows(d) {
+  const body = document.createElement("tbody");
+  const open = state.expandedViews.has(d.id);
+  const expandId = `divergence-more-${d.id}`;
+  const where = d.file || t("parallax.whole");
+
+  const toggle = button("", "toggle");
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-controls", expandId);
+  toggle.setAttribute("aria-label", t("parallax.expand", where));
+
+  const title = button(where, "link where");
+  title.dataset.divergence = String(d.id);
+  title.addEventListener("click", () => openDivergence(d.id, title));
+
+  const main = row([
+    toggle,
+    severityNode(d.severity),
+    { className: "finding-title-cell divergence-file", content: title },
+    { className: "hide-narrow", content: d.detail },
+  ], "finding-row");
+  main.setAttribute("aria-selected", String(state.drawerDivergence === d.id));
+
+  const more = document.createElement("tr");
+  more.className = "finding-expand";
+  more.id = expandId;
+  more.hidden = !open;
+  const cell = document.createElement("td");
+  cell.colSpan = 4;
+  const fill = () => cell.replaceChildren(divergenceBody(d, {
+    mode: state.viewMode, onMode: () => renderParallax() }));
+  if (open) fill();
+  more.append(cell);
+
+  toggle.addEventListener("click", () => {
+    const now = !state.expandedViews.has(d.id);
+    if (now) state.expandedViews.add(d.id);
+    else state.expandedViews.delete(d.id);
+    toggle.setAttribute("aria-expanded", String(now));
+    if (now) fill();
+    more.hidden = !now;
+  });
+  body.append(main, more);
+  return body;
+}
+
+function canaryBlock(audit, run) {
+  const section = block(t("parallax.integrity"));
+  const c = audit.canary;
+  if (!c) {
+    section.append(node("p", "muted", t("parallax.integritynone")));
+    const why = run && run.detail && (run.detail.canary_error || run.detail.canary_skipped);
+    if (why) section.append(node("p", "note", why));
+    return section;
+  }
+  const score = node("p", "integrity");
+  score.append(node("span", "integrity-score", `${c.found} / ${c.planted}`),
+               document.createTextNode(` ${t("parallax.integrityline", c.found, c.planted)}`));
+  section.append(score);
+  const decoys = (c.detail && c.detail.decoys) || [];
+  if (decoys.length) {
+    section.append(table(
+      [{ text: t("parallax.decoy") }, { text: t("parallax.file") }, { text: "" }],
+      decoys.map((x) => row([
+        TEXT.en[`decoy.${x.kind}`] ? t(`decoy.${x.kind}`) : x.kind,
+        { className: "where", content: x.file },
+        node("span", `result result-${x.found ? "survived" : "refuted"}`,
+             t(x.found ? "parallax.found" : "parallax.missed")),
+      ]))));
+  }
+  if (c.detail && c.detail.source === "runner") {
+    section.append(node("p", "muted small", t("parallax.runner")));
+  }
+  section.append(node("p", "muted", t("parallax.integritynote")));
+  return section;
+}
+
+function publishedBlock(run) {
+  const section = block(t("parallax.published"));
+  const published = run && run.detail && run.detail.published;
+  if (!published || !published.checked) {
+    section.append(node("p", "muted", t(published && published.reason
+      ? "parallax.publishedoff" : "parallax.nocheckout")));
+    return section;
+  }
+  const packages = published.packages || [];
+  if (!packages.length) {
+    section.append(node("p", "muted", t("parallax.nopackage")));
+    return section;
+  }
+  for (const p of packages) {
+    const name = `${p.name}${p.version ? ` ${p.version}` : ""} (${p.ecosystem})`;
+    if (p.compared) {
+      section.append(node("p", null, t("parallax.compared", name, p.tag, p.differences)));
+    } else {
+      section.append(node("p", null, t("parallax.notcompared", name)));
+      if (p.reason) section.append(node("p", "note", p.reason));
+    }
+  }
+  return section;
+}
+
+function renderParallax() {
+  const target = el("parallax-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const run = parallaxRun(audit);
+  if (!run) {
+    target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("parallax.notrun")));
+    return;
+  }
+  const divergences = audit.divergences || [];
+  const parts = [canaryBlock(audit, run)];
+  if (run.status === "error") parts.push(node("p", "error", t("parallax.failed")));
+  const counts = node("div", "counts");
+  for (const kind of KINDS) {
+    const n = divergences.filter((d) => d.kind === kind).length;
+    counts.append(node("span", n ? "badge badge-reachable" : "badge", `${t(`kind.${kind}`)} ${n}`));
+  }
+  parts.push(counts);
+  // Keep open whatever the reader had open across the re-render polling does.
+  const open = new Set([...target.querySelectorAll("details[open]")]
+    .map((x) => x.dataset.kind));
+  for (const kind of KINDS) {
+    const these = divergences.filter((d) => d.kind === kind);
+    const details = node("details", "block kind-block");
+    details.dataset.kind = kind;
+    details.open = open.size ? open.has(kind) : these.length > 0;
+    const summary = node("summary", null, `${t(`kind.${kind}`)} · ${these.length}`);
+    details.append(summary, node("p", "muted", t(`kinddesc.${kind}`)));
+    if (!these.length) {
+      details.append(node("p", "muted", t("parallax.nokind")));
+    } else {
+      details.append(table(
+        [{ text: "" }, { text: t("findings.severity") }, { text: t("parallax.file") },
+         { text: t("parallax.divergence"), className: "hide-narrow" }],
+        these.map(divergenceRows)));
+    }
+    parts.push(details);
+  }
+  parts.push(publishedBlock(run), node("p", "muted small", t("parallax.notes")));
+  const focused = document.activeElement && target.contains(document.activeElement)
+    ? document.activeElement.dataset.divergence : null;
+  target.replaceChildren(...parts);
+  if (focused) {
+    const again = target.querySelector(`[data-divergence="${CSS.escape(focused)}"]`);
+    if (again) again.focus();
+  }
+}
+
+function openDivergence(id, opener) {
+  state.drawerFinding = null;
+  state.drawerDivergence = id;
+  for (const r of document.querySelectorAll(".finding-row")) {
+    r.setAttribute("aria-selected", "false");
+  }
+  if (opener) opener.closest("tr").setAttribute("aria-selected", "true");
+  renderDrawerFinding(opener);
+}
+
+function renderDrawerDivergence(opener) {
+  const d = state.current && (state.current.divergences || [])
+    .find((x) => x.id === state.drawerDivergence);
+  if (!d) {
+    closeDrawer();
+    return;
+  }
+  const content = document.createDocumentFragment();
+  const pairs = [[t("findings.severity"), severityNode(d.severity)],
+                 [t("parallax.views"), `${t(`view.${d.view_a}`)} ≠ ${t(`view.${d.view_b}`)}`]];
+  content.append(facts(pairs));
+  // The panel is narrow: the views are overlaid there.
+  content.append(divergenceBody(d, { mode: "overlay" }));
+  openDrawer(`${t(`kind.${d.kind}`)}: ${d.file || t("parallax.whole")}`, content, opener);
+}
+
+// ---------------------------------------------------------------------------
 // detail panel
 // ---------------------------------------------------------------------------
 
@@ -1478,9 +1949,11 @@ function openDrawer(title, content, opener) {
 function closeDrawer() {
   if (el("drawer").hidden) return;
   const shown = state.drawerFinding;
+  const shownDivergence = state.drawerDivergence;
   el("drawer").hidden = true;
   el("app").classList.remove("drawer-open");
   state.drawerFinding = null;
+  state.drawerDivergence = null;
   for (const r of document.querySelectorAll(".finding-row")) {
     r.setAttribute("aria-selected", "false");
   }
@@ -1489,6 +1962,10 @@ function closeDrawer() {
   state.drawerOpener = null;
   if ((!opener || !opener.isConnected) && shown !== null) {
     opener = visibleFinding(shown);
+  }
+  if ((!opener || !opener.isConnected) && shownDivergence !== null) {
+    opener = document.querySelector(
+      `[data-divergence="${CSS.escape(String(shownDivergence))}"]`);
   }
   if (opener && opener.isConnected) opener.focus();
   else el("content").focus();
@@ -1501,6 +1978,7 @@ function visibleFinding(id) {
 }
 
 function openFinding(id, opener) {
+  state.drawerDivergence = null;
   state.drawerFinding = id;
   for (const r of document.querySelectorAll(".finding-row")) {
     r.setAttribute("aria-selected", "false");
@@ -1511,6 +1989,10 @@ function openFinding(id, opener) {
 
 // Kept in step with polling: the finding shown is re-read from the latest data.
 function renderDrawerFinding(opener) {
+  if (state.drawerDivergence !== null) {
+    renderDrawerDivergence(opener);
+    return;
+  }
   if (state.drawerFinding === null) return;
   const finding = state.current && (state.current.findings || [])
     .find((f) => f.id === state.drawerFinding);
