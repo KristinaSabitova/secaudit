@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/OWASP/NodeGoat.git",
+  "commit": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+  "kind": "vulnerable",
+  "source_of_labels": "NodeGoat's own tutorial (app/views/tutorial/*.html) at this commit, each located in the code by reading it; written before any secaudit scanner was run on NodeGoat.",
+  "scopes": {
+    "scanners": "a flow or pattern the deterministic scanners claim to cover (taint inside one file)",
+    "cross_file": "a taint flow across files, which the scanners say they do not follow",
+    "model": "authorization, configuration, cryptography, ReDoS: only the model's audit can find these"
+  },
+  "expected": [
+    {"scope": "scanners", "tutorial": "A1 SSJS injection", "file": "app/routes/contributions.js", "rule_id": "taint.js.code", "lines": [32, 32]},
+    {"scope": "scanners", "tutorial": "A1 SSJS injection", "file": "app/routes/contributions.js", "rule_id": "taint.js.code", "lines": [33, 33]},
+    {"scope": "scanners", "tutorial": "A1 SSJS injection", "file": "app/routes/contributions.js", "rule_id": "taint.js.code", "lines": [34, 34]},
+    {"scope": "scanners", "tutorial": "A10 unvalidated redirect", "file": "app/routes/index.js", "rule_id": "taint.js.redirect", "lines": [72, 72]},
+    {"scope": "scanners", "tutorial": "SSRF", "file": "app/routes/research.js", "rule_id": "taint.js.ssrf", "lines": [15, 16]},
+    {"scope": "cross_file", "tutorial": "A1 NoSQL $where injection (threshold from allocations.js)", "file": "app/data/allocations-dao.js", "lines": [78, 78]},
+    {"scope": "model", "tutorial": "A4 insecure direct object reference", "file": "app/routes/allocations.js", "lines": [15, 18]},
+    {"scope": "model", "tutorial": "A2 password stored in plain text", "file": "app/data/user-dao.js", "lines": [25, 25]},
+    {"scope": "model", "tutorial": "A3 template autoescape disabled", "file": "server.js", "lines": [134, 137]},
+    {"scope": "model", "tutorial": "A5 session cookie without httpOnly/secure, default name", "file": "server.js", "lines": [77, 92]},
+    {"scope": "model", "tutorial": "A8 CSRF protection disabled", "file": "server.js", "lines": [104, 112]},
+    {"scope": "model", "tutorial": "A7 benefits routes without the admin check", "file": "app/routes/index.js", "lines": [55, 56]},
+    {"scope": "model", "tutorial": "ReDoS in the bank routing regex", "file": "app/routes/profile.js", "lines": [59, 61]},
+    {"scope": "model", "tutorial": "A6 SSN and date of birth stored unencrypted", "file": "app/data/profile-dao.js", "lines": [61, 66]}
+  ]
+}

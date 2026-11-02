@@ -17,6 +17,7 @@ call a sample under 30 labels anything but small.
 
     python3 -m analysis.benchmark labels.json audit.json
     python3 -m analysis.benchmark --corpus benchmark
+    python3 -m analysis.benchmark --external benchmark/external/nodegoat.json
 
 The second form runs the deterministic scanners (secrets, dependencies, MCP,
 taint) over the labelled corpus in benchmark/ and scores them: no model, no
@@ -168,14 +169,57 @@ def run_corpus(root: Path) -> dict:
             "cases": scores, "total": aggregate(scores)}
 
 
+def _clone_pinned(url: str, commit: str, dest: Path) -> None:
+    """The exact commit of a public repository, hooks off, nothing run."""
+    dest.mkdir(parents=True)
+    for args in (("init", "-q"), ("remote", "add", "origin", url),
+                 ("-c", "protocol.file.allow=never", "fetch", "-q", "--depth", "1", "origin",
+                  commit),
+                 ("-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD")):
+        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=dest, check=True,
+                       capture_output=True, timeout=300)
+
+
+def run_external(labels_path: Path, checkout: Path | None = None) -> dict:
+    """Score the deterministic scanners on an external repository labelled
+    independently, overall and by scope (what the scanners claim to cover,
+    and what they do not)."""
+    labels = json.loads(Path(labels_path).read_text())
+    with tempfile.TemporaryDirectory(prefix="secaudit-bench-") as tmp:
+        dest = checkout or Path(tmp) / "repo"
+        if checkout is None:
+            _clone_pinned(labels["repository"], labels["commit"], dest)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest, capture_output=True,
+                              text=True).stdout.strip()
+        if head != labels["commit"]:
+            raise RuntimeError(f"checked out {head}, labels are for {labels['commit']}")
+        found = scanner_findings(dest)
+    audit = {"findings": found, "repo_url": labels["repository"], "commit_sha": head}
+    out = {"measured": "deterministic scanners only (no model)",
+           "repository": labels["repository"], "commit": head,
+           "all": score(labels, audit), "by_scope": {}}
+    for scope in sorted({e.get("scope") for e in labels["expected"]}):
+        subset = dict(labels, expected=[e for e in labels["expected"]
+                                        if e.get("scope") == scope])
+        s = score(subset, audit)
+        out["by_scope"][scope] = {k: s[k] for k in ("labels", "true_positives",
+                                                    "false_negatives", "recall", "missed")}
+    return out
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "--external":
+        json.dump(run_external(Path(argv[1])), sys.stdout, indent=2)
+        print()
+        return 0
     if len(argv) == 2 and argv[0] == "--corpus":
         json.dump(run_corpus(Path(argv[1])), sys.stdout, indent=2)
         print()
         return 0
     if len(argv) != 2:
         print("usage: python3 -m analysis.benchmark labels.json audit.json\n"
-              "       python3 -m analysis.benchmark --corpus DIR", file=sys.stderr)
+              "       python3 -m analysis.benchmark --corpus DIR\n"
+              "       python3 -m analysis.benchmark --external LABELS.json", file=sys.stderr)
         return 2
     with open(argv[0]) as a, open(argv[1]) as b:
         json.dump(score(json.load(a), json.load(b)), sys.stdout, indent=2)

@@ -1247,3 +1247,25 @@ class TestSandboxForReal:
                                  "t.test_nobody(); t.test_no_network(); t.test_read_only(); "
                                  "print('isolated')"], False, 120)
         assert r["exit"] == 0 and "isolated" in r["output"], r
+
+
+class TestExternalBenchmark:
+    def test_the_nodegoat_labels_are_well_formed(self):
+        from pathlib import Path
+        p = Path(__file__).resolve().parent.parent / "benchmark" / "external" / "nodegoat.json"
+        labels = json.loads(p.read_text())
+        assert len(labels["commit"]) == 40 and labels["repository"].startswith("https://")
+        assert {e["scope"] for e in labels["expected"]} == {"scanners", "cross_file", "model"}
+        assert all(e.get("tutorial") and e.get("file") for e in labels["expected"])
+
+    def test_a_checkout_at_another_commit_is_refused(self, tmp_path):
+        from analysis import benchmark
+        (tmp_path / "a.txt").write_text("x")
+        git(tmp_path, "init", "-q")
+        git(tmp_path, "add", ".")
+        git(tmp_path, "commit", "-qm", "x")
+        labels = tmp_path.parent / "labels.json"
+        labels.write_text(json.dumps({"repository": "https://example.invalid/x.git",
+                                      "commit": "0" * 40, "expected": []}))
+        with pytest.raises(RuntimeError, match="labels are for"):
+            benchmark.run_external(labels, tmp_path)

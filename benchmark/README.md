@@ -70,3 +70,53 @@ estimate of precision or recall on real code. 34 labels is just over the
 30 below which `analysis/benchmark.py` calls a sample small (38 now). Real numbers
 need repositories nobody here wrote, such as OWASP NodeGoat, labelled
 independently.
+
+## An external repository: OWASP NodeGoat
+
+`benchmark/external/nodegoat.json` labels OWASP NodeGoat at commit
+`c5cb68a7084e4ae7dcc60e6a98768720a81841e8`. The source of truth is
+NodeGoat's own tutorial (`app/views/tutorial/*.html`), not secaudit. Each
+documented vulnerability was located in the code by reading it, and the
+labels were written **before** any secaudit scanner ran on NodeGoat. Each
+label has a scope:
+
+- `scanners`: what the deterministic scanners claim to cover (5 labels);
+- `cross_file`: a taint flow across files, which they say they do not follow
+  (1);
+- `model`: authorization, configuration, cryptography and ReDoS, which only
+  the model's audit can find (8).
+
+    python3 -m analysis.benchmark --external benchmark/external/nodegoat.json
+
+The command clones that exact commit with hooks off and runs nothing from it.
+
+### Result on 2026-11-02 (deterministic scanners only, no model)
+
+| scope | labels | found | recall |
+|---|---|---|---|
+| scanners | 5 | 5 | 1.0 |
+| cross_file | 1 | 0 | 0.0 |
+| model | 8 | 0 | 0.0 |
+| **all** | 14 | 5 | 0.357 |
+
+Against the labels, 2 findings are unexpected, so precision is 0.714. Read
+by hand, both are real issues that the tutorial does not mention:
+
+- `artifacts/cert/server.key`: an RSA private key committed to the
+  repository.
+- `package.json:51`: a dev dependency (`grunt-if`) fetched from a GitHub
+  tarball of `master`, unpinned.
+
+They were not added to the labels after the fact. One more finding (mixed
+registries in `package-lock.json`, caused by that same tarball) is reported
+as unverifiable because it has no line, so it is not counted as a positive.
+
+**For comparison:** the same run with the earlier pattern-based JavaScript
+reader, before tree-sitter, found 1 of the 5 in-scope labels. The three
+`eval()` calls and the SSRF were missed.
+
+The 9 labels outside the scanners' scope are the measure of what the
+deterministic layer leaves to the model. Scoring the model needs an audit
+made with a real backend:
+
+    python3 -m analysis.benchmark benchmark/external/nodegoat.json audit.json
