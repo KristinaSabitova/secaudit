@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 V3_TABLES = {"projects", "module_runs", "hypotheses", "refutation_attempts",
              "view_divergences", "canary_runs", "immune_rules", "file_leverage",
              "agent_capabilities", "crown_jewels", "attack_nodes", "attack_edges",
-             "attack_paths", "coverage", "components"}
+             "attack_paths", "coverage", "components", "what_ifs"}
 
 
 def alembic(db_file, *args):
@@ -71,7 +71,7 @@ class TestMigrationsMatchTheModels:
         assert "project_id" not in schema(f"sqlite:///{db_file}")["audits"]["columns"]
         alembic(db_file, "upgrade", "head")
 
-    @pytest.mark.parametrize("step", ["0010", "0011", "0012", "0013", "0014", "0015", "0016"])
+    @pytest.mark.parametrize("step", ["0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017"])
     def test_each_step_is_reversible_on_its_own(self, tmp_path, step):
         db_file = tmp_path / "mig.db"
         previous = f"{int(step) - 1:04d}"

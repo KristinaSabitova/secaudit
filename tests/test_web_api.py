@@ -2719,6 +2719,14 @@ class TestImmuneMemory:
         second, backend = self.audit(client, monkeypatch, [])
         return first, sqli, second, backend
 
+    def approve(self, client, audit):
+        # A rule that passed its test is a proposal until a person approves it.
+        for rule in audit["immune_rules"]:
+            if rule["validated"]:
+                r = client.post(f"/api/projects/{audit['project_id']}/immune-rules/"
+                                f"{rule['id']}/approval")
+                assert r.status_code == 200 and r.json()["approved"] is True
+
     def test_every_finding_gets_its_provenance(self, client, signed_in,
                                                clone_from_sample, monkeypatch):
         detail, _ = self.audit(client, monkeypatch, FAKE_FINDINGS)
@@ -2747,6 +2755,11 @@ class TestImmuneMemory:
         assert (run["tokens_in"], run["tokens_out"]) == (700, 90)
         old = client.get(f"/api/audits/{first['id']}").json()["findings"][0]
         assert old["fix_commit"] == second["commit_sha"]
+        # Validated, but nobody approved it yet: not exported, not used.
+        assert rule["approved"] is False and rule["active"] is False
+        yaml = client.get(f"/api/projects/{second['project_id']}/immune-rules.yaml")
+        assert yaml.text == "rules: []\n"
+        self.approve(client, second)
         yaml = client.get(f"/api/projects/{second['project_id']}/immune-rules.yaml")
         assert yaml.status_code == 200 and rule["rule_id"] in yaml.text
         assert '$C.execute(\\"...\\" + $X + \\"...\\")' in yaml.text
@@ -2773,6 +2786,7 @@ class TestImmuneMemory:
             '\ndef by_mail(cur, mail):\n'
             '    return cur.execute("SELECT 1 WHERE m = \'" + mail + "\'")\n'),
             "lookup by mail")
+        self.approve(client, second)
         # The model misses it this time; the rule does not, at no token cost.
         third, backend = self.audit(client, monkeypatch, [])
         assert not any("FIXED FINDINGS" in p for p in backend.prompts)
@@ -2787,6 +2801,28 @@ class TestImmuneMemory:
         run = {r["module"]: r for r in third["modules"]}["immune"]
         assert run["detail"]["zombies"] == 1 and run["detail"]["items"] == 1
 
+    def test_an_unapproved_rule_catches_nothing(self, client, signed_in, clone_from_sample,
+                                                monkeypatch, sample_repo, semgrep):
+        first, sqli, second, _ = self.fixed_once(client, monkeypatch, sample_repo)
+        code = (sample_repo / "app.py").read_text()
+        self.commit(sample_repo, code + (
+            '\ndef by_mail(cur, mail):\n'
+            '    return cur.execute("SELECT 1 WHERE m = \'" + mail + "\'")\n'),
+            "lookup by mail")
+        third, _ = self.audit(client, monkeypatch, [])
+        assert third["findings"] == []
+        run = {r["module"]: r for r in third["modules"]}["immune"]
+        assert run["detail"]["zombies"] == 0
+        # And one that failed its test cannot be approved at all.
+        [rule] = second["immune_rules"]
+        client.delete(f"/api/projects/{second['project_id']}/immune-rules/{rule['id']}/approval")
+        session = web_db.get_session()
+        session.get(web_models.ImmuneRule, rule["id"]).validated = False
+        session.commit()
+        session.close()
+        r = client.post(f"/api/projects/{second['project_id']}/immune-rules/{rule['id']}/approval")
+        assert r.status_code == 409
+
     def test_a_match_shown_safe_is_no_zombie(self, client, signed_in, clone_from_sample,
                                              monkeypatch, sample_repo, semgrep):
         first, sqli, second, _ = self.fixed_once(client, monkeypatch, sample_repo)
@@ -2795,6 +2831,7 @@ class TestImmuneMemory:
             '\ndef by_id(cur, n):\n'
             '    return cur.execute("SELECT 1 WHERE id = \'" + str(int(n)) + "\'")\n'),
             "lookup by id")
+        self.approve(client, second)
         safe = dict(FAKE_FINDINGS[0], anchor="by_id", title="SQL injection in by_id",
                     code_snippet='return cur.execute("SELECT 1 WHERE id = \'" + str(int(n)) + "\'")',
                     line=7)
