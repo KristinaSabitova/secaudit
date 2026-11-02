@@ -187,7 +187,9 @@ Cada resultado incluye:
 - los prerrequisitos, el impacto, la confianza y la evaluación.
 
 Los resultados entran en el informe SARIF y JSON, en la UI, en la cadena de
-evidencia, en la puntuación de confianza y en los caminos de ataque.
+evidencia y en la puntuación de confianza (como cualquier hallazgo). **No**
+entran todavía en los caminos de ataque (`attacker.py` no tiene aristas para
+la categoría `mcp`) ni en los señuelos de `canary.py`: está en pendientes.
 
 Uso sin servidor (solo lectura, no arranca nada):
 
@@ -257,6 +259,17 @@ de Python, que se leen con ast.
 - **Paquetes abandonados:** fecha del último release en el registro. Sale
   del servidor, así que tendría que ser opt-in como OSV.
 - **Blue Team en la UI** y validación de las plantillas.
+- **MCP en caminos de ataque y señuelos:** aristas de `attacker.py` para
+  la categoría `mcp` (p. ej. MCP05 → ejecución de código) y señuelos MCP en
+  `canary.py`.
+- **A4, documentación frente a código:** comparar lo que afirma el README
+  (autenticación, cifrado, permisos) con lo que hace el código.
+- **C23 código muerto:** rutas, funciones y ficheros sin uso. Hoy solo se
+  detectan dependencias declaradas sin uso.
+- **C26 curación humana:** una regla inmune validada con Semgrep se activa sola.
+  Falta un paso de aprobación manual antes de activarla.
+- **Comprobación automática de la taxonomía OWASP MCP:** hoy la versión se
+  comprobó a mano el 2026-11-02 y quedó registrada en el código.
 - **Corpus de Challenge Mode:** etiquetar al menos 30 casos (repos vulnerables
   conocidos, como NodeGoat, más controles limpios) y publicar los resultados
   con su tamaño de muestra.
