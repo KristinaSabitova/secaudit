@@ -3,8 +3,9 @@
 Read from manifests and lockfiles on the server's checkout, never by running
 a package manager (no `pip`, no `npm install`: both run code from the
 packages). Supported: requirements*.txt, pyproject.toml (PEP 621 and
-Poetry), poetry.lock, uv.lock, package.json, package-lock.json (v1-v3) and
-go.mod. A lockfile gives the transitive set with exact versions; a manifest
+Poetry), poetry.lock, uv.lock, package.json, package-lock.json (v1-v3),
+go.mod, Cargo.toml, Cargo.lock, Gemfile.lock, composer.json, composer.lock
+and pom.xml (literal versions only; Gradle is not read). A lockfile gives the transitive set with exact versions; a manifest
 alone gives the direct dependencies with the range as declared.
 
 From that inventory:
@@ -23,8 +24,11 @@ From that inventory:
   carries its OSV id and aliases (CVE, GHSA) so it can be checked at its
   source; no severity is invented where the advisory gives none.
 
-Abandoned packages would need each registry's release history; that is not
-looked up, and the limits say so.
+Abandoned and deprecated packages: only with SECAUDIT_ABANDONED_CHECK=1, the
+registry (PyPI, npm, crates.io) is asked for each direct dependency's last
+release date and deprecation flag; package names leave the server, nothing
+else. A last release older than ABANDONED_DAYS is "no release in N days":
+maintained-but-finished packages exist, so it is a signal, never a verdict.
 """
 
 import json
@@ -38,6 +42,7 @@ from pathlib import PurePosixPath
 DEPS_VERSION = "1"
 
 PYPI, NPM, GO = "PyPI", "npm", "Go"
+CARGO, GEM, COMPOSER, MAVEN = "crates.io", "RubyGems", "Packagist", "Maven"
 MAX_COMPONENTS = 5000
 
 _REQ_LINE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._\-]*)\s*(\[[^\]]*\])?\s*(.*)$")
@@ -56,6 +61,15 @@ def purl(ecosystem: str, name: str, version: str | None) -> str:
         base = f"pkg:npm/{q}"
     elif ecosystem == PYPI:
         base = f"pkg:pypi/{pypi_name(name)}"
+    elif ecosystem == CARGO:
+        base = f"pkg:cargo/{urllib.parse.quote(name)}"
+    elif ecosystem == GEM:
+        base = f"pkg:gem/{urllib.parse.quote(name)}"
+    elif ecosystem == COMPOSER:
+        base = f"pkg:composer/{name}"
+    elif ecosystem == MAVEN:
+        group, _, artifact = name.partition(":")
+        base = f"pkg:maven/{group}/{artifact}"
     else:
         base = f"pkg:golang/{name}"
     return f"{base}@{urllib.parse.quote(version)}" if version and _is_exact(version) else base
@@ -282,6 +296,118 @@ def parse_go_mod(rel: str, text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Rust, Ruby, PHP, Java
+# ---------------------------------------------------------------------------
+
+def parse_cargo_lock(rel: str, text: str) -> list[dict]:
+    try:
+        data = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return []
+    out = []
+    for p in data.get("package") or []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        source = str(p.get("source") or "")
+        if not source:
+            continue                # the workspace's own crates
+        out.append(_component(CARGO, str(p["name"]), str(p.get("version") or ""), False,
+                              rel, "runtime", _line_of(text, f'name = "{p["name"]}"'),
+                              source or None))
+    return out
+
+
+def parse_cargo_toml(rel: str, text: str) -> tuple[list[dict], list[dict]]:
+    try:
+        data = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return [], []
+    out, signals = [], []
+    for table, scope in (("dependencies", "runtime"), ("dev-dependencies", "dev"),
+                         ("build-dependencies", "dev")):
+        for name, spec in (data.get(table) or {}).items():
+            version = spec if isinstance(spec, str) else (spec or {}).get("version")
+            line = _line_of(text, f"{name} =") or _line_of(text, f"{name}=")
+            if isinstance(spec, dict) and (spec.get("git") or spec.get("path") is None and
+                                           spec.get("registry")):
+                signals.append(_signal("dep.url_source", rel, line,
+                                       f"{name} = {json.dumps(spec)[:200]}"))
+            exact = re.match(r"^=\s*(\d[\w.+\-]*)$", str(version or ""))
+            out.append(_component(CARGO, name, exact.group(1) if exact else None, True,
+                                  rel, scope, line))
+    return out, signals
+
+
+def parse_gemfile_lock(rel: str, text: str) -> list[dict]:
+    out, in_specs, remote = [], False, None
+    for n, raw in enumerate(text.splitlines(), 1):
+        if raw.startswith("GEM"):
+            in_specs = False
+        if raw.strip().startswith("remote:"):
+            remote = raw.split(":", 1)[1].strip()
+        if raw.strip() == "specs:":
+            in_specs = True
+            continue
+        if in_specs:
+            m = re.match(r"^    ([A-Za-z0-9_.\-]+) \(([^)]+)\)$", raw)
+            if m:
+                out.append(_component(GEM, m.group(1), m.group(2).split("-")[0], False,
+                                      rel, "runtime", n, remote))
+            elif raw and not raw.startswith(" "):
+                in_specs = False
+    return out
+
+
+def parse_composer_lock(rel: str, text: str) -> list[dict]:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    out = []
+    for key, scope in (("packages", "runtime"), ("packages-dev", "dev")):
+        for p in data.get(key) or []:
+            if isinstance(p, dict) and p.get("name"):
+                out.append(_component(COMPOSER, str(p["name"]),
+                                      str(p.get("version") or "").lstrip("v"), False, rel,
+                                      scope, _line_of(text, f'"name": "{p["name"]}"')))
+    return out
+
+
+def parse_composer_json(rel: str, text: str) -> list[dict]:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    out = []
+    for key, scope in (("require", "runtime"), ("require-dev", "dev")):
+        for name, version in (data.get(key) or {}).items():
+            if "/" not in name:
+                continue            # php itself, ext-*
+            out.append(_component(COMPOSER, name, version if _is_exact(str(version))
+                                  else None, True, rel, scope, _line_of(text, f'"{name}"')))
+    return out
+
+
+def parse_pom(rel: str, text: str) -> list[dict]:
+    """Dependencies with a literal version. Properties and parents are not
+    resolved: a version from ${...} is left out rather than guessed."""
+    out = []
+    for m in re.finditer(r"<dependency>(.*?)</dependency>", text, re.S):
+        block = m.group(1)
+        g = re.search(r"<groupId>\s*([^<\s]+)\s*</groupId>", block)
+        a = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", block)
+        v = re.search(r"<version>\s*([^<\s]+)\s*</version>", block)
+        sc = re.search(r"<scope>\s*([^<\s]+)\s*</scope>", block)
+        if not g or not a:
+            continue
+        version = v.group(1) if v and "${" not in v.group(1) else None
+        out.append(_component(MAVEN, f"{g.group(1)}:{a.group(1)}", version, True, rel,
+                              "dev" if sc and sc.group(1) == "test" else "runtime",
+                              text.count("\n", 0, m.start()) + 1))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # All of it
 # ---------------------------------------------------------------------------
 
@@ -304,6 +430,18 @@ def inventory(texts: dict[str, str]) -> dict:
             got, sig = parse_package_lock(rel, text)
         elif name == "go.mod":
             got = parse_go_mod(rel, text)
+        elif name == "cargo.lock":
+            got = parse_cargo_lock(rel, text)
+        elif name == "cargo.toml":
+            got, sig = parse_cargo_toml(rel, text)
+        elif name == "gemfile.lock":
+            got = parse_gemfile_lock(rel, text)
+        elif name == "composer.lock":
+            got = parse_composer_lock(rel, text)
+        elif name == "composer.json":
+            got = parse_composer_json(rel, text)
+        elif name == "pom.xml":
+            got = parse_pom(rel, text)
         else:
             continue
         manifests.append(rel)
@@ -438,7 +576,7 @@ def query_osv(components: list[dict], http=_http) -> dict:
         return result
     queries = [{"package": {"name": _key(c) if c["ecosystem"] == PYPI else c["name"],
                             "ecosystem": c["ecosystem"]},
-                "version": c["version"].lstrip("v") if c["ecosystem"] != GO else c["version"]}
+                "version": c["version"].lstrip("v") if c["ecosystem"] not in (GO,) else c["version"]}
                for c in asked]
     try:
         ids_per = []
@@ -515,7 +653,140 @@ _SIGNAL_TEXT = {
 }
 
 
-def signal_findings(signals: list[dict], language: str = "en") -> list[dict]:
+ABANDONED_DAYS = 730
+MAX_ABANDONED_QUERIES = 150
+
+
+def abandoned_enabled() -> bool:
+    return os.environ.get("SECAUDIT_ABANDONED_CHECK", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _registry_get(url: str, accept: str = "application/json") -> dict:
+    req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "secaudit"})
+    opener = urllib.request.build_opener(_NoRedirect)
+    with opener.open(req, timeout=OSV_TIMEOUT) as resp:
+        return json.loads(resp.read(20_000_000))
+
+
+def _release_info(c: dict, get) -> dict:
+    """{last_release, deprecated} from the package's own registry."""
+    from datetime import datetime
+    if c["ecosystem"] == PYPI:
+        data = get(f"https://pypi.org/pypi/{urllib.parse.quote(_key(c))}/json")
+        times = [u.get("upload_time_iso_8601") for u in data.get("urls") or []
+                 if u.get("upload_time_iso_8601")]
+        info = data.get("info") or {}
+        deprecated = bool(info.get("yanked")) or "inactive" in " ".join(
+            info.get("classifiers") or []).lower()
+        return {"last_release": max(times) if times else None, "deprecated": deprecated,
+                "latest": info.get("version")}
+    if c["ecosystem"] == NPM:
+        name = urllib.parse.quote(c["name"], safe="@").replace("/", "%2F")
+        data = get(f"https://registry.npmjs.org/{name}",
+                   "application/vnd.npm.install-v1+json")
+        latest = (data.get("dist-tags") or {}).get("latest")
+        version = (data.get("versions") or {}).get(latest) or {}
+        return {"last_release": data.get("modified"), "latest": latest,
+                "deprecated": bool(version.get("deprecated")),
+                "deprecation": str(version.get("deprecated") or "")[:200] or None}
+    if c["ecosystem"] == CARGO:
+        data = get(f"https://crates.io/api/v1/crates/{urllib.parse.quote(c['name'])}")
+        crate = data.get("crate") or {}
+        return {"last_release": crate.get("updated_at"), "latest": crate.get("max_version"),
+                "deprecated": False}
+    raise ValueError("registry not supported")
+
+
+def query_abandoned(components: list[dict], get=_registry_get, now=None) -> dict:
+    """Ask each direct dependency's registry when it last released, and
+    whether it is deprecated. Sets c["maintenance"] on each one asked."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    asked = [c for c in components if c["direct"] and c["ecosystem"] in (PYPI, NPM, CARGO)]
+    asked = asked[:MAX_ABANDONED_QUERIES]
+    result = {"queried": False, "asked": len(asked), "stale": 0, "deprecated": 0,
+              "errors": 0, "threshold_days": ABANDONED_DAYS}
+    for c in asked:
+        try:
+            info = _release_info(c, get)
+        except Exception:
+            result["errors"] += 1
+            continue
+        days = None
+        if info.get("last_release"):
+            try:
+                when = datetime.fromisoformat(str(info["last_release"]).replace("Z", "+00:00"))
+                days = (now - when).days
+            except ValueError:
+                days = None
+        info["days_since_release"] = days
+        info["stale"] = days is not None and days > ABANDONED_DAYS
+        c["maintenance"] = info
+        result["stale"] += info["stale"]
+        result["deprecated"] += bool(info.get("deprecated"))
+    result["queried"] = True
+    return result
+
+
+def maintenance_findings(components: list[dict], language: str = "en",
+                         texts: dict | None = None) -> list[dict]:
+    es = language == "es"
+    out = []
+    for c in components:
+        m = c.get("maintenance") or {}
+        if not (m.get("stale") or m.get("deprecated")) or not c.get("line"):
+            continue
+        deprecated = bool(m.get("deprecated"))
+        rule = "dep.deprecated" if deprecated else "dep.stale"
+        lines = ((texts or {}).get(c["manifest"]) or "").split("\n")
+        snippet = lines[c["line"] - 1].strip() if 0 < c["line"] <= len(lines) else ""
+        days = m.get("days_since_release")
+        if deprecated:
+            title = (f"Dependencia marcada como obsoleta: {c['name']}" if es
+                     else f"Dependency marked deprecated: {c['name']}")
+        else:
+            title = (f"Dependencia sin versiones nuevas en {days} días: {c['name']}" if es
+                     else f"Dependency with no release in {days} days: {c['name']}")
+        out.append({
+            "category": "dependencies", "file": c["manifest"], "line": c["line"],
+            "anchor": f"{rule}:{c['ecosystem']}:{c['name']}", "severity": "low",
+            "title": title[:255],
+            "description": (("El registro la marca como obsoleta" + (f": {m.get('deprecation')}"
+                             if m.get("deprecation") else ".")) if deprecated and es else
+                            ("The registry marks it deprecated" + (f": {m.get('deprecation')}"
+                             if m.get("deprecation") else ".")) if deprecated else
+                            ("Sin mantenimiento aparente: los fallos que se descubran pueden no "
+                             "corregirse. Puede ser un paquete terminado, no abandonado." if es else
+                             "No apparent maintenance: flaws found may never be fixed. It may be "
+                             "finished rather than abandoned.")),
+            "code_snippet": snippet, "verification_status": "verified" if snippet
+            else "unverified",
+            "verification_note": ("la fecha es del registro, no del código" if es
+                                  else "the date comes from the registry, not the code"),
+            "rule_id": rule,
+            "detail": {"cwe": "CWE-1104", "scanner": f"deps/{DEPS_VERSION}",
+                       "assessment": "potential", "confidence": "medium",
+                       "registry": c["ecosystem"], "last_release": m.get("last_release"),
+                       "latest": m.get("latest"), "days_since_release": days,
+                       "threshold_days": ABANDONED_DAYS},
+        })
+    return out
+
+
+def _manifest_line(texts: dict | None, file: str, line: int | None) -> str | None:
+    lines = ((texts or {}).get(file) or "").splitlines()
+    if line and 0 < line <= len(lines) and lines[line - 1].strip():
+        return lines[line - 1].strip()[:300]
+    return None
+
+
+def signal_findings(signals: list[dict], language: str = "en",
+                    manifests: dict | None = None) -> list[dict]:
+    """Findings for the manifest signals. With the manifests' text, the
+    evidence is the manifest line itself, which the evidence check can find
+    again; a signal's own text is a normalised summary (a parsed TOML table,
+    "name: url" for a lockfile entry) that is not in the file verbatim."""
     es = language == "es"
     out = []
     for s in signals:
@@ -523,12 +794,13 @@ def signal_findings(signals: list[dict], language: str = "en") -> list[dict]:
         if not meta or not s.get("file"):
             continue
         severity, cwe, titles, texts = meta
+        snippet = _manifest_line(manifests, s["file"], s.get("line")) or s["text"]
         out.append({
             "category": "dependencies", "file": s["file"],
             "anchor": f"{s['rule']}:{s['text'][:80]}", "severity": severity,
             "title": titles[1] if es else titles[0],
             "description": texts[1] if es else texts[0],
-            "code_snippet": s["text"] if s.get("line") else "",
+            "code_snippet": snippet if s.get("line") else "",
             "line": s.get("line"),
             "verification_status": "verified" if s.get("line") else "unverified",
             "verification_note": "" if s.get("line") else (

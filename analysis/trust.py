@@ -140,9 +140,12 @@ def limits(audit: dict, findings: list[dict], modules: list[dict], L=None) -> li
           "different findings.",
           "Los hallazgos de un modelo varían entre ejecuciones; el mismo commit puede "
           "dar hallazgos distintos."),
-        L("Flow analysis (refutation by call graph and sanitizers) reads Python only.",
+        L("Flow analysis (refutation by call graph and sanitizers) reads Python only; "
+          "the taint scanner follows flows inside one function, in Python, and in "
+          "JavaScript/TypeScript by pattern.",
           "El análisis de flujo (refutación por grafo de llamadas y saneado) solo lee "
-          "Python."),
+          "Python; el escáner de taint sigue flujos dentro de una función, en Python, y en "
+          "JavaScript/TypeScript por patrón."),
     ]
     names = {m.get("module"): m for m in modules}
     deps = names.get("dependencies")
@@ -154,6 +157,21 @@ def limits(audit: dict, findings: list[dict], modules: list[dict], L=None) -> li
                      "(OSV.dev is only asked with SECAUDIT_OSV_CHECK=1).",
                      "No se consultaron vulnerabilidades conocidas de las dependencias "
                      "(OSV.dev solo se consulta con SECAUDIT_OSV_CHECK=1)."))
+    claims = (names.get("claims") or {}).get("detail") or {}
+    if claims.get("lowers_confidence"):
+        counts = claims.get("counts") or {}
+        out.append(L(f"The documentation claims security controls the code does not show "
+                     f"({counts.get('unbacked', 0)} unbacked, {counts.get('contradicted', 0)} "
+                     f"contradicted): trust what the code does, not what the README says.",
+                     f"La documentación afirma controles que el código no muestra "
+                     f"({counts.get('unbacked', 0)} sin respaldo, "
+                     f"{counts.get('contradicted', 0)} contradichos): fíate de lo que hace "
+                     f"el código, no de lo que dice el README."))
+    surf = (names.get("surface") or {}).get("detail") or {}
+    if surf.get("not_inventoried"):
+        langs = ", ".join(surf["not_inventoried"])
+        out.append(L(f"Entry points in {langs} are not inventoried.",
+                     f"No se inventarían los puntos de entrada en {langs}."))
     lev = (names.get("leverage") or {}).get("detail") or {}
     if lev and not (lev.get("github") or {}).get("used"):
         out.append(L("Review and branch protection were not asked of GitHub "
