@@ -54,6 +54,13 @@ _PY = {
         "def {fn}({arg}):\n"
         "    import base64, pickle\n"
         "    return pickle.loads(base64.b64decode({arg}))\n"),
+    # An MCP tool (OWASP MCP05): its parameter reaches a shell. The decorator
+    # names a server object the file need not have; nothing here ever runs.
+    "mcp_tool_exec": (
+        "@{server}.tool()\n"
+        "def {fn}({arg}: str) -> str:\n"
+        "    import subprocess\n"
+        "    return subprocess.check_output(\"{tool} \" + {arg}, shell=True).decode()\n"),
     "path_traversal": (
         "def {fn}({arg}):\n"
         "    import os\n"
@@ -92,7 +99,9 @@ _ARGS = {"sql_injection": ("name", "term", "value", "key"),
          "command_injection": ("target", "host", "filename", "options"),
          "code_eval": ("expr", "formula", "rule", "value"),
          "insecure_deserialization": ("blob", "payload", "data", "token"),
-         "path_traversal": ("filename", "name", "path", "doc")}
+         "path_traversal": ("filename", "name", "path", "doc"),
+         "mcp_tool_exec": ("target", "host", "query", "options")}
+_SERVERS = ("mcp", "server", "app", "tools")
 _COLS = ("name", "title", "owner", "label", "code")
 _TOOLS = ("ping -c 1", "nslookup", "convert", "tar -tf", "file")
 _FOLDERS = ("uploads", "reports", "static/files", "exports", "data/docs")
@@ -163,7 +172,8 @@ def plant(text: str, path: str, kind: str, rng: random.Random,
     noun = rng.choice(_NOUNS)
     code = TEMPLATES[lang][kind].format(
         fn=fn, arg=rng.choice(_ARGS[kind]), v=rng.choice(_VARS), noun=noun,
-        col=rng.choice(_COLS), tool=rng.choice(_TOOLS), folder=rng.choice(_FOLDERS))
+        col=rng.choice(_COLS), tool=rng.choice(_TOOLS), folder=rng.choice(_FOLDERS),
+        server=rng.choice(_SERVERS))
     lines = text.split("\n")
     at = rng.choice(_insertion_points(text, lang))
     gap = ["", ""] if lang == PYTHON else [""]
@@ -182,9 +192,11 @@ def locate(text: str, path: str, fn: str, kind: str) -> tuple[int, int]:
     lang = language(path)
     head = f"def {fn}(" if lang == PYTHON else f"function {fn}("
     length = TEMPLATES[lang][kind].rstrip("\n").count("\n") + 1
+    # A decorated decoy starts on its decorator, one line above the def.
+    above = 1 if TEMPLATES[lang][kind].startswith("@") else 0
     for n, line in enumerate(text.split("\n"), 1):
         if line.startswith(head):
-            return n, n + length - 1
+            return n - above, n - above + length - 1
     return 0, 0
 
 

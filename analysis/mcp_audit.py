@@ -1134,9 +1134,80 @@ def catalog(language: str = "en") -> list[dict]:
             for cid, c in CATALOG.items()]
 
 
+# ---------------------------------------------------------------------------
+# Is the taxonomy above still the official one?
+# ---------------------------------------------------------------------------
+
+TAXONOMY_TIMEOUT = 15
+_OFFICIAL = re.compile(r"MCP(0[1-9]|10):(20\d\d)\s*[-\u2013\u2014]\s*(.+?)"
+                       r"(?=\s{2,}|\s*MCP(?:0[1-9]|10):|[.\"<]|$)")
+
+
+def _norm_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name.replace("&", "and")).strip().lower()
+
+
+def parse_official(page: str) -> dict[str, dict]:
+    """The categories as the official page names them: {"MCP01": {...}}."""
+    import html as _html
+    text = _html.unescape(_html.unescape(re.sub(r"<[^>]+>", "  ", page)))
+    text = text.replace("\\u0026", "&")
+    out: dict[str, dict] = {}
+    for m in _OFFICIAL.finditer(text):
+        key = f"MCP{m.group(1)}"
+        if key not in out:
+            out[key] = {"edition": m.group(2), "name": m.group(3).strip()}
+    return out
+
+
+def _fetch_page(url: str) -> str:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "secaudit"})
+    with urllib.request.urlopen(req, timeout=TAXONOMY_TIMEOUT) as resp:
+        return resp.read(5_000_000).decode("utf-8", "replace")
+
+
+def check_taxonomy(fetch=_fetch_page) -> dict:
+    """Compare CATALOG with the official OWASP page, now.
+
+    Only the public page is fetched; nothing about any repository is sent.
+    The result says whether the names and the edition still match, and what
+    differs when they do not. Without network it says so: it never claims a
+    check it could not make.
+    """
+    from datetime import datetime, timezone
+    when = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        official = parse_official(fetch(OWASP_MCP_URL))
+    except Exception as e:      # no network, a moved page: say so
+        return {"checked": False, "at": when, "url": OWASP_MCP_URL,
+                "error": f"{type(e).__name__}: {str(e)[:200]}",
+                "pinned": OWASP_MCP_VERSION, "pinned_checked": OWASP_MCP_CHECKED}
+    differences = []
+    for key, entry in CATALOG.items():
+        got = official.get(key)
+        if got is None:
+            differences.append({"id": key, "ours": entry["name"], "official": None})
+        elif _norm_name(got["name"]) != _norm_name(entry["name"]):
+            differences.append({"id": key, "ours": entry["name"], "official": got["name"]})
+    extra = sorted(set(official) - set(CATALOG))
+    editions = sorted({v["edition"] for v in official.values()})
+    return {"checked": bool(official), "at": when, "url": OWASP_MCP_URL,
+            "pinned": OWASP_MCP_VERSION, "pinned_checked": OWASP_MCP_CHECKED,
+            "official_editions": editions, "categories_found": len(official),
+            "matches": bool(official) and not differences and not extra
+            and editions == ["2025"],
+            "differences": differences, "unknown_categories": extra}
+
+
 def main(argv: list[str]) -> int:
+    if argv == ["--check-taxonomy"]:
+        json.dump(check_taxonomy(), sys.stdout, indent=2, ensure_ascii=False)
+        print()
+        return 0
     if len(argv) != 1:
-        print("usage: python3 -m analysis.mcp_audit <directory>", file=sys.stderr)
+        print("usage: python3 -m analysis.mcp_audit <directory> | --check-taxonomy",
+              file=sys.stderr)
         return 2
     from .parallax import repository_texts
     result = analyze(repository_texts(Path(argv[0])))

@@ -550,12 +550,91 @@ def min_cut(edges: list[Edge], goals: dict, paths: list[dict], limit: int = 3) -
     return out
 
 
+# OWASP MCP Top 10 rule findings as steps: (rule, source, target, cwe, attack,
+# what makes it work, what it needs, cost). A step from a static pattern is
+# tentative unless the rule itself confirmed it (a tool parameter reaching a
+# shell, an invisible character in a description).
+_MCP_STEPS = {
+    "mcp05.exec_in_tool": (AGENT, EXEC, "CWE-78", "T1059",
+                           "a tool hands its parameters to a shell or an evaluator",
+                           ["an agent that calls the tool with chosen arguments"], _cd(1)),
+    "mcp10.unconfined_path": (AGENT, READ_FILES, "CWE-22", "T1083",
+                              "a tool reads whatever path it is given",
+                              ["an agent that calls the tool"], _cd(1)),
+    "mcp10.file_resource_template": (AGENT, READ_FILES, "CWE-22", "T1083",
+                                     "a resource template serves any file",
+                                     ["an agent that reads the resource"], _cd(1)),
+    "mcp01.environment_exposed": (AGENT, SECRET, "CWE-200", "T1552.001",
+                                  "a tool returns the whole environment to the model",
+                                  ["an agent that calls the tool"], _cd(1)),
+    "mcp01.literal_secret_in_config": (REPO, SECRET, "CWE-798", "T1552.001",
+                                       "a credential is written in an MCP configuration",
+                                       ["read access to the repository"], _cd(1)),
+    "mcp01.token_in_url": (REPO, SECRET, "CWE-598", "T1552.001",
+                           "a token travels in an MCP server's URL",
+                           ["read access to the repository"], _cd(1)),
+    "mcp02.enable_all_project_servers": (MERGE, DEV, "CWE-829", "T1195.002",
+                                         "every MCP server the project declares starts "
+                                         "without asking", ["a change to .mcp.json merged"],
+                                         _cd(1, "contributor")),
+    "mcp02.auto_approved_tools": (AGENT, DEV, "CWE-862", "T1059",
+                                  "tools run with no human approval",
+                                  ["an agent steered into calling them"], _cd(1)),
+    "mcp04.unpinned_package": ("start:compromised_dependency", DEV, "CWE-1357", "T1195.001",
+                               "the MCP server runs whatever version is published now",
+                               ["a malicious release of that package"], _cd(2)),
+    "mcp04.pipe_to_shell": ("start:compromised_dependency", DEV, "CWE-494", "T1195.001",
+                            "an MCP server is installed by piping a download to a shell",
+                            ["control of the download"], _cd(2)),
+    "mcp04.unpinned_image": ("start:compromised_dependency", DEV, "CWE-1357", "T1195.001",
+                             "the MCP server runs an unpinned container image",
+                             ["a malicious image under that tag"], _cd(2)),
+    "mcp04.plain_http_remote": (INTERNAL, AGENT, "CWE-319", "T1557",
+                                "the remote MCP server is reached over plain HTTP",
+                                ["a position on the network path"], _cd(2)),
+    "mcp03.instructions_in_description": (MERGE, AGENT, "CWE-1427", "T1059",
+                                          "a tool description carries instructions "
+                                          "for the model", ["a change to the tool merged"],
+                                          _cd(1, "contributor")),
+    "mcp03.invisible_characters": (MERGE, AGENT, "CWE-1427", "T1059",
+                                   "a tool description hides characters from reviewers",
+                                   ["a change to the tool merged"], _cd(1, "contributor")),
+    "mcp06.external_content_unmarked": (REQUESTS, AGENT, "CWE-1427", "T1189",
+                                        "fetched content reaches the model unmarked",
+                                        ["content the tool will fetch"],
+                                        _cd(1, interaction=True)),
+    "mcp07.network_server_without_auth": (REQUESTS, AGENT, "CWE-306", "T1190",
+                                          "the MCP server answers anyone on the network",
+                                          ["network access to the server"], _cd(1)),
+}
+
+
+def mcp_edges(f: dict) -> list[Edge]:
+    """An MCP rule finding shown to exist, as a step an attacker can take."""
+    if f.get("category") != "mcp" or f.get("verification_status") != "verified":
+        return []
+    if f.get("epistemic_status") == "refuted" or f.get("assessment") == "discarded":
+        return []
+    step = _MCP_STEPS.get(f.get("rule_id") or "")
+    if step is None:
+        return []
+    source, target, cwe, attack, works, needs, cost = step
+    where = f"{f.get('file')}:{f.get('line')}" if f.get("line") else str(f.get("file") or "")
+    owasp = (f.get("detail") or {}).get("owasp_mcp")
+    return [Edge(source, target, dict(cost), {
+        "kind": f"mcp:{owasp or f.get('rule_id')}", "cwe": cwe, "attack": attack,
+        "owasp_mcp": owasp,
+        "sees": {"where": where, "entry": "", "title": str(f.get("title") or "")[:300]},
+        "works": works, "needs": needs, "gains": target,
+    }, finding_id=f.get("id"), tentative=f.get("assessment") != "confirmed")]
+
+
 def analyze(findings: list[dict], divergences: list[dict], leverage: list[dict],
             agent: dict, jewels: list[dict]) -> dict:
     codes = {c.get("code") for r in leverage for c in r.get("reasons") or []}
     edges = structural_edges(True, "ci_deploy" in codes)
     for f in findings:
-        edges += finding_edges(f)
+        edges += finding_edges(f) or mcp_edges(f)
     edges += leverage_edges(leverage)
     edges += divergence_edges(divergences, {r["file"]: r.get("oversight", 0)
                                             for r in leverage})
