@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import threading
 import secrets
 import shutil
 import tempfile
@@ -52,7 +53,7 @@ from analysis import (assessment, deadcode, deps, doc_claims, drift,  # noqa: E4
                       evidence_chain, mcp_audit, reports, secrets_scan, surface, taint,
                       pdf, trust, twin)
 from .engine import engine as cli_engine  # noqa: E402
-from . import prnotify, scanproc, whatif  # noqa: E402
+from . import prnotify, sandbox, scanproc, whatif  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,8 @@ def fail_interrupted_audits() -> int:
         for audit in stale:
             audit.status = "error"
             audit.error = INTERRUPTED
+        for w in session.scalars(select(WhatIf).where(WhatIf.status == "running")).all():
+            w.status, w.result = "error", {"error": INTERRUPTED}
         session.commit()
         return len(stale)
     finally:
@@ -1661,7 +1664,8 @@ class WhatIfRequest(BaseModel):
 
 
 @app.post("/api/audits/{audit_id}/what-if")
-def what_if(audit_id: str, req: WhatIfRequest, user: User = Depends(require_user),
+def what_if(audit_id: str, req: WhatIfRequest, background_tasks: BackgroundTasks,
+            response: Response, user: User = Depends(require_user),
             session: Session = Depends(db_session)):
     """Try a fix for a finding on a temporary copy of the audited commit (C29).
 
@@ -1680,9 +1684,19 @@ def what_if(audit_id: str, req: WhatIfRequest, user: User = Depends(require_user
         raise HTTPException(status_code=400, detail=str(e))
     rules = [r.validation for r in (audit.project.immune_rules if audit.project else [])
              if r.validated and r.approved and (r.validation or {}).get("rule")]
+    args = (audit.repo_url, audit.commit_sha, finding_to_dict(row), req.patch,
+            audit.language or "en", rules, int(immune_history_depth()))
+    if sandbox.enabled():
+        # Running tests takes minutes: answered at once, finished in the background.
+        record = WhatIf(audit_id=audit.id, finding_id=row.id, user_id=user.id,
+                        patch=req.patch, status="running", result=None)
+        session.add(record)
+        session.commit()
+        background_tasks.add_task(finish_what_if, record.id, args)
+        response.status_code = 202
+        return what_if_to_dict(record)
     try:
-        result = whatif.run(audit.repo_url, audit.commit_sha, finding_to_dict(row), req.patch,
-                            audit.language or "en", rules, int(immune_history_depth()))
+        result = whatif.run(*args)
         status = "ok"
     except (whatif.WhatIfError, scanproc.ScanError) as e:
         result, status = {"error": sanitize_error(str(e))[:500]}, "error"
@@ -1691,6 +1705,28 @@ def what_if(audit_id: str, req: WhatIfRequest, user: User = Depends(require_user
     session.add(record)
     session.commit()
     return what_if_to_dict(record)
+
+
+_SANDBOX_LOCK = threading.Semaphore(1)      # one container run at a time
+
+
+def finish_what_if(record_id: int, args: tuple) -> None:
+    with _SANDBOX_LOCK:
+        try:
+            result, status = whatif.run(*args, run_tests=True), "ok"
+        except (whatif.WhatIfError, scanproc.ScanError) as e:
+            result, status = {"error": sanitize_error(str(e))[:500]}, "error"
+        except Exception as e:      # never leave it "running"
+            log.exception("what if %s failed", record_id)
+            result, status = {"error": sanitize_error(f"internal error: {e}")[:500]}, "error"
+    session = get_session()
+    try:
+        record = session.get(WhatIf, record_id)
+        if record is not None:
+            record.status, record.result = status, result
+            session.commit()
+    finally:
+        session.close()
 
 
 @app.get("/api/audits/{audit_id}/what-if")

@@ -1136,3 +1136,114 @@ class TestPullRequestReport:
         run = next(m for m in audit.module_runs if m.module == "pr_report")
         assert audit.status == "done" and run.status == "error" and "403" in run.error
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# The What If sandbox
+# ---------------------------------------------------------------------------
+
+from web import sandbox as web_sandbox  # noqa: E402
+
+
+class TestSandbox:
+    def test_off_by_default(self, monkeypatch):
+        monkeypatch.delenv(web_sandbox.MODE_ENV, raising=False)
+        assert not web_sandbox.enabled()
+        assert web_sandbox.status() == {"available": False, "reason": "off"}
+
+    def test_runner_detection(self, tmp_path):
+        assert web_sandbox.detect(tmp_path) is None
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n")
+        (tmp_path / "requirements.txt").write_text("flask\n")
+        py = web_sandbox.detect(tmp_path)
+        assert py["kind"] == "python" and py["install"][-2:] == ["-r", "requirements.txt"]
+        (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+        node = web_sandbox.detect(tmp_path)
+        assert node["kind"] == "node" and "--ignore-scripts" in node["install"]
+
+    def test_the_container_is_locked_down(self, tmp_path, monkeypatch):
+        seen = []
+
+        def fake(cmd, **kw):
+            seen.append((cmd, kw))
+
+            class R:
+                returncode, stdout, stderr = 0, "1 passed", ""
+            return R()
+        monkeypatch.setattr(web_sandbox.subprocess, "run", fake)
+        monkeypatch.setattr(web_sandbox, "docker_bin", lambda: "/usr/bin/docker")
+        monkeypatch.setenv("SECAUDIT_SECRET_KEY", "master")
+        web_sandbox._docker(tmp_path, "python:3.12-slim", ["python", "-m", "pytest"], False, 60)
+        cmd, kw = seen[0]
+        joined = " ".join(cmd)
+        for flag in ("--network none", "--read-only", "--cap-drop ALL",
+                     "--security-opt no-new-privileges", "--user 65534:65534",
+                     "--pull=never", "--pids-limit 256"):
+            assert flag in joined, flag
+        assert "SECAUDIT_SECRET_KEY" not in kw["env"] and "master" not in joined
+        assert f"{tmp_path}:/work:rw" in joined
+        web_sandbox._docker(tmp_path, "python:3.12-slim", ["pip", "install"], True, 60)
+        assert "--network bridge" in " ".join(seen[1][0])
+
+    def test_through_the_app_it_runs_in_the_background(self, client, signed_in, stub_audit,
+                                                       from_repo, monkeypatch):
+        monkeypatch.setenv(web_sandbox.MODE_ENV, "docker")
+        monkeypatch.setattr(web_sandbox, "docker_bin", lambda: "/usr/bin/docker")
+        calls = []
+
+        def fake_tests(before, after, scratch):
+            calls.append((before.name, after.name))
+            assert not (before / ".git").exists()
+            return {"run": True, "kind": "python", "regressed": True,
+                    "broken_by_patch": ["tests/test_app.py::test_get_user"],
+                    "before": {"passed": True}, "after": {"passed": False}}
+        monkeypatch.setattr(web_sandbox, "run_tests", fake_tests)
+        audit = run_audit(client)
+        sqli = next(f for f in audit["findings"] if f["category"] == "injection")
+        app = from_repo / "app.py"
+        app.write_text(app.read_text().replace('\'" + name + "\'")', '?", (name,))'))
+        patch = git(from_repo, "diff")
+        git(from_repo, "checkout", "--", "app.py")
+        r = client.post(f"/api/audits/{audit['id']}/what-if",
+                        json={"finding_id": sqli["id"], "patch": patch})
+        assert r.status_code == 202 and r.json()["status"] == "running"
+        done = client.get(f"/api/audits/{audit['id']}/what-if").json()[0]
+        assert done["status"] == "ok" and calls == [("original", "repo")]
+        assert done["result"]["verdict"] == "introduces_issues"     # a test broke
+        assert done["result"]["tests"]["candidates"] == ["tests/test_app.py"]
+
+
+def _docker_ready():
+    try:
+        return web_sandbox.docker_bin() and subprocess.run(
+            ["docker", "image", "inspect", "python:3.12-slim"], capture_output=True,
+            timeout=20).returncode == 0 and os.environ.get("SECAUDIT_TEST_DOCKER") == "1"
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _docker_ready(),
+                    reason="needs Docker, python:3.12-slim and SECAUDIT_TEST_DOCKER=1")
+class TestSandboxForReal:
+    def test_isolation_from_inside(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(web_sandbox.MODE_ENV, "docker")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_iso.py").write_text(
+            "import os, socket\n"
+            "def test_nobody():\n    assert os.getuid() == 65534\n"
+            "def test_no_network():\n"
+            "    try:\n        socket.create_connection(('1.1.1.1', 53), timeout=2)\n"
+            "        assert False, 'network reachable'\n"
+            "    except OSError:\n        pass\n"
+            "def test_read_only():\n"
+            "    try:\n        open('/etc/x', 'w')\n        assert False\n"
+            "    except OSError:\n        pass\n")
+        work = tmp_path.parent / f"{tmp_path.name}-work"
+        web_sandbox._copy(tmp_path, work)          # as run_tests does: readable by nobody
+        # No pytest in the image without the install step: run the file directly.
+        r = web_sandbox._docker(work, "python:3.12-slim",
+                                ["python", "-c", "import tests.test_iso as t; "
+                                 "t.test_nobody(); t.test_no_network(); t.test_read_only(); "
+                                 "print('isolated')"], False, 120)
+        assert r["exit"] == 0 and "isolated" in r["output"], r

@@ -15,14 +15,18 @@ The person proposes a patch (a unified diff) for a finding. The server:
    - whether the patch itself weakens a control (security drift);
    - which test files cover the changed files, by name.
 
-The repository's tests are NOT run: running them is running the audited
-code, which secaudit never does by default. The result says so, lists the
-tests a person should run, and gives the verdict for what was measured
-only: "the cited code is gone and nothing new appeared" is evidence for a
-fix, never proof of one.
+By default the repository's tests are NOT run: running them is running the
+audited code. The result says so, lists the tests a person should run, and
+gives the verdict for what was measured only: "the cited code is gone and
+nothing new appeared" is evidence for a fix, never proof of one.
+
+When the administrator turns the sandbox on (web/sandbox.py), the tests run
+in a throwaway container with no network, on the audited commit and on the
+patched one, and a test the patch breaks counts against it.
 """
 
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -31,7 +35,7 @@ from analysis import drift, evidence, immune
 from analysis.parallax import _git_run
 from analysis.secrets_scan import redact_line
 
-from . import scanproc
+from . import sandbox, scanproc
 from .gitclone import CloneError, clone_at_commit
 
 MAX_PATCH = 200_000
@@ -101,7 +105,7 @@ def _tests_for(project: Path, files: list[str]) -> list[str]:
 
 
 def run(repo_url: str, commit: str, finding: dict, patch: str, language: str,
-        immune_rules: list[dict], history: int) -> dict:
+        immune_rules: list[dict], history: int, run_tests: bool = False) -> dict:
     files = check_patch(patch)
     with tempfile.TemporaryDirectory(prefix="secaudit-whatif-") as tmp:
         dest = Path(tmp) / "repo"
@@ -110,6 +114,10 @@ def run(repo_url: str, commit: str, finding: dict, patch: str, language: str,
         except CloneError as e:
             raise WhatIfError(f"the audited commit could not be checked out: {e}")
         before = scanproc.run_scan(dest, language, history)
+        original = Path(tmp) / "original"
+        if run_tests:
+            shutil.copytree(dest, original, symlinks=True,
+                            ignore=shutil.ignore_patterns(".git"))
         patch_file = Path(tmp) / "fix.patch"
         patch_file.write_text(patch if patch.endswith("\n") else patch + "\n")
         check = _git_run(dest, "apply", "--check", "--whitespace=nowarn", str(patch_file))
@@ -160,18 +168,36 @@ def run(repo_url: str, commit: str, finding: dict, patch: str, language: str,
         # 4. Does the patch itself weaken a control?
         weakened = drift.drift(dest, "HEAD~1", "HEAD", language)
 
-        tests = _tests_for(dest, files)
+        candidates = _tests_for(dest, files)
+        es = language == "es"
+        if run_tests:
+            try:
+                tests = sandbox.run_tests(original, dest, Path(tmp))
+            except (sandbox.SandboxError, OSError) as e:
+                tests = {"run": False, "reason": "error", "error": redact_line(str(e))[:300]}
+            tests["candidates"] = candidates
+            if not tests.get("run"):
+                tests.setdefault("reason", "error")
+        else:
+            tests = {"run": False, "candidates": candidates, "reason": "off",
+                     "explanation": ("No se ejecutan los tests del repositorio: sería ejecutar "
+                                     "el código auditado. El administrador puede activar el "
+                                     "sandbox (SECAUDIT_WHATIF_SANDBOX=docker)."
+                                     if es else
+                                     "The repository's tests are not run: that would run the "
+                                     "audited code. An administrator can turn on the sandbox "
+                                     "(SECAUDIT_WHATIF_SANDBOX=docker).")}
 
     same_file_gone = [g for g in gone if g["file"] == finding.get("file")]
     if finding.get("source") == "rule":
         target_gone = any(g["rule_id"] == finding.get("rule_id") for g in gone)
     else:
         target_gone = not still_cited
-    regressions = appeared or weakened or (immune_result.get("matches") or [])
+    regressions = appeared or weakened or (immune_result.get("matches") or []) or \
+        tests.get("regressed")
     verdict = ("promising" if target_gone and not still_cited and not regressions else
                "introduces_issues" if regressions else
                "not_shown")
-    es = language == "es"
     return {
         "files": files, "diff": shown,
         "cited_code_still_present": still_cited,
@@ -179,15 +205,16 @@ def run(repo_url: str, commit: str, finding: dict, patch: str, language: str,
         "rule_findings_gone": gone[:100], "rule_findings_new": appeared[:100],
         "rule_findings_gone_same_file": len(same_file_gone),
         "immune": immune_result, "drift": weakened[:50],
-        "tests": {"run": False, "candidates": tests,
-                  "reason": ("No se ejecutan los tests del repositorio: sería ejecutar el "
-                             "código auditado. Ejecútalos tú en un entorno aislado."
-                             if es else
-                             "The repository's tests are not run: that would run the audited "
-                             "code. Run them yourself in an isolated environment.")},
+        "tests": tests,
         "verdict": verdict,
-        "verdict_note": ("Medido sin ejecutar nada: es indicio de arreglo, no prueba."
-                         if es else
-                         "Measured without running anything: evidence of a fix, not proof."),
+        "verdict_note": (("Tests ejecutados en un contenedor aislado; el resto, medido sin "
+                          "ejecutar nada. Es indicio de arreglo, no prueba."
+                          if es else
+                          "Tests run in an isolated container; the rest measured without "
+                          "running anything. Evidence of a fix, not proof.")
+                         if tests.get("run") else
+                         ("Medido sin ejecutar nada: es indicio de arreglo, no prueba."
+                          if es else
+                          "Measured without running anything: evidence of a fix, not proof.")),
         "original_untouched": True,
     }

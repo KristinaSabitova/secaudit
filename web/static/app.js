@@ -712,7 +712,7 @@ const TEXT = {
     "blue.log": "log",
     "blue.detect": "detect",
     "whatif.title": "What if? Try a fix on a copy",
-    "whatif.intro": "Paste a unified diff. It is applied to a temporary copy of the audited commit; the original repository is never touched and none of its code is run. The repository's tests are not run.",
+    "whatif.intro": "Paste a unified diff. It is applied to a temporary copy of the audited commit; the original repository is never touched. Its code is not run, except its tests when an administrator has turned on the sandbox, and then only in an isolated container.",
     "whatif.patch": "patch (unified diff)",
     "whatif.run": "try this fix",
     "whatif.running": "cloning the commit and measuring the fix…",
@@ -729,6 +729,23 @@ const TEXT = {
     "whatif.untouched": "original untouched",
     "whatif.tests": "Tests",
     "whatif.diff": "the applied diff",
+    "whatif.sandboxrunning": "Running the repository's tests in an isolated container, before and after the patch. This takes a few minutes…",
+    "whatif.t.before": "audited commit",
+    "whatif.t.after": "with the patch",
+    "whatif.t.pass": "pass",
+    "whatif.t.fail": "fail",
+    "whatif.t.none": "no tests collected",
+    "whatif.t.timeout": "timed out",
+    "whatif.t.isolation": "where",
+    "whatif.t.isolationtext": (img) => `throwaway container ${img}, no network, read-only, no capabilities, as nobody`,
+    "whatif.t.installed": "dependencies installed",
+    "whatif.t.broken": "Tests the patch breaks",
+    "whatif.t.fixed": "Tests the patch fixes",
+    "whatif.t.output": "test output (with the patch)",
+    "whatif.t.candidates": "Tests that cover the changed files, by name:",
+    "whatif.t.reason.off": "The repository's tests are not run: an administrator can turn on the sandbox.",
+    "whatif.t.reason.no_runner": "No test runner was recognised (pytest or npm test).",
+    "whatif.t.reason.error": "The sandbox could not run the tests.",
     "memory.approval": "approval",
     "memory.approved": (who) => `approved by ${who}`,
     "memory.pending": "waiting for approval: not used yet",
@@ -1560,7 +1577,7 @@ const TEXT = {
     "blue.log": "registrar",
     "blue.detect": "detectar",
     "whatif.title": "¿Y si…? Prueba un arreglo en una copia",
-    "whatif.intro": "Pega un diff unificado. Se aplica a una copia temporal del commit auditado; el repositorio original no se toca y no se ejecuta nada de su código. Los tests del repositorio no se ejecutan.",
+    "whatif.intro": "Pega un diff unificado. Se aplica a una copia temporal del commit auditado; el repositorio original no se toca. Su código no se ejecuta, salvo sus tests si el administrador activó el sandbox, y entonces solo en un contenedor aislado.",
     "whatif.patch": "parche (diff unificado)",
     "whatif.run": "probar este arreglo",
     "whatif.running": "clonando el commit y midiendo el arreglo…",
@@ -1577,6 +1594,23 @@ const TEXT = {
     "whatif.untouched": "original sin tocar",
     "whatif.tests": "Tests",
     "whatif.diff": "el diff aplicado",
+    "whatif.sandboxrunning": "Ejecutando los tests del repositorio en un contenedor aislado, antes y después del parche. Tarda unos minutos…",
+    "whatif.t.before": "commit auditado",
+    "whatif.t.after": "con el parche",
+    "whatif.t.pass": "pasan",
+    "whatif.t.fail": "fallan",
+    "whatif.t.none": "no se recogió ningún test",
+    "whatif.t.timeout": "se agotó el tiempo",
+    "whatif.t.isolation": "dónde",
+    "whatif.t.isolationtext": (img) => `contenedor desechable ${img}, sin red, solo lectura, sin capacidades, como nobody`,
+    "whatif.t.installed": "dependencias instaladas",
+    "whatif.t.broken": "Tests que rompe el parche",
+    "whatif.t.fixed": "Tests que arregla el parche",
+    "whatif.t.output": "salida de los tests (con el parche)",
+    "whatif.t.candidates": "Tests que cubren los ficheros cambiados, por nombre:",
+    "whatif.t.reason.off": "Los tests del repositorio no se ejecutan: el administrador puede activar el sandbox.",
+    "whatif.t.reason.no_runner": "No se reconoció ningún ejecutor de tests (pytest o npm test).",
+    "whatif.t.reason.error": "El sandbox no pudo ejecutar los tests.",
     "memory.approval": "aprobación",
     "memory.approved": (who) => `aprobada por ${who}`,
     "memory.pending": "pendiente de aprobación: aún no se usa",
@@ -5043,6 +5077,10 @@ function blueTeamButton(finding) {
 
 function whatIfResult(w) {
   const wrap = node("div", "chain");
+  if (w.status === "running") {
+    wrap.append(node("p", "muted", t("whatif.sandboxrunning")));
+    return wrap;
+  }
   if (w.status !== "ok") {
     wrap.append(node("p", "error", (w.result || {}).error || t("whatif.failed")));
     return wrap;
@@ -5068,8 +5106,35 @@ function whatIfResult(w) {
                 list(r.drift.map((x) => `${x.label} · ${x.file}:${x.line || ""}`)));
   }
   const tests = r.tests || {};
-  wrap.append(node("h3", null, t("whatif.tests")), node("p", "muted", tests.reason || ""));
-  if ((tests.candidates || []).length) wrap.append(list(tests.candidates));
+  wrap.append(node("h3", null, t("whatif.tests")));
+  if (tests.run) {
+    const side = (x) => !x ? "—" : x.timed_out ? t("whatif.t.timeout")
+      : x.passed === null ? t("whatif.t.none")
+      : `${t(x.passed ? "whatif.t.pass" : "whatif.t.fail")}${x.count_passed !== undefined
+          ? ` (${x.count_passed} ✓, ${x.count_failed} ✗)` : ""}`;
+    wrap.append(facts([
+      [t("whatif.t.before"), side(tests.before)],
+      [t("whatif.t.after"), side(tests.after)],
+      [t("whatif.t.isolation"), t("whatif.t.isolationtext", tests.image)],
+      [t("whatif.t.installed"), t(tests.installed ? "supply.yes" : "supply.no")],
+    ]));
+    if ((tests.broken_by_patch || []).length) {
+      wrap.append(node("h4", null, t("whatif.t.broken")), list(tests.broken_by_patch));
+    }
+    if ((tests.fixed_by_patch || []).length) {
+      wrap.append(node("h4", null, t("whatif.t.fixed")), list(tests.fixed_by_patch));
+    }
+    const out = node("details", "block");
+    out.append(node("summary", null, t("whatif.t.output")),
+               node("pre", "snippet", tests.after_output || ""));
+    wrap.append(out);
+  } else {
+    wrap.append(node("p", "muted", tests.error || tests.explanation
+      || t(`whatif.t.reason.${tests.reason || "off"}`)));
+  }
+  if ((tests.candidates || []).length) {
+    wrap.append(node("p", "muted small", t("whatif.t.candidates")), list(tests.candidates));
+  }
   const det = node("details", "block");
   det.append(node("summary", null, t("whatif.diff")), node("pre", "snippet", r.diff || ""));
   wrap.append(det);
@@ -5091,11 +5156,19 @@ function whatIfForm(finding) {
     go_.disabled = true;
     out.replaceChildren(node("p", "muted", t("whatif.running")));
     try {
-      const w = await api(auditPath(state.current, "/what-if"), {
+      const audit = state.current;
+      let w = await api(auditPath(audit, "/what-if"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ finding_id: finding.id, patch: area.value }),
       });
       out.replaceChildren(whatIfResult(w));
+      // With the sandbox on, the tests run in the background: ask until done.
+      for (let i = 0; w.status === "running" && i < 240; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const all = await api(auditPath(audit, "/what-if"));
+        w = all.find((x) => x.id === w.id) || w;
+        out.replaceChildren(whatIfResult(w));
+      }
     } catch (e) {
       out.replaceChildren(node("p", "error", e.message));
     } finally {
