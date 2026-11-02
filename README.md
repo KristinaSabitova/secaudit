@@ -619,6 +619,51 @@ Set `GITHUB_WEBHOOK_SECRET` to enable the webhook — without it the endpoint
 refuses every delivery with 503 rather than accepting unverified ones.
 See [DEPLOY.md](DEPLOY.md) for running it in production.
 
+### Rule scanners, assessment and exports
+
+Next to the model, each audit runs deterministic scanners on the server's own
+checkout, never executing anything from it. Their findings carry
+`source: "rule"` and a `rule_id`:
+
+- secrets, with an exposure timeline: first commit, removal and whether the
+  secret is still at HEAD;
+- dependencies from manifests and lockfiles, with a CycloneDX SBOM,
+  dependency-confusion signals and ghost dependencies;
+- an OWASP MCP Top 10 auditor for MCP01-MCP10.
+
+Two more stages add context rather than findings. The first inventories the
+attack surface: entry points, whether auth is visible on them, and the trust
+boundaries they cross. The second measures security drift against the
+previous audit.
+
+Every finding has an assessment, **confirmed**, **potential**, **discarded** or
+**unverifiable**, and an evidence chain:
+`GET /api/audits/{id}/findings/{fid}/evidence-chain`.
+`GET /api/audits/{id}/trust` scores coverage, evidence and adversarial
+resistance separately. A clean audit is never presented as a guarantee.
+
+Exports:
+
+- `report.sarif`, `report.json` and `report.html` (print it for a PDF);
+- `sbom.cdx.json`;
+- `replay.json`;
+- `diff`, plus `/api/projects/{id}/history` for the project's history.
+
+All of them live under `/api/audits/{id}/`, except the project history.
+
+```bash
+python3 -m analysis.mcp_audit /path/to/repo     # MCP audit, no server needed
+```
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SECAUDIT_ALLOWED_REPO_OWNERS` | any | Comma-separated GitHub owners whose repos may be audited |
+| `SECAUDIT_OSV_CHECK` | `0` | `1` sends package names and versions (nothing else) to OSV.dev |
+| `SECAUDIT_MAX_SCAN_CHARS` / `SECAUDIT_MAX_SCAN_FILES` | 64M / 20000 | Bounds on what the scanners read |
+
+Status of every feature, limits and the pending plan: [docs/PRACTICA3.md](docs/PRACTICA3.md).
+Changes: [CHANGELOG.md](CHANGELOG.md).
+
 ## Security notes
 
 - State files live in `~/.secaudit/` — never written inside the audited repo.

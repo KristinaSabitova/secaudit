@@ -636,6 +636,52 @@ Define `GITHUB_WEBHOOK_SECRET` para habilitar el webhook — sin esa variable el
 endpoint rechaza toda entrega con 503 en lugar de aceptarlas sin verificar.
 Consulta [DEPLOY.md](DEPLOY.md) para ponerlo en producción.
 
+### Escáneres de reglas, evaluación y exportaciones
+
+Junto al modelo, cada auditoría ejecuta escáneres deterministas sobre el
+checkout del propio servidor, sin ejecutar nada de él. Sus hallazgos llevan
+`source: "rule"` y un `rule_id`:
+
+- secretos, con línea temporal de exposición: primer commit, eliminación y si
+  el secreto sigue en HEAD;
+- dependencias de manifiestos y lockfiles, con SBOM CycloneDX, señales de
+  confusión de dependencias y dependencias fantasma;
+- un auditor OWASP MCP Top 10 para MCP01-MCP10.
+
+Dos etapas más aportan contexto, no hallazgos. La primera inventaría la
+superficie de ataque: puntos de entrada, si se ve autenticación en ellos y
+las fronteras de confianza que cruzan. La segunda mide la deriva de
+seguridad frente a la auditoría anterior.
+
+Cada hallazgo tiene una evaluación, **CONFIRMADO**, **POTENCIAL**,
+**DESCARTADO** o **NO VERIFICABLE**, y una cadena de evidencia:
+`GET /api/audits/{id}/findings/{fid}/evidence-chain`.
+`GET /api/audits/{id}/trust` puntúa por separado la cobertura, la evidencia y
+la resistencia adversarial. Una auditoría limpia nunca se presenta como
+garantía.
+
+Exportaciones:
+
+- `report.sarif`, `report.json` y `report.html` (para PDF, imprímelo);
+- `sbom.cdx.json`;
+- `replay.json`;
+- `diff`, más `/api/projects/{id}/history` para la historia del proyecto.
+
+Todas cuelgan de `/api/audits/{id}/`, salvo la historia del proyecto.
+
+```bash
+python3 -m analysis.mcp_audit /ruta/al/repo     # auditoría MCP sin servidor
+```
+
+| Variable | Por defecto | Efecto |
+|---|---|---|
+| `SECAUDIT_ALLOWED_REPO_OWNERS` | cualquiera | Propietarios de GitHub (separados por comas) cuyos repos se pueden auditar |
+| `SECAUDIT_OSV_CHECK` | `0` | `1` envía nombres y versiones de paquetes (nada más) a OSV.dev |
+| `SECAUDIT_MAX_SCAN_CHARS` / `SECAUDIT_MAX_SCAN_FILES` | 64M / 20000 | Límites de lo que leen los escáneres |
+
+Estado de cada funcionalidad, límites y plan pendiente: [docs/PRACTICA3.md](docs/PRACTICA3.md).
+Cambios: [CHANGELOG.md](CHANGELOG.md).
+
 ## Notas de seguridad
 
 - Los archivos de estado viven en `~/.secaudit/` — nunca se escriben dentro
