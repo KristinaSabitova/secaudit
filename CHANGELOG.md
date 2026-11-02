@@ -13,6 +13,19 @@ Added
   Twin section). Fix or confirm findings and see which attack paths close,
   change or open. Nothing is run or written.
 - A benchmark case with flows through helper functions (38 labels now).
+- JavaScript and TypeScript taint on a tree-sitter syntax tree (optional,
+  pinned dependency): callbacks, same-file helpers, destructuring, renamed
+  request and response parameters, MongoDB `$where` (CWE-943). Without
+  tree-sitter the pattern reader is used and the output says so.
+- Pull request report, off by default: one comment edited in place and a
+  `secaudit` commit status, with `SECAUDIT_PR_COMMENTS` (`summary` or
+  `full`) and `SECAUDIT_GITHUB_WRITE_TOKEN`. Migration `0018`.
+- What If can run the repository's tests before and after the patch in a
+  Docker sandbox (`SECAUDIT_WHATIF_SANDBOX=docker`), off by default: no
+  network, read-only root, no capabilities, nobody, limits.
+- External benchmark: OWASP NodeGoat at a pinned commit, labelled from its
+  own tutorial (`--external`). The scanners find 5 of the 5 cases in their
+  scope.
 
 Fixed
 - The result of a summarised helper that sanitises its input is no longer

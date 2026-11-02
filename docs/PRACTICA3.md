@@ -60,10 +60,10 @@ auditado. Dos puntos se completan en la segunda parte:
 | # | Funcionalidad | Estado | Dónde |
 |---|---|---|---|
 | B10 | Dependencias, SBOM, OSV y mantenimiento | **nuevo** | `analysis/deps.py`: PyPI, npm, Go, crates.io, RubyGems, Packagist y Maven/Gradle (`pom.xml` con propiedades literales del mismo pom y `dependencyManagement`; `build.gradle(.kts)` leído como texto, nunca evaluado; catálogos `libs.versions.toml`; `gradle.lockfile`); CycloneDX 1.5 en `/sbom.cdx.json`. OSV con `SECAUDIT_OSV_CHECK=1`. Paquetes abandonados (sin release en 730 días) y deprecados con `SECAUDIT_ABANDONED_CHECK=1` (PyPI, npm, crates.io). La UI dice si solo hay dependencias directas por falta de lockfile |
-| B11 | Taint | **nuevo** (con límites) | `analysis/taint.py`. Python con ast, entre funciones del mismo fichero (hasta tres llamadas de profundidad, con resúmenes por función): de `request.*`, `sys.argv`, `input()` y parámetros de rutas hasta SQL, shell, eval, rutas, SSRF, plantillas, deserialización, redirecciones y respuestas, cortado por saneadores conocidos. JS/TS por patrón, con confianza baja. Cada hallazgo guarda el flujo paso a paso y queda POTENCIAL |
+| B11 | Taint | **nuevo** (con límites) | `analysis/taint.py`. Python con ast, entre funciones del mismo fichero (hasta tres llamadas de profundidad, con resúmenes por función): de `request.*`, `sys.argv`, `input()` y parámetros de rutas hasta SQL, shell, eval, rutas, SSRF, plantillas, deserialización, redirecciones y respuestas, cortado por saneadores conocidos. JS/TS sobre árbol sintáctico con tree-sitter (`analysis/taint_js.py`, dependencia opcional fijada): cierres de callbacks, funciones auxiliares del mismo fichero, desestructuración, parámetros de petición y respuesta renombrados, `$where` de MongoDB. Sin tree-sitter vuelve a leer JS por patrón. Cada hallazgo guarda el flujo paso a paso y queda POTENCIAL |
 | B12 | Prompt injection | **existente + nuevo** | Instrucciones ocultas en ficheros de agente (`parallax.py`); envenenamiento de herramientas MCP (MCP03, MCP06) |
 | B13 | Impacto | **existente** | `leverage.py`, `attacker.py` |
-| B14 | Diferencial de PR y commits | **nuevo** | `analysis/drift.py`: hallazgos nuevos, corregidos, persistentes y reintroducidos. Se compara con la auditoría anterior, con una base elegida (`base_ref`, rama o commit) o, para un pull request, con su base. El webhook atiende `pull_request` (opened, synchronize, reopened) y audita el commit de cabeza; un fork fuera de la allowlist se ignora. No se comenta en el PR |
+| B14 | Diferencial de PR y commits | **nuevo** | `analysis/drift.py`: hallazgos nuevos, corregidos, persistentes y reintroducidos. Se compara con la auditoría anterior, con una base elegida (`base_ref`, rama o commit) o, para un pull request, con su base. El webhook atiende `pull_request` (opened, synchronize, reopened) y audita el commit de cabeza; un fork fuera de la allowlist se ignora. Opcional (`SECAUDIT_PR_COMMENTS` y un token de escritura aparte): un comentario en el PR, editado en cada push, y un estado `secaudit` en el commit (`web/prnotify.py`). En modo `summary` solo recuentos y enlace; en `full`, también título y fichero:línea de cada hallazgo nuevo, nunca fragmentos de código |
 | B15 | Informes PDF / JSON / SARIF | **nuevo** | `analysis/reports.py` y `analysis/pdf.py`: un escritor PDF 1.4 propio, sin dependencias, sin scripts ni enlaces, en `/report.pdf` |
 | B16 | Trust Score | **nuevo** | `analysis/trust.py`: tres dimensiones separadas (cobertura, evidencia, resistencia adversarial), sin nota global a propósito |
 | B17 | Detección de secretos | **nuevo** | `analysis/secrets_scan.py`, con valores siempre enmascarados `[REDACTED:<hash>]` |
@@ -83,11 +83,11 @@ auditado. Dos puntos se completan en la segunda parte:
 | C26 | Memoria adversarial con curación humana | **nuevo** | `immune.py` y las regresiones (zombies). Una regla validada queda como propuesta hasta que una persona la aprueba (`POST/DELETE .../immune-rules/{id}/approval`); solo las aprobadas buscan regresiones, se exportan y se usan en What If. Las reglas anteriores a la migración `0017` empiezan sin aprobar |
 | C27 | Explorador de superficie de ataque e inventario de servicios | **nuevo** | `surface.py`: Flask, FastAPI, Django, Express, Next.js, herramientas MCP, CLIs y tareas. Servicios: contenedores de compose (imagen, puertos publicados, privileged, red del host), objetos Kubernetes, almacenes de datos, hosts externos y SDK de terceros |
 | C28 | Contrafactuales | **nuevo** | `evidence_chain.counterfactuals`: condiciones verificadas, descartadas o desconocidas |
-| C29 | What If? | **nuevo** (sin ejecutar tests) | `web/whatif.py`. El parche se aplica a un clon temporal del commit auditado, nunca al original, y se mide sin ejecutar nada: si el código citado sigue ahí, qué hallazgos de regla desaparecen o aparecen, si las reglas inmunes aprobadas vuelven a saltar, si el parche debilita un control (deriva) y qué tests cubren los ficheros tocados, por nombre. **Los tests del repositorio no se ejecutan** (ver §5) |
+| C29 | What If? | **nuevo** | `web/whatif.py`. El parche se aplica a un clon temporal del commit auditado, nunca al original, y se mide sin ejecutar nada: si el código citado sigue ahí, qué hallazgos de regla desaparecen o aparecen, si las reglas inmunes aprobadas vuelven a saltar, si el parche debilita un control (deriva) y qué tests cubren los ficheros tocados, por nombre. Con el sandbox activado (`SECAUDIT_WHATIF_SANDBOX=docker`, `web/sandbox.py`), los tests del repositorio se ejecutan antes y después del parche en contenedores desechables sin red, de solo lectura, sin capacidades, como nobody y con límites; un test que el parche rompe cuenta en contra. Desactivado por defecto (ver §5) |
 | C30 | Blue Team | **nuevo** | `reports.blue_team`: plantillas de detección y esqueleto Sigma, siempre marcadas «NO VALIDADO», en JSON, HTML y en la UI (botón en cada hallazgo) |
 | C31 | Explain Like an Analyst | **nuevo** | Tres vistas en la UI y en el informe HTML (dirección, desarrollo, analista), sección «Vistas», y `assessment.why` |
 | C32 | Replay | **nuevo** | `POST /api/audits/{id}/replay` relanza la auditoría sobre el mismo commit exacto, con las versiones actuales de los motores. `GET .../reproducibility` compara: hallazgos en ambas, solo en una, evaluación cambiada, acuerdo y si las reglas coinciden. Con un modelo, la diferencia mide también su variabilidad |
-| C33 | Challenge Mode | **nuevo** (escáneres) | `analysis/benchmark.py` y un corpus propio en `benchmark/`: 38 etiquetas en 8 repositorios, con controles limpios y engaños. Ejecutado: ver §7. Mide los escáneres deterministas; la auditoría del modelo hay que puntuarla con el backend de cada uno |
+| C33 | Challenge Mode | **nuevo** (escáneres) | `analysis/benchmark.py` y un corpus propio en `benchmark/`: 38 etiquetas en 8 repositorios, con controles limpios y engaños. Además, OWASP NodeGoat etiquetado desde su propio tutorial antes de pasar los escáneres (`benchmark/external/`). Ejecutado: ver §7. Mide los escáneres deterministas; la auditoría del modelo hay que puntuarla con el backend de cada uno |
 | C34 | Digital Twin | **nuevo** | `analysis/twin.py` y la sección «Gemelo»: áreas, entradas, activos, servicios, dependencias, hallazgos y atacantes, con sus relaciones y lo que se desconoce de cada nodo. Es un mapa, no una copia ejecutable. Simulación (`POST .../twin/simulate`): arreglar o confirmar hallazgos (y retirar capacidades del agente o divergencias) y recalcular los caminos de ataque: cuáles se cierran, cambian o se abren |
 | C35 | Evidence Chain | **nuevo** | `analysis/evidence_chain.py`, con hash SHA-256 de la cadena y del fragmento citado |
 
@@ -264,13 +264,20 @@ de Python, que se leen con ast.
   cobertura o en señuelos no detectados.
 - No se ejecuta código del repositorio auditado: la explotación se argumenta
   desde el código, nunca se demuestra. Por eso existe NO VERIFICABLE.
-- **What If no ejecuta los tests del repositorio.** Ejecutarlos es ejecutar
-  el código auditado, cosa que la herramienta no hace. El resultado lo dice,
-  lista los tests que cubren los ficheros tocados y da un veredicto solo
-  sobre lo medido. «Prometedor» es indicio de arreglo, no prueba. Ejecutar
-  tests exigiría un sandbox real: contenedor efímero sin red ni
-  capacidades, con límites y activado por el administrador. Es una decisión
-  de infraestructura que queda fuera de esta práctica.
+- **El sandbox de What If es la única excepción** a no ejecutar código
+  auditado, y está desactivado por defecto. Cuando se activa:
+  - los tests corren en un contenedor Docker desechable, sin red, de solo
+    lectura, sin capacidades, como nobody y con límites; se comprobó desde
+    dentro del propio contenedor;
+  - instalar dependencias exige red y se hace solo con
+    `SECAUDIT_SANDBOX_INSTALL=1`, en otro contenedor. npm va con
+    `--ignore-scripts`, pero pip puede ejecutar código de construcción de un
+    paquete (dentro del contenedor);
+  - un contenedor no es una máquina virtual: comparte el kernel del host;
+  - **en producción sigue desactivado**: la app corre en un contenedor sin
+    Docker, y montarle el socket de Docker le daría control del host.
+  Sin sandbox, What If mide sin ejecutar nada y lista los tests por nombre.
+  «Prometedor» es indicio de arreglo, no prueba.
 - La detección de secretos funciona por formato y entropía. Puede fallar con
   formatos propios y dar falsos positivos en datos de prueba. Los ficheros de
   fixtures rebajan la severidad, pero siguen como POTENCIAL; el benchmark lo
@@ -291,9 +298,10 @@ de Python, que se leen con ast.
     función desconocida (de otro fichero o de una librería) se trata de forma
     conservadora: si recibe la entrada, su resultado se da por contaminado;
   - reconoce los saneadores por nombre;
-  - lee JS/TS por patrón, con confianza baja;
+  - JS/TS con tree-sitter sigue el mismo alcance (un fichero); sin
+    tree-sitter instalado se lee por patrón, con confianza baja, y la
+    salida lo dice (`js_parser`);
   - no cubre otros lenguajes, y lo dice en `not_analysed`.
-  Un parser real de JS sería una dependencia nueva y requiere autorización.
 - Documentación frente a código: se busca evidencia por patrón. «Sin
   respaldo» puede significar que el control está en un proxy, en la
   infraestructura o en una librería no reconocida.
@@ -305,31 +313,34 @@ de Python, que se leen con ast.
   «auth: none_seen» o «validación: none_seen» es un sitio que mirar, no un
   hallazgo.
 - La deriva aplica patrones sobre un diff y señala sitios, no veredictos.
-- El diferencial de PR no publica comentarios ni checks en GitHub: escribir
-  en un servicio externo requiere un token con permisos y una autorización
-  que no se ha pedido.
+- Informe en el PR: desactivado por defecto. En modo `full` y en un
+  repositorio público, el comentario dice dónde están los hallazgos nuevos.
+  Un estado «success» significa «sin hallazgos altos nuevos ni controles
+  debilitados», no «seguro».
 - Las plantillas Blue Team no están validadas contra telemetría real.
 - El gemelo digital es un mapa de lo medido: no se puede ejecutar. Su
   simulación recalcula caminos sobre el grafo que midió la auditoría; un
   camino que el grafo no contiene no se puede cerrar ni abrir ahí. La
   ausencia de un nodo no significa que la cosa no exista.
-- El benchmark mide los escáneres deterministas sobre un corpus escrito por
-  quien escribió los escáneres. Es optimista y no generalizable (ver
-  `benchmark/README.md`).
+- El corpus propio del benchmark lo escribió quien escribió los escáneres:
+  es optimista. NodeGoat es independiente, pero es un único repositorio de
+  14 etiquetas. Además, su tutorial no recoge todo lo que tiene (los dos
+  hallazgos «inesperados» eran reales). Ver `benchmark/README.md`.
 
 ## 6. Pendiente
 
 Lo que sigue no está implementado:
 
-- **Ejecución de tests en What If**, con un sandbox (ver §5).
+- **Sandbox de What If en producción**: necesitaría un servicio de
+  ejecución aparte en el VPS (o gVisor/una VM), no el socket de Docker en la
+  app.
 - **Simulación del gemelo que añada entradas o controles nuevos** (hoy se
   puede arreglar o confirmar lo que existe, no inventar lo que no está).
-- **Taint entre ficheros y JS con parser real** (dependencia nueva).
-- **Comentarios o checks en el PR** (requiere token de GitHub con escritura).
+- **Taint entre ficheros** (NodeGoat lo muestra: la inyección `$where` va
+  de `allocations.js` a `allocations-dao.js`).
 - **Validación de las plantillas Blue Team** contra telemetría.
-- **Benchmark independiente:** etiquetar repositorios que nadie de aquí haya
-  escrito (OWASP NodeGoat, DVWA…) y puntuar también la auditoría del modelo
-  con un backend real.
+- **Puntuar la auditoría del modelo** sobre NodeGoat con un backend real, y
+  etiquetar más repositorios externos (DVWA, Juice Shop…).
 - **Poms padre y BOM** de Maven (requerirían descargar otros poms).
 - **Fallos medidos por el benchmark:** `mcp10.unconfined_path` no reconoce
   `Path(param).read_text()`; `mcp09.undeclared_server` da falsos positivos en
@@ -343,8 +354,9 @@ Todos los resultados son reales, del 2026-11-02:
 
 | Comando | Resultado |
 |---|---|
-| `python3 -m pytest tests/ -q -p no:cacheprovider` | 928 passed |
-| `python3 -m pytest tests/test_practica3b.py -q -p no:cacheprovider` | 58 passed |
+| `SECAUDIT_TEST_DOCKER=1 python3 -m pytest tests/ -q -p no:cacheprovider` | 947 passed |
+| `python3 -m analysis.benchmark --external benchmark/external/nodegoat.json` | en alcance de los escáneres 5/5; entre ficheros 0/1; solo-modelo 0/8; total 5/14; 2 hallazgos fuera de etiqueta, ambos reales tras revisarlos |
+| Prueba real del sandbox con Docker (`python:3.12-slim`) | un parche que rompe un test sale «introduce problemas»; desde dentro: usuario 65534, sin red, raíz de solo lectura, CapEff 0, sin secretos del host |
 | `node --check web/static/app.js` | ok |
 | `python3 -m analysis.benchmark --corpus benchmark` | 38 etiquetas, 37 TP, 3 FP, 1 FN; precisión 0.925, recall 0.974 |
 | `python3 -m analysis.mcp_audit --check-taxonomy` | coincide: 10 categorías, edición 2025 |
@@ -401,6 +413,14 @@ Tercera parte (después de la versión 0.4.0, en la misma fecha):
 - Simulación sobre el gemelo, comprobada también en el navegador con la demo
   local: arreglar MCP05 cerró 4 de 8 caminos.
 
+Cuarta parte (con autorización explícita de la usuaria para lo pendiente):
+
+- Taint JS/TS con tree-sitter. Sobre NodeGoat, el lector por patrones
+  encontraba 1 de 5 casos en alcance; tree-sitter encuentra 5 de 5.
+- Informe en el PR (comentario y estado), opcional, migración `0018`.
+- Sandbox de What If con Docker, opcional, probado con Docker real.
+- Benchmark externo con NodeGoat.
+
 Durante esta parte los tests encontraron tres fallos en código nuevo, ya
 corregidos:
 
@@ -414,7 +434,7 @@ corregidos:
 
 No se ha desplegado nada. Para desplegar hay que:
 
-1. Aplicar las migraciones `0016` y `0017`; la próxima será la `0018`.
+1. Aplicar las migraciones `0016`, `0017` y `0018`; la próxima será la `0019`.
 2. **Tras desplegar, aprobar las reglas inmunes existentes** que se quieran
    mantener: la `0017` las deja todas sin aprobar y, hasta entonces, no
    buscan regresiones.
@@ -423,3 +443,8 @@ No se ha desplegado nada. Para desplegar hay que:
    `SECAUDIT_SCAN_MEMORY_MB` (ver `.env.example`).
 4. Para el diferencial de PR, añadir el evento `pull_request` al webhook de
    GitHub.
+5. Para el informe en el PR, crear un token de GitHub con «Pull requests:
+   write» y «Commit statuses: write» solo para los repositorios auditados,
+   y fijar `SECAUDIT_GITHUB_WRITE_TOKEN` y `SECAUDIT_PR_COMMENTS=summary`.
+6. **No activar `SECAUDIT_WHATIF_SANDBOX` en el VPS**: la app corre en un
+   contenedor y necesitaría el socket de Docker, que da control del host.

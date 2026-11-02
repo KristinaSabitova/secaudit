@@ -7,9 +7,10 @@ sus límites, ver [PRACTICA3.md](PRACTICA3.md).
 
 ## Antes de empezar
 
-- secaudit **nunca ejecuta** el código del repositorio auditado. No ejecuta
-  sus scripts de instalación, hooks, workflows ni tests. Todo lo que lee lo
-  trata como datos no confiables.
+- secaudit **no ejecuta** el código del repositorio auditado: ni sus
+  scripts de instalación, ni hooks, ni workflows. La única excepción son los
+  tests en What If, y solo si el administrador activa el sandbox (ver
+  §Ajustes). Todo lo que lee lo trata como datos no confiables.
 - **Una auditoría sin hallazgos no es una garantía.** Mira siempre la
   confianza del resumen y sus límites.
 - Por defecto, nada del repositorio sale del servidor salvo lo que enviaría
@@ -38,8 +39,14 @@ Configura un webhook hacia `/api/webhook/github` con el secreto
 - Un pull request se audita en su commit de cabeza y se compara con su
   base.
 - Un fork cuyo propietario no está en la allowlist se ignora.
-- secaudit no escribe comentarios en el PR: los resultados se consultan en
-  la aplicación.
+- Por defecto secaudit no escribe en el PR. Si el administrador activa
+  `SECAUDIT_PR_COMMENTS` (con un token de escritura), deja un comentario que
+  edita en cada push y un estado `secaudit` en el commit. El estado falla si
+  el PR trae hallazgos altos o críticos nuevos (confirmados o potenciales) o
+  debilita un control. «Correcto» quiere decir eso, no «seguro».
+  - `summary` (por defecto): solo recuentos y el enlace a la auditoría.
+  - `full`: también título, severidad y fichero:línea de cada hallazgo
+    nuevo. En un repositorio público eso publica dónde están los fallos.
 
 ## 2. Leer el resultado
 
@@ -87,8 +94,10 @@ Y tiene tres botones:
   - qué hallazgos de regla desaparecen o aparecen;
   - si el parche debilita algún control (por ejemplo, abre CORS);
   - si alguna regla aprendida aprobada vuelve a saltar;
-  - qué tests cubren los ficheros tocados. **No los ejecuta**: ejecútalos tú
-    en un entorno aislado.
+  - qué tests cubren los ficheros tocados. Sin sandbox **no los ejecuta**:
+    ejecútalos tú en un entorno aislado. Con el sandbox activado, los ejecuta
+    antes y después del parche y te dice cuáles rompe o arregla. La prueba
+    tarda: la página se actualiza sola hasta que termina.
 
   El veredicto puede ser *prometedor*, *introduce problemas* o *no
   demostrado*. *Prometedor* es un indicio, no una prueba.
@@ -189,6 +198,9 @@ Todo es opcional y está desactivado por defecto:
 | `SECAUDIT_ABANDONED_CHECK=1` | Pregunta a PyPI, npm y crates.io por el último release |
 | `SECAUDIT_SCAN_TIMEOUT`, `SECAUDIT_SCAN_MEMORY_MB` | Límites del proceso que ejecuta los escáneres |
 | `SECAUDIT_MAX_SCAN_CHARS`, `SECAUDIT_MAX_SCAN_FILES` | Cuánto leen los escáneres |
+| `SECAUDIT_PR_COMMENTS=summary\|full`, `SECAUDIT_GITHUB_WRITE_TOKEN` | Informe en el PR (comentario y estado) |
+| `SECAUDIT_WHATIF_SANDBOX=docker` | Ejecuta los tests en What If dentro de un contenedor. Necesita Docker en el servidor; no lo actives si la app corre en un contenedor con el socket de Docker montado |
+| `SECAUDIT_SANDBOX_INSTALL=1` | Instala dependencias antes de los tests (con red, en otro contenedor) |
 
 ## 4. Sin servidor
 
@@ -196,7 +208,9 @@ Todo es opcional y está desactivado por defecto:
 python3 -m analysis.mcp_audit /ruta/al/repo        # auditoría MCP
 python3 -m analysis.mcp_audit --check-taxonomy     # taxonomía OWASP MCP
 python3 -m analysis.benchmark --corpus benchmark   # puntuar los escáneres
+python3 -m analysis.benchmark --external benchmark/external/nodegoat.json  # NodeGoat
 python3 -m analysis.benchmark etiquetas.json auditoria.json   # puntuar una auditoría
 ```
 
-Ninguno de estos comandos ejecuta código del repositorio que lee.
+Ninguno de estos comandos ejecuta código del repositorio que lee. `--external`
+clona NodeGoat en el commit fijado, sin hooks.

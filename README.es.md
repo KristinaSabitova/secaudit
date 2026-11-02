@@ -688,8 +688,14 @@ Todas cuelgan de `/api/audits/{id}/`, salvo la historia del proyecto.
 What If (`POST /api/audits/{id}/what-if`) prueba un parche en un clon
 temporal del commit auditado. Mide si el código citado desaparece, qué
 hallazgos de regla se van o aparecen y si el parche debilita un control.
-Lista los tests que habría que pasar, pero **no los ejecuta**: sería
-ejecutar el código auditado. `POST /api/audits/{id}/replay` repite una
+Lista los tests que cubren los ficheros tocados. Solo los ejecuta si el
+administrador activa el sandbox de Docker (`SECAUDIT_WHATIF_SANDBOX=docker`):
+un contenedor desechable sin red, de solo lectura, sin capacidades, como
+nobody y con límites. Es el único sitio en que secaudit ejecuta código
+auditado, y está desactivado por defecto. La auditoría de un pull request
+puede informar en el propio PR (un comentario y un estado `secaudit`) con
+`SECAUDIT_PR_COMMENTS` y un token de escritura aparte; por defecto el
+comentario solo lleva recuentos. `POST /api/audits/{id}/replay` repite una
 auditoría sobre el mismo commit y `GET .../reproducibility` compara ambas. Las
 reglas inmunes aprendidas necesitan la aprobación de una persona. Guía de
 uso: [docs/GUIA_USO.md](docs/GUIA_USO.md).
@@ -698,6 +704,7 @@ uso: [docs/GUIA_USO.md](docs/GUIA_USO.md).
 python3 -m analysis.mcp_audit /ruta/al/repo     # auditoría MCP sin servidor
 python3 -m analysis.mcp_audit --check-taxonomy  # comparar con la página de OWASP
 python3 -m analysis.benchmark --corpus benchmark  # puntuar los escáneres
+python3 -m analysis.benchmark --external benchmark/external/nodegoat.json  # OWASP NodeGoat
 ```
 
 | Variable | Por defecto | Efecto |

@@ -667,8 +667,13 @@ All of them live under `/api/audits/{id}/`, except the project history.
 What If (`POST /api/audits/{id}/what-if`) tries a patch on a temporary clone
 of the audited commit. It reports whether the cited code is gone, which rule
 findings go or appear, and whether the patch weakens a control. It lists the
-tests to run but **does not run them**, because that would run the audited
-code. `POST /api/audits/{id}/replay` repeats an audit on the same commit, and
+tests that cover the touched files. It runs them only if the administrator
+turns on the Docker sandbox (`SECAUDIT_WHATIF_SANDBOX=docker`): a throwaway
+container with no network, a read-only root, no capabilities, running as
+nobody, with limits. That is the one place secaudit runs audited code, and it
+is off by default. A pull request audit can report back on the pull request
+(a comment and a `secaudit` commit status) with `SECAUDIT_PR_COMMENTS` and a
+separate write token; by default the comment carries counts only. `POST /api/audits/{id}/replay` repeats an audit on the same commit, and
 `GET .../reproducibility` compares the two. Learnt immune rules need a
 person's approval before they are used. Usage guide in Spanish:
 [docs/GUIA_USO.md](docs/GUIA_USO.md).
@@ -677,6 +682,7 @@ person's approval before they are used. Usage guide in Spanish:
 python3 -m analysis.mcp_audit /path/to/repo     # MCP audit, no server needed
 python3 -m analysis.mcp_audit --check-taxonomy  # compare with the OWASP page
 python3 -m analysis.benchmark --corpus benchmark  # score the scanners
+python3 -m analysis.benchmark --external benchmark/external/nodegoat.json  # OWASP NodeGoat
 ```
 
 | Variable | Default | Effect |
