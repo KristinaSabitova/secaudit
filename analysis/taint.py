@@ -54,12 +54,15 @@ SINKS = {
 }
 
 LIMITS = {
-    "en": ("Intra-procedural: flows through helper functions, attributes, containers "
-           "or other files are not followed. Sanitizers are recognised by name. "
+    "en": ("Python flows are followed into and out of helper functions of the same "
+           "file (up to three calls deep); flows through attributes, containers, "
+           "functions sharing a name, or other files are not followed. Sanitizers are recognised by name. "
            "JavaScript/TypeScript are read by pattern with low confidence; other "
            "languages are not analysed."),
-    "es": ("Intraprocedimental: no sigue flujos a través de funciones auxiliares, "
-           "atributos, contenedores ni otros ficheros. Los saneadores se reconocen por "
+    "es": ("En Python se siguen los flujos que entran y salen de funciones auxiliares "
+           "del mismo fichero (hasta tres llamadas de profundidad); no se siguen a "
+           "través de atributos, contenedores, funciones con el mismo nombre ni otros "
+           "ficheros. Los saneadores se reconocen por "
            "su nombre. JavaScript/TypeScript se leen por patrón con confianza baja; el "
            "resto de lenguajes no se analiza."),
 }
@@ -122,19 +125,22 @@ def _is_source(node) -> bool:
     return False
 
 
-def _uses(node, tainted: set) -> str | None:
+def _uses(node, tainted: set, summaries: dict | None = None) -> str | None:
     """The tainted name (or "<request>") an expression uses, unless a
-    sanitizer wraps it."""
+    sanitizer wraps it. A call to a summarised helper of the same file is
+    left to _call_taint, which knows whether its result carries the input."""
     if node is None:
         return None
     if isinstance(node, ast.Call) and _name(node.func) in _SANITIZERS:
+        return None
+    if summaries and isinstance(node, ast.Call) and _summary_of(node, summaries):
         return None
     if isinstance(node, ast.Name) and node.id in tainted:
         return node.id
     if _is_source(node):
         return "<request>"
     for child in ast.iter_child_nodes(node):
-        hit = _uses(child, tainted)
+        hit = _uses(child, tainted, summaries)
         if hit:
             return hit
     return None
@@ -218,68 +224,225 @@ def _line(lines: list[str], n: int) -> str:
     return redact_line(lines[n - 1].strip()) if 0 < n <= len(lines) else ""
 
 
-def _python(rel: str, text: str) -> list[dict]:
-    try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return []
-    lines = text.splitlines()
-    out = []
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        tainted: dict[str, list[dict]] = {}
-        for p in _route_params(fn):
-            tainted[p] = [{"step": "source", "line": fn.lineno,
-                           "text": _line(lines, fn.lineno), "what": f"route parameter {p}"}]
-        sanitized: list[dict] = []
-        # Statements in source order, without descending into nested functions.
-        body = sorted((n for n in _walk_own(fn)), key=lambda n: (getattr(n, "lineno", 0),
-                                                                 getattr(n, "col_offset", 0)))
-        for node in body:
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                value = node.value
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                names = [t.id for tgt in targets for t in ast.walk(tgt)
-                         if isinstance(t, ast.Name)]
-                if value is None or not names:
-                    continue
-                hit = _uses(value, set(tainted))
-                if isinstance(value, ast.Call) and _name(value.func) in _SANITIZERS and \
-                        _uses(ast.Tuple(elts=list(value.args), ctx=ast.Load()), set(tainted)):
-                    sanitized.append({"line": node.lineno, "text": _line(lines, node.lineno),
-                                      "by": _name(value.func)})
-                    for n in names:
-                        if not isinstance(node, ast.AugAssign):
-                            tainted.pop(n, None)
-                    continue
-                if hit:
-                    prior = tainted.get(hit, [{"step": "source", "line": node.lineno,
-                                               "text": _line(lines, node.lineno),
-                                               "what": "request input"}])
-                    step = {"step": "assign", "line": node.lineno,
-                            "text": _line(lines, node.lineno), "what": ", ".join(names)}
-                    for n in names:
-                        tainted[n] = (prior + [step])[-8:] if hit != "<request>" else \
-                            [{"step": "source", "line": node.lineno,
-                              "text": _line(lines, node.lineno), "what": "request input"}]
-                elif not isinstance(node, ast.AugAssign):
-                    for n in names:
+_SUMMARY_ROUNDS = 3       # helpers calling helpers: up to three levels deep
+
+
+def _params(fn) -> list[str]:
+    names = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+    return [n for n in names if n not in ("self", "cls")] + \
+        [a.arg for a in fn.args.kwonlyargs]
+
+
+def _arg_for(call: ast.Call, fn_params: list[str], index: int, is_method: bool):
+    """The expression a call passes for a helper's index-th parameter."""
+    name = fn_params[index]
+    for k in call.keywords:
+        if k.arg == name:
+            return k.value
+    if index < len(call.args) and not any(isinstance(a, ast.Starred) for a in call.args):
+        return call.args[index]
+    return None
+
+
+def _summary_of(call: ast.Call, summaries: dict):
+    """The summary of the same-file function a call reaches by its plain
+    name (helper(x)) or as a method of self (self.helper(x))."""
+    f = call.func
+    if isinstance(f, ast.Name):
+        return summaries.get(f.id)
+    if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and \
+            f.value.id in ("self", "cls"):
+        return summaries.get(f.attr)
+    return None
+
+
+def _call_taint(node, tainted: dict, summaries: dict, lines, lineno):
+    """When an expression contains a call to a summarised helper that returns
+    one of its parameters (or request input), the flow its result carries.
+    A sanitizer around the call stops it, as it stops a name."""
+    if node is None:
+        return None
+    if isinstance(node, ast.Call) and _name(node.func) in _SANITIZERS:
+        return None
+    if not isinstance(node, ast.Call) or not _summary_of(node, summaries):
+        for child in ast.iter_child_nodes(node):
+            got = _call_taint(child, tainted, summaries, lines, lineno)
+            if got:
+                return got
+        return None
+    summ = _summary_of(node, summaries)
+    if not summ:
+        return None
+    call_step = {"step": "call", "line": lineno, "text": _line(lines, lineno),
+                 "what": f"{summ['name']}() returns it"}
+    if summ["returns_source"]:
+        return [{"step": "source", "line": summ["source_line"],
+                 "text": _line(lines, summ["source_line"]),
+                 "what": f"request input in {summ['name']}()"}, call_step]
+    for i in summ["returns_params"]:
+        arg = _arg_for(node, summ["params"], i, False)
+        hit = _uses(arg, set(tainted))
+        if hit:
+            prior = tainted.get(hit) or [{"step": "source", "line": lineno,
+                                          "text": _line(lines, lineno), "what": "request input"}]
+            return (prior + [call_step])[-10:]
+    return None
+
+
+def _analyse(fn, lines, seeds: dict, summaries: dict):
+    """The flows of one function from its seeds. Returns (sinks, returns):
+    sinks as (kind, flow, sanitized); returns as the flows its return
+    statements carry."""
+    tainted: dict[str, list[dict]] = {k: list(v) for k, v in seeds.items()}
+    sanitized: list[dict] = []
+    sinks, returns = [], []
+    body = sorted((n for n in _walk_own(fn)), key=lambda n: (getattr(n, "lineno", 0),
+                                                             getattr(n, "col_offset", 0)))
+    for node in body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            value = node.value
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [t.id for tgt in targets for t in ast.walk(tgt)
+                     if isinstance(t, ast.Name)]
+            if value is None or not names:
+                continue
+            if isinstance(value, ast.Call) and _name(value.func) in _SANITIZERS and \
+                    _uses(ast.Tuple(elts=list(value.args), ctx=ast.Load()), set(tainted)):
+                sanitized.append({"line": node.lineno, "text": _line(lines, node.lineno),
+                                  "by": _name(value.func)})
+                for n in names:
+                    if not isinstance(node, ast.AugAssign):
                         tainted.pop(n, None)
-            elif isinstance(node, ast.Call):
-                sink = _sink_of(node)
-                if sink is None or sink[1] is None:
-                    continue
+                continue
+            through = _call_taint(value, tainted, summaries, lines, node.lineno)
+            if through:
+                step = {"step": "assign", "line": node.lineno,
+                        "text": _line(lines, node.lineno), "what": ", ".join(names)}
+                for n in names:
+                    tainted[n] = (through + [step])[-10:]
+                continue
+            hit = _uses(value, set(tainted), summaries)
+            if hit:
+                prior = tainted.get(hit, [{"step": "source", "line": node.lineno,
+                                           "text": _line(lines, node.lineno),
+                                           "what": "request input"}])
+                step = {"step": "assign", "line": node.lineno,
+                        "text": _line(lines, node.lineno), "what": ", ".join(names)}
+                for n in names:
+                    tainted[n] = (prior + [step])[-10:] if hit != "<request>" else \
+                        [{"step": "source", "line": node.lineno,
+                          "text": _line(lines, node.lineno), "what": "request input"}]
+            elif not isinstance(node, ast.AugAssign):
+                for n in names:
+                    tainted.pop(n, None)
+        elif isinstance(node, ast.Return) and node.value is not None:
+            through = _call_taint(node.value, tainted, summaries, lines, node.lineno)
+            if through:
+                returns.append(through)
+                continue
+            hit = _uses(node.value, set(tainted), summaries)
+            if hit:
+                returns.append(list(tainted.get(hit) or [
+                    {"step": "source", "line": node.lineno,
+                     "text": _line(lines, node.lineno), "what": "request input"}]))
+        elif isinstance(node, ast.Call):
+            sink = _sink_of(node)
+            if sink is not None and sink[1] is not None:
                 kind, arg = sink
-                hit = _uses(arg, set(tainted))
+                hit = _uses(arg, set(tainted), summaries)
                 if not hit:
+                    through = _call_taint(arg, tainted, summaries, lines, node.lineno)
+                    if through:
+                        sinks.append((kind, through + [{"step": "sink", "line": node.lineno,
+                                                        "text": _line(lines, node.lineno),
+                                                        "what": _name(node.func)}],
+                                      sanitized))
                     continue
                 flow = list(tainted.get(hit) or [{"step": "source", "line": node.lineno,
                                                   "text": _line(lines, node.lineno),
                                                   "what": "request input"}])
                 flow.append({"step": "sink", "line": node.lineno,
                              "text": _line(lines, node.lineno), "what": _name(node.func)})
-                out.append(_make(rel, kind, flow, sanitized, "python", "medium"))
+                sinks.append((kind, flow, sanitized))
+                continue
+            # A call into a helper whose parameter reaches a sink inside it.
+            summ = _summary_of(node, summaries)
+            if not summ:
+                continue
+            for i, inner in summ["param_sinks"]:
+                arg = _arg_for(node, summ["params"], i, False)
+                hit = _uses(arg, set(tainted)) if arg is not None else None
+                if not hit:
+                    continue
+                prior = tainted.get(hit) or [{"step": "source", "line": node.lineno,
+                                              "text": _line(lines, node.lineno),
+                                              "what": "request input"}]
+                kind, inner_flow = inner
+                call_step = {"step": "call", "line": node.lineno,
+                             "text": _line(lines, node.lineno),
+                             "what": f"{summ['name']}({summ['params'][i]})"}
+                sinks.append((kind, (prior + [call_step] + inner_flow[1:])[-12:], sanitized))
+    return sinks, returns
+
+
+def _summaries(tree, lines) -> dict:
+    """What each function of the file does with its parameters: which reach a
+    sink, which are returned, and whether it returns request input. Built
+    over a few rounds so a helper calling a helper is followed."""
+    fns: dict[str, list] = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fns.setdefault(fn.name, []).append(fn)
+    # Two functions sharing a name (methods of different classes): which one
+    # a call reaches is not known statically, so neither is summarised.
+    unique = {n: f[0] for n, f in fns.items() if len(f) == 1}
+    summaries: dict = {}
+    for _ in range(_SUMMARY_ROUNDS):
+        new = {}
+        for name, fn in unique.items():
+            params = _params(fn)
+            seeds = {p: [{"step": "source", "line": fn.lineno, "text": _line(lines, fn.lineno),
+                          "what": f"parameter {p}", "param": p}] for p in params}
+            sinks, returns = _analyse(fn, lines, seeds, summaries)
+            param_sinks = [(params.index(flow[0]["param"]), (kind, flow))
+                           for kind, flow, _ in sinks if flow[0].get("param") in params]
+            returns_params = sorted({params.index(r[0]["param"]) for r in returns
+                                     if r and r[0].get("param") in params})
+            src = [r for r in returns if r and not r[0].get("param")]
+            # Request input read inside the helper itself, without seeds.
+            own_sinks, own_returns = _analyse(fn, lines, {}, summaries)
+            src = src or own_returns
+            new[name] = {"name": name, "params": params, "param_sinks": param_sinks[:10],
+                         "returns_params": returns_params,
+                         "returns_source": bool(src),
+                         "source_line": src[0][0]["line"] if src else None}
+        if new == summaries:
+            break
+        summaries = new
+    return summaries
+
+
+def _python(rel: str, text: str) -> list[dict]:
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    lines = text.splitlines()
+    summaries = _summaries(tree, lines)
+    out, seen = [], set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        seeds = {p: [{"step": "source", "line": fn.lineno, "text": _line(lines, fn.lineno),
+                      "what": f"route parameter {p}"}] for p in _route_params(fn)}
+        sinks, _ = _analyse(fn, lines, seeds, summaries)
+        for kind, flow, sanitized in sinks:
+            key = (kind, flow[0]["line"], flow[-1]["line"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(_make(rel, kind, flow, sanitized, "python",
+                             "medium" if not any(s["step"] == "call" for s in flow) else "low"))
     return out
 
 
@@ -425,7 +588,8 @@ def to_findings(raw: list[dict], language: str = "en") -> list[dict]:
             "category": r["category"], "file": r["file"], "line": r["line"],
             "severity": r["severity"], "title": (sp if es else en)[:255],
             "description": desc, "code_snippet": r["snippet"],
-            "anchor": f"taint.{r['kind']}:{r['file']}:{r['line']}",
+            "anchor": f"taint.{r['kind']}:{r['file']}:{r['line']}" + (
+                f":{source['line']}" if any(st["step"] == "call" for st in r["flow"]) else ""),
             "verification_status": "verified" if r["snippet"] else "unverified",
             "verification_note": "",
             "rule_id": f"taint.{'py' if r['language'] == 'python' else 'js'}.{r['kind']}",

@@ -1,0 +1,43 @@
+{
+  "repository": "flask-helpers",
+  "kind": "vulnerable",
+  "expected": [
+    {
+      "file": "views.py",
+      "rule_id": "taint.py.command",
+      "lines": [
+        12,
+        12
+      ]
+    },
+    {
+      "file": "views.py",
+      "rule_id": "taint.py.sql",
+      "lines": [
+        39,
+        39
+      ]
+    },
+    {
+      "file": "views.py",
+      "rule_id": "taint.py.path",
+      "lines": [
+        44,
+        44
+      ]
+    },
+    {
+      "file": "views.py",
+      "rule_id": "taint.py.command",
+      "lines": [
+        12,
+        12
+      ]
+    }
+  ],
+  "deceptions": [
+    "page_number() returns int(): /page reaches shell() sanitised",
+    "uptime() calls shell() with a constant",
+    "added after the inter-procedural taint was written, by its author"
+  ]
+}
