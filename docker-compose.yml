@@ -62,6 +62,9 @@ services:
       SECAUDIT_OSV_CHECK: ${SECAUDIT_OSV_CHECK:-}
       # 1 asks package registries for last release and deprecation.
       SECAUDIT_ABANDONED_CHECK: ${SECAUDIT_ABANDONED_CHECK:-}
+      # Report pull request audits back on GitHub (off unless both are set).
+      SECAUDIT_PR_COMMENTS: ${SECAUDIT_PR_COMMENTS:-}
+      SECAUDIT_GITHUB_WRITE_TOKEN: ${SECAUDIT_GITHUB_WRITE_TOKEN:-}
       SECAUDIT_SCAN_TIMEOUT: ${SECAUDIT_SCAN_TIMEOUT:-}
       SECAUDIT_SCAN_MEMORY_MB: ${SECAUDIT_SCAN_MEMORY_MB:-}
       SECAUDIT_MAX_SCAN_CHARS: ${SECAUDIT_MAX_SCAN_CHARS:-}

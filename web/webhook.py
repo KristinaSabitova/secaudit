@@ -112,4 +112,7 @@ def parse_pull_request_event(payload: dict) -> dict | None:
         "sha": sha,
         "base_sha": base_sha,
         "number": int(pr.get("number") or payload.get("number") or 0) or None,
+        # Where the pull request lives, for the report back; the head may be a fork.
+        "base_repo": ((base.get("repo") or {}).get("full_name")
+                      or (payload.get("repository") or {}).get("full_name")),
     }

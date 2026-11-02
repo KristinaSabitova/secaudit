@@ -113,6 +113,9 @@ class Audit(Base):
     pinned_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     replay_of: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # owner/name of the repository the pull request belongs to (the head may
+    # be a fork): where its report goes back to.
+    pr_repo: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="audit", cascade="all, delete-orphan", order_by="Finding.id",
@@ -726,6 +729,7 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         "pinned_commit": audit.pinned_commit,
         "replay_of": audit.replay_of,
         "pr_number": audit.pr_number,
+        "pr_repo": audit.pr_repo,
     }
     if include_findings:
         findings = audit.findings

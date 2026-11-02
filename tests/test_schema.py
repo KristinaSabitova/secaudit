@@ -71,7 +71,7 @@ class TestMigrationsMatchTheModels:
         assert "project_id" not in schema(f"sqlite:///{db_file}")["audits"]["columns"]
         alembic(db_file, "upgrade", "head")
 
-    @pytest.mark.parametrize("step", ["0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017"])
+    @pytest.mark.parametrize("step", ["0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018"])
     def test_each_step_is_reversible_on_its_own(self, tmp_path, step):
         db_file = tmp_path / "mig.db"
         previous = f"{int(step) - 1:04d}"

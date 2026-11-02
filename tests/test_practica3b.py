@@ -995,3 +995,144 @@ class TestJavaScriptTree:
         r = taint.analyze({"server.js": EXPRESS})
         assert r["js_parser"] == "pattern"
         assert {x["confidence"] for x in r["raw"]} == {"low"}
+
+
+# ---------------------------------------------------------------------------
+# Reporting back on the pull request
+# ---------------------------------------------------------------------------
+
+from web import prnotify as web_prnotify  # noqa: E402
+
+
+class FakeGitHub:
+    """Records the calls; answers like GitHub would."""
+
+    def __init__(self, existing=None, fail=None):
+        self.calls, self.existing, self.fail = [], existing or [], fail
+
+    def open(self, req, timeout=None):
+        method, url = req.get_method(), req.full_url
+        body = json.loads(req.data) if req.data else None
+        self.calls.append((method, url, body, dict(req.header_items())))
+        if self.fail and self.fail in url:
+            import urllib.error
+            raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
+        payload = self.existing if method == "GET" else {"id": 1}
+
+        class R:
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *a):
+                return False
+
+            def read(s, n=-1):
+                return json.dumps(payload).encode()
+        return R()
+
+
+DIFF = {"new": [{"title": "SQL injection in [login](http://evil) @someone", "severity": "high",
+                 "assessment": "potential", "file": "app/db.py", "line": 12},
+                {"title": "Discarded", "severity": "critical", "assessment": "discarded",
+                 "file": "x.py", "line": 1}],
+        "fixed": [{"title": "old"}], "persisting": [], "reintroduced": []}
+
+
+class TestPullRequestReport:
+    def test_summary_says_no_where(self):
+        body, state, desc = web_prnotify.report(DIFF, [], "en", "summary",
+                                                "https://s.example/#summary/a", "a" * 40,
+                                                "b" * 40)
+        assert web_prnotify.MARKER in body and "**1** new" in body and "**1** fixed" in body
+        assert "app/db.py" not in body and "SQL injection" not in body
+        assert state == "failure" and "secure" not in desc
+
+    def test_full_lists_new_findings_defused(self):
+        body, state, _ = web_prnotify.report(DIFF, [], "es", "full", None, "a" * 40, None)
+        assert "app/db.py:12" in body and "Discarded" not in body
+        assert "](http" not in body and "@someone" not in body     # no link, no mention
+        assert "```" not in body
+
+    def test_no_new_high_and_no_drift_succeeds(self):
+        quiet = {"new": [], "fixed": [], "persisting": [], "reintroduced": []}
+        _, state, desc = web_prnotify.report(quiet, [], "en", "summary", None, "a" * 40, None)
+        assert state == "success" and "no new high" in desc
+        _, state, _ = web_prnotify.report(quiet, [{"rule": "cors_any_origin"}], "en",
+                                          "summary", None, "a" * 40, None)
+        assert state == "failure"
+
+    def test_off_unless_both_mode_and_token(self, monkeypatch):
+        monkeypatch.delenv(web_prnotify.MODE_ENV, raising=False)
+        monkeypatch.setenv(web_prnotify.TOKEN_ENV, "t")
+        assert not web_prnotify.enabled()
+        monkeypatch.setenv(web_prnotify.MODE_ENV, "summary")
+        monkeypatch.delenv(web_prnotify.TOKEN_ENV)
+        assert not web_prnotify.enabled()
+
+    def test_an_existing_comment_is_edited_not_duplicated(self, monkeypatch):
+        monkeypatch.setenv(web_prnotify.MODE_ENV, "summary")
+        monkeypatch.setenv(web_prnotify.TOKEN_ENV, "write-token")
+        gh = FakeGitHub(existing=[{"id": 5, "body": "hi"},
+                                  {"id": 9, "body": f"{web_prnotify.MARKER}\nold"}])
+        r = web_prnotify.notify("acme/shop", 7, "a" * 40, DIFF, [], "en", None, None, gh)
+        methods = [(m, u.split("/repos/acme/shop")[1]) for m, u, _, _ in gh.calls]
+        assert methods == [("GET", "/issues/7/comments?per_page=100&page=1"),
+                           ("PATCH", "/issues/comments/9"),
+                           ("POST", "/statuses/" + "a" * 40)]
+        assert r["comment"] == "updated" and r["state"] == "failure"
+        assert gh.calls[-1][2]["context"] == "secaudit"
+        assert all(h.get("Authorization") == "Bearer write-token" for *_, h in gh.calls)
+
+    def test_a_bad_repository_name_is_never_called(self, monkeypatch):
+        monkeypatch.setenv(web_prnotify.MODE_ENV, "full")
+        monkeypatch.setenv(web_prnotify.TOKEN_ENV, "t")
+        gh = FakeGitHub()
+        r = web_prnotify.notify("../../user", 7, "a" * 40, DIFF, [], "en", None, None, gh)
+        assert r["posted"] is False and gh.calls == []
+
+    def test_through_the_webhook(self, client, webhook_secret, stub_audit, from_repo,
+                                 monkeypatch):
+        monkeypatch.setenv(web_prnotify.MODE_ENV, "summary")
+        monkeypatch.setenv(web_prnotify.TOKEN_ENV, "write-token")
+        monkeypatch.setenv("SECAUDIT_PUBLIC_URL", "https://secaudit.example")
+        gh = FakeGitHub()
+        real = web_prnotify.Writer.__init__
+        monkeypatch.setattr(web_prnotify.Writer, "__init__",
+                            lambda self, repo, token, opener=None: real(self, repo, token, gh))
+        base = git(from_repo, "rev-parse", "HEAD").strip()
+        (from_repo / "app.py").write_text((from_repo / "app.py").read_text()
+                                          + "\nCORS_ALLOW_ALL_ORIGINS = True\n")
+        git(from_repo, "commit", "-qam", "open cors")
+        head = git(from_repo, "rev-parse", "HEAD").strip()
+        payload = TestPullRequestWebhook().payload(head, base)
+        payload["pull_request"]["base"]["repo"] = {"full_name": "acme/shop"}
+        r = deliver(client, payload, event="pull_request")
+        assert r.status_code == 202
+        session = web_db.get_session()
+        audit = session.get(web_models.Audit, r.json()["id"])
+        assert audit.pr_repo == "acme/shop"
+        run = next(m for m in audit.module_runs if m.module == "pr_report")
+        session.close()
+        assert run.status == "ok" and run.detail["state"] == "failure"   # CORS opened
+        assert "write-token" not in json.dumps(run.detail)
+        post = [c for c in gh.calls if c[0] == "POST" and "/issues/7/comments" in c[1]]
+        assert post and f"https://secaudit.example/#summary/{audit.id}" in post[0][2]["body"]
+        assert GH not in post[0][2]["body"]
+
+    def test_a_github_failure_leaves_the_audit_done(self, client, webhook_secret, stub_audit,
+                                                    from_repo, monkeypatch):
+        monkeypatch.setenv(web_prnotify.MODE_ENV, "summary")
+        monkeypatch.setenv(web_prnotify.TOKEN_ENV, "t")
+        gh = FakeGitHub(fail="/issues/")
+        real = web_prnotify.Writer.__init__
+        monkeypatch.setattr(web_prnotify.Writer, "__init__",
+                            lambda self, repo, token, opener=None: real(self, repo, token, gh))
+        head = git(from_repo, "rev-parse", "HEAD").strip()
+        payload = TestPullRequestWebhook().payload(head, head)
+        payload["pull_request"]["base"]["repo"] = {"full_name": "acme/shop"}
+        r = deliver(client, payload, event="pull_request")
+        session = web_db.get_session()
+        audit = session.get(web_models.Audit, r.json()["id"])
+        run = next(m for m in audit.module_runs if m.module == "pr_report")
+        assert audit.status == "done" and run.status == "error" and "403" in run.error
+        session.close()

@@ -52,7 +52,7 @@ from analysis import (assessment, deadcode, deps, doc_claims, drift,  # noqa: E4
                       evidence_chain, mcp_audit, reports, secrets_scan, surface, taint,
                       pdf, trust, twin)
 from .engine import engine as cli_engine  # noqa: E402
-from . import scanproc, whatif  # noqa: E402
+from . import prnotify, scanproc, whatif  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -907,6 +907,57 @@ def immune_history_depth() -> str:
     return history_depth()
 
 
+def finding_changes(session: Session, audit: Audit) -> tuple[Audit | None, dict]:
+    """The audit compared with, and the findings new, fixed, persisting and
+    reintroduced against it."""
+    previous = comparison_audit(session, audit)
+    fixed_before = set()
+    if audit.project_id is not None:
+        fixed_before = {fp for (fp,) in session.execute(
+            select(Finding.fingerprint).join(Audit, Finding.audit_id == Audit.id)
+            .where(Audit.project_id == audit.project_id, Audit.id != audit.id,
+                   Finding.fix_commit.is_not(None)))}
+    current = [finding_to_dict(f) for f in audit.findings]
+    before = [finding_to_dict(f) for f in previous.findings] if previous else []
+    return previous, drift.finding_diff(before, current, fixed_before)
+
+
+def notify_pull_request(session: Session, audit_id: str) -> None:
+    try:
+        _notify_pull_request(session, audit_id)
+    except Exception:           # the audit is stored; a report failure stays here
+        log.exception("could not record the pull request report for %s", audit_id)
+        session.rollback()
+
+
+def _notify_pull_request(session: Session, audit_id: str) -> None:
+    """Report a pull request's audit back on the pull request, when enabled.
+
+    After the audit is stored and committed: a GitHub failure is recorded on
+    the module run and never touches the audit."""
+    audit = session.get(Audit, audit_id)
+    if audit is None or audit.status != "done" or not audit.pr_number or \
+            not prnotify.enabled():
+        return
+    start = time.monotonic()
+    try:
+        _, diff = finding_changes(session, audit)
+        run = next((m for m in reversed(audit.module_runs) if m.module == "drift"), None)
+        drift_items = ((run.detail or {}).get("drift") or []) if run else []
+        base = os.environ.get("SECAUDIT_PUBLIC_URL", "").rstrip("/")
+        link = f"{base}/#summary/{audit.id}" if base.startswith("https://") else None
+        detail = prnotify.notify(audit.pr_repo, audit.pr_number, audit.commit_sha, diff,
+                                 drift_items, audit.language or "en", link, audit.base_ref)
+        status, error = "ok", None
+    except Exception as e:
+        log.warning("pull request report failed for audit %s: %s", audit.id, e)
+        detail, status, error = {"posted": False}, "error", sanitize_error(str(e))[:500]
+    session.add(ModuleRun(audit_id=audit.id, module="pr_report", status=status,
+                          duration_ms=_ms_since(start), error=error,
+                          detail={"items": 1 if detail.get("posted") else 0, **detail}))
+    session.commit()
+
+
 def record_drift(session: Session, audit: Audit, checkout: Path | None) -> None:
     """B14/C24: what changed since the previous audit, and what got weaker."""
     start = time.monotonic()
@@ -1001,6 +1052,7 @@ def execute_audit(audit_id: str) -> None:
                 session.commit()
                 return
         session.commit()
+        notify_pull_request(session, audit_id)
     finally:
         session.close()
 
@@ -1010,7 +1062,7 @@ def queue_audit(session: Session, background_tasks: BackgroundTasks, repo_url: s
                 commit_sha: str | None = None, user_id: int | None = None,
                 language: str = "en", base_ref: str | None = None,
                 pinned_commit: str | None = None, replay_of: str | None = None,
-                pr_number: int | None = None) -> Audit:
+                pr_number: int | None = None, pr_repo: str | None = None) -> Audit:
     """Record a pending audit and hand it to a background worker.
 
     commit_sha is what the caller announced; the worker replaces it with the
@@ -1020,7 +1072,7 @@ def queue_audit(session: Session, background_tasks: BackgroundTasks, repo_url: s
     audit = Audit(repo_url=repo_url, branch=branch, trigger=trigger,
                   commit_sha=commit_sha, user_id=user_id, language=language,
                   base_ref=base_ref, pinned_commit=pinned_commit, replay_of=replay_of,
-                  pr_number=pr_number,
+                  pr_number=pr_number, pr_repo=pr_repo,
                   project_id=project_for(session, user_id, repo_url).id)
     session.add(audit)
     session.commit()
@@ -1226,7 +1278,8 @@ async def github_webhook(request: Request, response: Response,
                             branch=push["branch"], commit_sha=push["sha"],
                             language=language if language in LANGUAGES else "en",
                             base_ref=push["base_sha"], pinned_commit=push["sha"],
-                            pr_number=push["number"])
+                            pr_number=push["number"],
+                            pr_repo=prnotify.valid_repo(push.get("base_repo")))
         return audit_to_dict(audit)
     if push is None:
         response.status_code = 200
@@ -1565,16 +1618,7 @@ def audit_diff(audit_id: str, user: User = Depends(require_user),
     """New, fixed, persisting and reintroduced findings since the previous
     audit of the project, with the files and controls that changed."""
     audit = owned_audit(session, user, audit_id)
-    previous = comparison_audit(session, audit)
-    fixed_before = set()
-    if audit.project_id is not None:
-        fixed_before = {fp for (fp,) in session.execute(
-            select(Finding.fingerprint).join(Audit, Finding.audit_id == Audit.id)
-            .where(Audit.project_id == audit.project_id, Audit.id != audit.id,
-                   Finding.fix_commit.is_not(None)))}
-    current = [finding_to_dict(f) for f in audit.findings]
-    before = [finding_to_dict(f) for f in previous.findings] if previous else []
-    diff = drift.finding_diff(before, current, fixed_before)
+    previous, diff = finding_changes(session, audit)
     run = next((m for m in reversed(audit.module_runs) if m.module == "drift"), None)
 
     def brief(f):
@@ -1989,6 +2033,7 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             record_drift(session, audit, checkout)
         audit.runner_claimed_at = None
         session.commit()
+        notify_pull_request(session, audit_id)
     except Exception as e:  # never leave an audit stuck in "running"
         session.rollback()
         audit = session.get(Audit, audit_id)
