@@ -26,7 +26,9 @@ value gets there, never that it is exploitable.
 import ast
 import re
 
-TAINT_VERSION = "1"
+from . import taint_js
+
+TAINT_VERSION = "2"
 MAX_FINDINGS = 200
 LANGUAGES = ("python", "javascript", "typescript")
 
@@ -51,19 +53,24 @@ SINKS = {
                  "Redirección a un destino de la entrada de la petición"),
     "response": ("xss", "CWE-79", "medium", "Request input written into the response",
                  "Entrada de la petición escrita en la respuesta"),
+    "nosql": ("injection", "CWE-943", "high", "NoSQL server-side code built from request input",
+              "Código de servidor NoSQL construido con entrada de la petición"),
 }
 
 LIMITS = {
     "en": ("Python flows are followed into and out of helper functions of the same "
            "file (up to three calls deep); flows through attributes, containers, "
            "functions sharing a name, or other files are not followed. Sanitizers are recognised by name. "
-           "JavaScript/TypeScript are read by pattern with low confidence; other "
-           "languages are not analysed."),
+           "JavaScript/TypeScript are parsed with tree-sitter when it is installed "
+           "(same-file helpers and closures followed), and read by pattern with low "
+           "confidence when it is not; other languages are not analysed."),
     "es": ("En Python se siguen los flujos que entran y salen de funciones auxiliares "
            "del mismo fichero (hasta tres llamadas de profundidad); no se siguen a "
            "través de atributos, contenedores, funciones con el mismo nombre ni otros "
            "ficheros. Los saneadores se reconocen por "
-           "su nombre. JavaScript/TypeScript se leen por patrón con confianza baja; el "
+           "su nombre. JavaScript/TypeScript se analizan con tree-sitter si está "
+           "instalado (siguiendo funciones auxiliares del mismo fichero y cierres) y, si "
+           "no, se leen por patrón con confianza baja; el "
            "resto de lenguajes no se analiza."),
 }
 
@@ -613,7 +620,10 @@ def analyze(texts: dict[str, str]) -> dict:
         elif low.endswith((".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")) and \
                 not low.endswith(".min.js"):
             analysed.add("javascript")
-            raw += _javascript(rel, texts[rel])
+            if taint_js.AVAILABLE:
+                raw += taint_js.analyse_file(rel, texts[rel], _line, _make)
+            else:
+                raw += _javascript(rel, texts[rel])
         elif low.endswith((".go", ".java", ".rb", ".php", ".cs", ".rs", ".kt")):
             skipped.add(low.rsplit(".", 1)[1])
         if len(raw) >= MAX_FINDINGS:
@@ -623,4 +633,5 @@ def analyze(texts: dict[str, str]) -> dict:
         by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
     return {"version": TAINT_VERSION, "raw": raw[:MAX_FINDINGS], "by_kind": by_kind,
             "languages": sorted(analysed), "not_analysed": sorted(skipped),
+            "js_parser": "tree-sitter" if taint_js.AVAILABLE else "pattern",
             "truncated": len(raw) >= MAX_FINDINGS}

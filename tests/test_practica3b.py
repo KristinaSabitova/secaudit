@@ -925,3 +925,73 @@ class TestTwinSimulation:
         # Nothing about the audit changed.
         again = client.get(f"/api/audits/{audit['id']}").json()
         assert len(again["findings"]) == len(ids)
+
+
+# ---------------------------------------------------------------------------
+# JavaScript/TypeScript on a syntax tree
+# ---------------------------------------------------------------------------
+
+HARD_JS = '''const { exec } = require("child_process");
+function runIt(c) {
+  exec(c);
+}
+router.post("/contrib", function (q, s) {
+  const pre = q.body.preTax;
+  const total = eval(pre);
+  db.collection("x").find({ $where: "this.a == " + q.body.a }, function (err, docs) {
+    s.send("<b>" + pre + "</b>");
+  });
+  runIt("ls " + q.body.dir);
+  const n = parseInt(q.body.n);
+  exec("echo " + n);
+  const m = /x(\\d)/.exec(q.body.s);
+  el.innerHTML = q.query.html;
+  const { a: alias, b } = q.body;
+  exec(`cat ${alias}`);
+  setTimeout(() => exec("ls"), 10);
+  db.query("SELECT * FROM t WHERE id = ?", [b]);
+});
+'''
+
+HARD_TS = '''import { Request, Response } from "express";
+export async function handler(req: Request, res: Response): Promise<void> {
+  const id: string = req.params.id as string;
+  await prisma.$queryRawUnsafe(`SELECT * FROM t WHERE id = ${id}`);
+  await prisma.$queryRaw`SELECT * FROM t WHERE id = ${id}`;
+  res.redirect(req.query.to as string);
+}
+'''
+
+
+@pytest.mark.skipif(not taint.taint_js.AVAILABLE, reason="tree-sitter not installed")
+class TestJavaScriptTree:
+    def got(self, name, text):
+        return {(r["kind"], r["line"]) for r in taint.analyze({name: text})["raw"]}
+
+    def test_closures_helpers_nosql_and_renamed_parameters(self):
+        got = self.got("app.js", HARD_JS)
+        assert ("code", 7) in got                       # eval of a body field
+        assert ("nosql", 8) in got                      # $where built from input
+        assert ("response", 9) in got                   # closure + renamed response
+        assert ("command", 3) in got                    # through the runIt() helper
+        assert ("template", 15) in got                  # innerHTML assignment
+        assert ("command", 17) in got                   # destructured and renamed
+
+    def test_what_is_not_a_flow(self):
+        lines = {line for _, line in self.got("app.js", HARD_JS)}
+        assert 13 not in lines                          # parseInt
+        assert 14 not in lines                          # RegExp#exec
+        assert 18 not in lines                          # a constant command
+        assert 19 not in lines                          # bound parameters
+
+    def test_typescript(self):
+        got = self.got("h.ts", HARD_TS)
+        assert ("sql", 4) in got and ("redirect", 6) in got
+        assert not any(line == 5 for _, line in got)   # tagged template is parameterised
+        assert taint.analyze({"h.ts": HARD_TS})["js_parser"] == "tree-sitter"
+
+    def test_without_the_parser_it_falls_back_to_patterns(self, monkeypatch):
+        monkeypatch.setattr(taint.taint_js, "AVAILABLE", False)
+        r = taint.analyze({"server.js": EXPRESS})
+        assert r["js_parser"] == "pattern"
+        assert {x["confidence"] for x in r["raw"]} == {"low"}
