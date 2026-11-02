@@ -8,9 +8,10 @@ const ACTIVE_STATUSES = new Set(["pending", "running"]);
 const POLL_MS = 3000;
 
 const SECTIONS = ["summary", "findings", "parallax", "falsifiability", "memory",
-                  "leverage", "attacker", "history", "settings"];
+                  "leverage", "attacker", "mcp", "supply", "surface", "changes",
+                  "history", "settings"];
 // The sections that need an audit to show anything; the rest stand alone.
-const AUDIT_SECTIONS = new Set(SECTIONS.slice(0, 7));
+const AUDIT_SECTIONS = new Set(SECTIONS.slice(0, 11));
 // Each module section, the module_runs name it reads, and the phase it lands in.
 const MODULES = {
   parallax: { run: "parallax", phase: 5 },
@@ -18,6 +19,10 @@ const MODULES = {
   memory: { run: "immune", phase: 6 },
   leverage: { run: "leverage", phase: 7 },
   attacker: { run: "attacker", phase: 8 },
+  mcp: { run: "mcp", phase: "P3" },
+  supply: { run: "dependencies", phase: "P3" },
+  surface: { run: "surface", phase: "P3" },
+  changes: { run: "drift", phase: "P3" },
 };
 const RISK_TIERS = { 1: "tier.1", 2: "tier.2", 3: "tier.3", 4: "tier.4",
                      5: "tier.5", 6: "tier.6" };
@@ -590,6 +595,162 @@ const TEXT = {
     "severity.medium": "medium",
     "severity.low": "low",
     "severity.info": "info",
+    "nav.mcp": "MCP",
+    "nav.supply": "Supply chain",
+    "nav.surface": "Attack surface",
+    "nav.changes": "Changes",
+    "mcp.question": "Which MCP servers, tools and configurations does this repository carry, and what do they expose?",
+    "mcp.what": "Static checks against the OWASP MCP Top 10. Nothing is installed, started or connected to: what only a running server can show is marked as needing a dynamic test.",
+    "supply.question": "What does it depend on, where does it come from, and which credentials has it leaked?",
+    "supply.what": "Manifests and lockfiles read as text (no package manager is run), a CycloneDX SBOM, dependency confusion signals, apparently unused dependencies, and every credential in the code and in the fetched history.",
+    "surface.question": "Where does outside input enter, and what can it reach?",
+    "surface.what": "Endpoints, webhooks, uploads, CLIs, jobs and MCP tools, read from the code, with the trust boundaries they cross. A missing auth marker is a place to look, not a finding.",
+    "changes.question": "What changed since the last audit, and did any control get weaker?",
+    "changes.what": "Findings new, fixed, persisting and reintroduced by fingerprint; critical files and workflows changed; and security drift read from the diff between the two audited commits.",
+    "filter.assessment": "assessment",
+    "assessment.confirmed": "confirmed",
+    "assessment.potential": "potential",
+    "assessment.discarded": "discarded",
+    "assessment.unverifiable": "not verifiable",
+    "source.model": "model (checked)",
+    "source.rule": "deterministic rule",
+    "source.immune": "immune rule",
+    "band.high": "high",
+    "band.medium": "medium",
+    "band.low": "low",
+    "cond.verified": "verified",
+    "cond.discarded": "discarded",
+    "cond.unknown": "unknown",
+    "p3.notrun": "this module did not run for this audit (audits from before it existed)",
+    "p3.modulefailed": (a0) => `the module failed: ${a0}`,
+    "p3.notmeasured": "not measured",
+    "p3.trust": "Audit confidence",
+    "p3.trustintro": "Three dimensions, kept apart on purpose: none of them can make up for another.",
+    "p3.dimension": "dimension",
+    "p3.score": "score",
+    "p3.reasons": "why",
+    "p3.dim.coverage": "coverage",
+    "p3.dim.evidence": "evidence quality",
+    "p3.dim.adversarial": "adversarial resistance",
+    "p3.limits": "limits of this audit",
+    "p3.exports": "Exports",
+    "p3.exportswait": "available when the audit is done",
+    "p3.export.html": "report (print to PDF)",
+    "p3.export.replay": "replay manifest",
+    "p3.exportsnote": "All built from the same stored evidence. No CVSS is computed; secrets are masked in every one.",
+    "p3.assessment": "assessment",
+    "p3.source": "source",
+    "p3.rule": "rule",
+    "p3.confidence": "confidence",
+    "p3.prerequisites": "Prerequisites",
+    "p3.impact": "Impact",
+    "p3.mitigation": "Mitigation",
+    "p3.limitsone": "Limits",
+    "p3.references": "References",
+    "p3.why": "why",
+    "p3.snippethash": "snippet sha256",
+    "p3.checks": "Checks",
+    "p3.counterfactuals": "Exploitation conditions",
+    "p3.discarded": "Discarded hypotheses",
+    "p3.unknowns": "Unknowns",
+    "p3.showchain": "show the evidence chain",
+    "p3.chain": "Evidence chain",
+    "p3.finding": "finding",
+    "mcp.taxonomy": (a0, a1, a2) => `Taxonomy: ${a0}, checked against ${a2} on ${a1}.`,
+    "mcp.inventory": "Inventory",
+    "mcp.none": "No MCP server, client or configuration was found.",
+    "mcp.counts": (a0, a1, a2, a3) => `${a0} server(s), ${a1} client(s), ${a2} configuration file(s), ${a3} tool(s), resource(s) or prompt(s).`,
+    "mcp.config": "configuration",
+    "mcp.servers": "servers",
+    "mcp.tool": "name",
+    "mcp.kind": "kind",
+    "mcp.categories": "By OWASP MCP category",
+    "mcp.count": "findings",
+    "mcp.nofindings": "No MCP finding. That is not proof the MCP surface is safe.",
+    "mcp.catalog": "Rules per category",
+    "mcp.inspects": "inspects",
+    "mcp.static": "statically detectable",
+    "mcp.confirm": "confirmed when",
+    "mcp.fp": "usual false positives",
+    "supply.deps": "Dependencies",
+    "supply.components": (a0, a1, a2) => `${a0} component(s), ${a1} direct. ${a2}`,
+    "supply.manifests": (a0) => `Read from: ${a0}`,
+    "supply.osvdone": (a0, a1) => `OSV.dev asked about ${a0} exact version(s): ${a1} affected.`,
+    "supply.osverror": (a0) => `OSV.dev could not be asked: ${a0}`,
+    "supply.osvoff": "Known vulnerabilities were not looked up: OSV.dev is only asked with SECAUDIT_OSV_CHECK=1 (package names and versions leave the server).",
+    "supply.list": "every component",
+    "supply.name": "package",
+    "supply.version": "version",
+    "supply.direct": "direct",
+    "supply.scope": "scope",
+    "supply.vulns": "advisories",
+    "supply.yes": "yes",
+    "supply.no": "no",
+    "supply.ghosts": "Apparently unused",
+    "supply.ghostsnote": "Declared and mentioned nowhere else. Plugins, entry points and dynamic imports can still use them.",
+    "supply.noghosts": "Every direct dependency is mentioned somewhere in the code.",
+    "supply.manifest": "declared in",
+    "supply.signals": "Supply-chain signals",
+    "supply.secrets": "Secret exposure timeline",
+    "supply.secretsline": (a0, a1, a2) => `${a0} secret(s) in the checkout; ${a1} commit(s) of history read; ${a2} only in history.`,
+    "supply.rotate": "Revoke and rotate every secret listed: removing it from the code does not remove it from the history.",
+    "supply.kind": "kind",
+    "supply.mask": "mask (never the value)",
+    "supply.first": "first commit",
+    "supply.removed": "removed in",
+    "supply.now": "still there",
+    "supply.beforehistory": "* its first commit is where the fetched history stops: it may be older.",
+    "supply.truncated": "The history was too large to read whole; the timeline is partial.",
+    "surface.none": "No entry point was recognised.",
+    "surface.notinv": (a0) => `Not inventoried (languages not read): ${a0}`,
+    "surface.boundaries": "Trust boundaries",
+    "surface.boundariesnote": "Untrusted input crosses into the application at each entry, and from there into what it touches.",
+    "surface.via": "entry",
+    "surface.to": "reaches",
+    "surface.entries": "entries",
+    "surface.noauth": "no auth seen",
+    "surface.items": "Entry points",
+    "surface.route": "route",
+    "surface.auth": "auth",
+    "surface.touches": "touches",
+    "kind.endpoint": "endpoint",
+    "kind.webhook": "webhook",
+    "kind.file_upload": "file upload",
+    "kind.websocket": "websocket",
+    "kind.cli": "CLI",
+    "kind.scheduled": "scheduled job",
+    "kind.mcp_tool": "MCP tool",
+    "asset.database": "database",
+    "asset.filesystem": "filesystem",
+    "asset.network": "network",
+    "asset.subprocess": "subprocess",
+    "asset.deserialization": "deserialization",
+    "asset.template": "raw template",
+    "asset.application": "application",
+    "auth.declared": "declared",
+    "auth.file_level": "in the file",
+    "auth.none_seen": "none seen",
+    "auth.unknown": "unknown",
+    "auth.not_applicable": "n/a",
+    "changes.findings": "Findings since the previous audit",
+    "changes.first": "This is the first finished audit of the project: nothing to compare with.",
+    "changes.against": (a0, a1) => `Compared with ${a0} → ${a1}.`,
+    "changes.new": "new",
+    "changes.reintroduced": "reintroduced",
+    "changes.fixed": "fixed",
+    "changes.persisting": "persisting",
+    "changes.total": "total",
+    "changes.drift": "Security drift",
+    "changes.files": (a0, a1, a2) => `${a0} file(s) changed, ${a1} critical, ${a2} workflow(s).`,
+    "changes.driftnote": "Patterns on the diff: a place to look, not a verdict.",
+    "changes.control": "control",
+    "changes.side": "line",
+    "changes.line": "text",
+    "changes.nodrift": "No weakened control was recognised in the diff.",
+    "side.added": "added",
+    "side.removed": "removed",
+    "changes.dna": "Project history (DNA)",
+    "changes.recurrent": (a0) => `${a0} finding(s) have appeared in more than one audit.`,
   },
   es: {
     "lang.label": "idioma",
@@ -1130,6 +1291,162 @@ const TEXT = {
     "severity.medium": "media",
     "severity.low": "baja",
     "severity.info": "informativa",
+    "nav.mcp": "MCP",
+    "nav.supply": "Cadena de suministro",
+    "nav.surface": "Superficie de ataque",
+    "nav.changes": "Cambios",
+    "mcp.question": "¿Qué servidores, herramientas y configuraciones MCP lleva este repositorio, y qué exponen?",
+    "mcp.what": "Comprobaciones estáticas contra el OWASP MCP Top 10. No se instala, arranca ni conecta nada: lo que solo un servidor en ejecución puede mostrar se marca como pendiente de prueba dinámica.",
+    "supply.question": "¿De qué depende, de dónde viene y qué credenciales ha filtrado?",
+    "supply.what": "Manifiestos y lockfiles leídos como texto (no se ejecuta ningún gestor de paquetes), un SBOM CycloneDX, señales de confusión de dependencias, dependencias aparentemente sin uso y cada credencial del código y del historial descargado.",
+    "surface.question": "¿Por dónde entra la entrada externa y qué puede alcanzar?",
+    "surface.what": "Endpoints, webhooks, subidas, CLIs, tareas y herramientas MCP, leídos del código, con los límites de confianza que cruzan. La falta de un rastro de autenticación es un sitio que mirar, no un hallazgo.",
+    "changes.question": "¿Qué cambió desde la última auditoría y se debilitó algún control?",
+    "changes.what": "Hallazgos nuevos, corregidos, persistentes y reintroducidos por huella; ficheros críticos y workflows cambiados; y deriva de seguridad leída del diff entre los dos commits auditados.",
+    "filter.assessment": "evaluación",
+    "assessment.confirmed": "confirmado",
+    "assessment.potential": "potencial",
+    "assessment.discarded": "descartado",
+    "assessment.unverifiable": "no verificable",
+    "source.model": "modelo (comprobado)",
+    "source.rule": "regla determinista",
+    "source.immune": "regla inmunológica",
+    "band.high": "alta",
+    "band.medium": "media",
+    "band.low": "baja",
+    "cond.verified": "verificada",
+    "cond.discarded": "descartada",
+    "cond.unknown": "desconocida",
+    "p3.notrun": "este módulo no se ejecutó en esta auditoría (auditorías anteriores a él)",
+    "p3.modulefailed": (a0) => `el módulo falló: ${a0}`,
+    "p3.notmeasured": "no medido",
+    "p3.trust": "Confianza de la auditoría",
+    "p3.trustintro": "Tres dimensiones, separadas a propósito: ninguna compensa a otra.",
+    "p3.dimension": "dimensión",
+    "p3.score": "puntuación",
+    "p3.reasons": "por qué",
+    "p3.dim.coverage": "cobertura",
+    "p3.dim.evidence": "calidad de la evidencia",
+    "p3.dim.adversarial": "resistencia adversarial",
+    "p3.limits": "límites de esta auditoría",
+    "p3.exports": "Exportaciones",
+    "p3.exportswait": "disponibles cuando termine la auditoría",
+    "p3.export.html": "informe (imprimir a PDF)",
+    "p3.export.replay": "manifiesto de replay",
+    "p3.exportsnote": "Todas salen de la misma evidencia guardada. No se calcula CVSS; los secretos van enmascarados en todas.",
+    "p3.assessment": "evaluación",
+    "p3.source": "origen",
+    "p3.rule": "regla",
+    "p3.confidence": "confianza",
+    "p3.prerequisites": "Prerrequisitos",
+    "p3.impact": "Impacto",
+    "p3.mitigation": "Mitigación",
+    "p3.limitsone": "Límites",
+    "p3.references": "Referencias",
+    "p3.why": "por qué",
+    "p3.snippethash": "sha256 del fragmento",
+    "p3.checks": "Comprobaciones",
+    "p3.counterfactuals": "Condiciones de explotación",
+    "p3.discarded": "Hipótesis descartadas",
+    "p3.unknowns": "Incógnitas",
+    "p3.showchain": "ver la cadena de evidencia",
+    "p3.chain": "Cadena de evidencia",
+    "p3.finding": "hallazgo",
+    "mcp.taxonomy": (a0, a1, a2) => `Taxonomía: ${a0}, comprobada contra ${a2} el ${a1}.`,
+    "mcp.inventory": "Inventario",
+    "mcp.none": "No se encontró ningún servidor, cliente ni configuración MCP.",
+    "mcp.counts": (a0, a1, a2, a3) => `${a0} servidor(es), ${a1} cliente(s), ${a2} fichero(s) de configuración, ${a3} herramienta(s), recurso(s) o prompt(s).`,
+    "mcp.config": "configuración",
+    "mcp.servers": "servidores",
+    "mcp.tool": "nombre",
+    "mcp.kind": "tipo",
+    "mcp.categories": "Por categoría OWASP MCP",
+    "mcp.count": "hallazgos",
+    "mcp.nofindings": "Ningún hallazgo MCP. Eso no prueba que la superficie MCP sea segura.",
+    "mcp.catalog": "Reglas por categoría",
+    "mcp.inspects": "inspecciona",
+    "mcp.static": "detectable estáticamente",
+    "mcp.confirm": "se confirma cuando",
+    "mcp.fp": "falsos positivos habituales",
+    "supply.deps": "Dependencias",
+    "supply.components": (a0, a1, a2) => `${a0} componente(s), ${a1} directos. ${a2}`,
+    "supply.manifests": (a0) => `Leídos de: ${a0}`,
+    "supply.osvdone": (a0, a1) => `Se preguntó a OSV.dev por ${a0} versión(es) exactas: ${a1} afectadas.`,
+    "supply.osverror": (a0) => `No se pudo preguntar a OSV.dev: ${a0}`,
+    "supply.osvoff": "No se consultaron vulnerabilidades conocidas: OSV.dev solo se consulta con SECAUDIT_OSV_CHECK=1 (salen del servidor nombres y versiones de paquetes).",
+    "supply.list": "todos los componentes",
+    "supply.name": "paquete",
+    "supply.version": "versión",
+    "supply.direct": "directa",
+    "supply.scope": "ámbito",
+    "supply.vulns": "avisos",
+    "supply.yes": "sí",
+    "supply.no": "no",
+    "supply.ghosts": "Aparentemente sin uso",
+    "supply.ghostsnote": "Declaradas y no mencionadas en ningún otro sitio. Plugins, entry points e importaciones dinámicas pueden usarlas igualmente.",
+    "supply.noghosts": "Todas las dependencias directas se mencionan en algún punto del código.",
+    "supply.manifest": "declarada en",
+    "supply.signals": "Señales de la cadena de suministro",
+    "supply.secrets": "Línea temporal de exposición de secretos",
+    "supply.secretsline": (a0, a1, a2) => `${a0} secreto(s) en el checkout; ${a1} commit(s) de historial leídos; ${a2} solo en el historial.`,
+    "supply.rotate": "Revoca y rota cada secreto listado: quitarlo del código no lo quita del historial.",
+    "supply.kind": "tipo",
+    "supply.mask": "máscara (nunca el valor)",
+    "supply.first": "primer commit",
+    "supply.removed": "eliminado en",
+    "supply.now": "sigue ahí",
+    "supply.beforehistory": "* su primer commit es donde se corta el historial descargado: puede ser más antiguo.",
+    "supply.truncated": "El historial era demasiado grande para leerlo entero; la línea temporal es parcial.",
+    "surface.none": "No se reconoció ningún punto de entrada.",
+    "surface.notinv": (a0) => `Sin inventariar (lenguajes no leídos): ${a0}`,
+    "surface.boundaries": "Límites de confianza",
+    "surface.boundariesnote": "La entrada no confiable cruza a la aplicación en cada entrada, y de ahí a lo que toca.",
+    "surface.via": "entrada",
+    "surface.to": "alcanza",
+    "surface.entries": "entradas",
+    "surface.noauth": "sin auth visible",
+    "surface.items": "Puntos de entrada",
+    "surface.route": "ruta",
+    "surface.auth": "auth",
+    "surface.touches": "toca",
+    "kind.endpoint": "endpoint",
+    "kind.webhook": "webhook",
+    "kind.file_upload": "subida de ficheros",
+    "kind.websocket": "websocket",
+    "kind.cli": "CLI",
+    "kind.scheduled": "tarea programada",
+    "kind.mcp_tool": "herramienta MCP",
+    "asset.database": "base de datos",
+    "asset.filesystem": "sistema de ficheros",
+    "asset.network": "red",
+    "asset.subprocess": "subproceso",
+    "asset.deserialization": "deserialización",
+    "asset.template": "plantilla sin escapar",
+    "asset.application": "aplicación",
+    "auth.declared": "declarada",
+    "auth.file_level": "en el fichero",
+    "auth.none_seen": "no vista",
+    "auth.unknown": "desconocida",
+    "auth.not_applicable": "n/a",
+    "changes.findings": "Hallazgos desde la auditoría anterior",
+    "changes.first": "Es la primera auditoría terminada del proyecto: no hay con qué comparar.",
+    "changes.against": (a0, a1) => `Comparado con ${a0} → ${a1}.`,
+    "changes.new": "nuevos",
+    "changes.reintroduced": "reintroducidos",
+    "changes.fixed": "corregidos",
+    "changes.persisting": "persistentes",
+    "changes.total": "total",
+    "changes.drift": "Deriva de seguridad",
+    "changes.files": (a0, a1, a2) => `${a0} fichero(s) cambiados, ${a1} críticos, ${a2} workflow(s).`,
+    "changes.driftnote": "Patrones sobre el diff: un sitio que mirar, no un veredicto.",
+    "changes.control": "control",
+    "changes.side": "línea",
+    "changes.line": "texto",
+    "changes.nodrift": "No se reconoció ningún control debilitado en el diff.",
+    "side.added": "añadida",
+    "side.removed": "eliminada",
+    "changes.dna": "Historia del proyecto (ADN)",
+    "changes.recurrent": (a0) => `${a0} hallazgo(s) han aparecido en más de una auditoría.`,
   },
 };
 
@@ -1525,6 +1842,10 @@ function renderSection() {
   else if (state.section === "memory") renderMemory();
   else if (state.section === "leverage") renderLeverage();
   else if (state.section === "attacker") renderAttacker();
+  else if (state.section === "mcp") renderMcp();
+  else if (state.section === "supply") renderSupply();
+  else if (state.section === "surface") renderSurface();
+  else if (state.section === "changes") renderChanges();
   else if (state.section === "settings") renderJewels();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
@@ -1720,7 +2041,8 @@ function renderSummary() {
 
   const findings = block(t("summary.findings"), countsNode(audit.summary));
   if (audit.status === "done" && total > 0) {
-    findings.append(node("p", "muted", t("findings.counted", total, audit.verified_count || 0)),
+    findings.append(assessmentCounts(audit),
+                    node("p", "muted", t("findings.counted", total, audit.verified_count || 0)),
                     button(t("summary.seefindings"), "link", () => go("findings")));
   } else if (ACTIVE_STATUSES.has(audit.status)) {
     findings.append(node("p", "muted", t("findings.inprogress")));
@@ -1731,9 +2053,11 @@ function renderSummary() {
     .map((s) => s.textContent));
   target.replaceChildren(
     auditHead(audit),
+    trustBlock(audit),
     integrityBlock(audit, total),
     coverageBlock(audit),
     findings,
+    exportsBlock(audit),
     pathsBlock(audit),
     moduleRunsBlock(audit),
   );
@@ -1760,6 +2084,7 @@ function filteredFindings() {
   const origin = el("filter-origin").value;
   const context = el("filter-context").value;
   const persona = el("filter-persona").value;
+  const assessed = el("filter-assessment").value;
   const query = state.query.trim().toLowerCase();
   const order = new Map(SEVERITIES.map((s, i) => [s, i]));
   return (state.current.findings || [])
@@ -1772,6 +2097,7 @@ function filteredFindings() {
     .filter((f) => !context || (context === "none" ? !f.contextual_severity
                                 : f.contextual_severity === context))
     .filter((f) => !persona || (f.personas || []).includes(persona))
+    .filter((f) => !assessed || (f.assessment || "unverifiable") === assessed)
     .filter((f) => !query || [f.title, f.file, f.anchor, f.description, f.category,
                               categoryLabel(f.category)]
       .some((v) => String(v || "").toLowerCase().includes(query)))
@@ -1803,6 +2129,7 @@ function findingBody(finding, { full }) {
       [t("findings.location"), node("span", "where", whereText(finding) || "—")],
     ];
     if (finding.anchor) pairs.push([t("findings.anchor"), node("span", "where", finding.anchor)]);
+    pairs.push(...ruleFacts(finding));
     if (finding.contextual_severity) {
       pairs.push([t("findings.context"), severityNode(finding.contextual_severity)],
                  [t("findings.personas"),
@@ -1835,7 +2162,10 @@ function findingBody(finding, { full }) {
     if (full) parts.append(node("h3", null, t("findings.description")));
     parts.append(node("p", "prose", finding.description));
   }
-  if (full) parts.append(hypothesisNodes(finding));
+  if (full) {
+    parts.append(ruleNotes(finding), hypothesisNodes(finding));
+    if (finding.id !== undefined && state.current) parts.append(chainButton(finding));
+  }
   return parts;
 }
 
@@ -1856,6 +2186,10 @@ function findingRows(finding) {
   const titleCell = document.createDocumentFragment();
   titleCell.append(title);
   if (finding.zombie_of) titleCell.append(" ", node("span", "badge badge-zombie", t("zombie.badge")));
+  titleCell.append(" ", assessmentNode(finding));
+  if (finding.detail && finding.detail.owasp_mcp) {
+    titleCell.append(" ", node("span", "badge", finding.detail.owasp_mcp));
+  }
 
   const main = row([
     toggle,
@@ -1930,7 +2264,7 @@ function renderFindings() {
 }
 
 for (const id of ["filter-severity", "filter-epistemic", "filter-origin", "filter-context",
-                  "filter-persona"]) {
+                  "filter-persona", "filter-assessment"]) {
   el(id).addEventListener("change", renderFindings);
 }
 
@@ -3593,3 +3927,492 @@ async function start() {
 }
 
 start();
+
+// ---------------------------------------------------------------------------
+// practice 3: one assessment per finding, audit confidence, exports, the MCP
+// auditor, the supply chain, the attack surface and what changed. Everything
+// here reads what the server computed on its own checkout; nothing is
+// inferred in the browser.
+// ---------------------------------------------------------------------------
+
+const ASSESSMENTS = ["confirmed", "potential", "unverifiable", "discarded"];
+const MCP_CATEGORIES = ["MCP01", "MCP02", "MCP03", "MCP04", "MCP05", "MCP06", "MCP07",
+                        "MCP08", "MCP09", "MCP10"];
+
+function assessmentNode(finding) {
+  const a = finding.assessment || "unverifiable";
+  return node("span", `badge badge-a-${a}`, t(`assessment.${a}`));
+}
+
+function runOf(audit, name) {
+  return (audit.modules || []).filter((r) => r.module === name).pop() || null;
+}
+
+// Fills target with why a module has nothing to show, and says so.
+function moduleMissing(target, audit, run, notRunKey) {
+  if (run) return false;
+  target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+    ? t("findings.inprogress") : t(notRunKey)));
+  return true;
+}
+
+function moduleError(run) {
+  return run.status === "error"
+    ? node("p", "error", t("p3.modulefailed", run.error || "")) : null;
+}
+
+// Per-audit answers fetched once; an audit still running is asked again.
+const fetched = new Map();
+
+async function fetchOnce(key, path, audit) {
+  const k = `${key}:${audit.id}:${audit.status}`;
+  if (fetched.has(k)) return fetched.get(k);
+  const value = await api(path);
+  fetched.set(k, value);
+  return value;
+}
+
+function cachedOnly(key, audit) {
+  return fetched.get(`${key}:${audit.id}:${audit.status}`);
+}
+
+function lazyBlock(title, key, path, audit, render) {
+  const section = block(title);
+  const cached = cachedOnly(key, audit);
+  if (cached !== undefined) {
+    section.append(render(cached));
+    return section;
+  }
+  const holder = node("p", "muted", t("summary.loading"));
+  section.append(holder);
+  fetchOnce(key, path, audit).then((value) => {
+    holder.replaceWith(render(value));
+  }).catch((e) => {
+    holder.replaceWith(node("p", "error", e.message));
+  });
+  return section;
+}
+
+function list(items) {
+  const ul = document.createElement("ul");
+  for (const item of items) {
+    const li = document.createElement("li");
+    if (item instanceof Node) li.append(item);
+    else li.textContent = String(item);
+    ul.append(li);
+  }
+  return ul;
+}
+
+function scoreText(d) {
+  if (!d || d.score === null || d.score === undefined) return t("p3.notmeasured");
+  return `${Math.round(d.score * 100)}% · ${t(`band.${d.band}`)}`;
+}
+
+function trustBlock(audit) {
+  if (audit.status !== "done") {
+    return block(t("p3.trust"), node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("findings.failed")));
+  }
+  return lazyBlock(t("p3.trust"), "trust",
+                   `/api/audits/${encodeURIComponent(audit.id)}/trust`, audit, (tr) => {
+    const wrap = document.createDocumentFragment();
+    wrap.append(node("p", "muted", t("p3.trustintro")));
+    wrap.append(table(
+      [{ text: t("p3.dimension") }, { text: t("p3.score") }, { text: t("p3.reasons") }],
+      ["coverage", "evidence", "adversarial"].map((k) => row([
+        t(`p3.dim.${k}`), scoreText(tr[k]), (tr[k].reasons || []).join(" · ") || "—"]))));
+    if (tr.unreliable_clean) wrap.append(node("p", "coverage-warning", t("summary.unreliable")));
+    const details = node("details", "block");
+    details.append(node("summary", null, t("p3.limits")), list(tr.limits || []));
+    wrap.append(details);
+    return wrap;
+  });
+}
+
+function download(label, path, newTab) {
+  const a = node("a", "button-link ghost", label);
+  a.href = path;
+  if (newTab) {
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+  } else {
+    a.setAttribute("download", "");
+  }
+  return a;
+}
+
+function exportsBlock(audit) {
+  const section = block(t("p3.exports"));
+  if (audit.status !== "done") {
+    section.append(node("p", "muted", t("p3.exportswait")));
+    return section;
+  }
+  const base = `/api/audits/${encodeURIComponent(audit.id)}`;
+  const row1 = node("div", "export-links");
+  row1.append(download(t("p3.export.html"), `${base}/report.html`, true),
+              download("JSON", `${base}/report.json`),
+              download("SARIF", `${base}/report.sarif`),
+              download("CycloneDX SBOM", `${base}/sbom.cdx.json`),
+              download(t("p3.export.replay"), `${base}/replay.json`));
+  section.append(row1, node("p", "muted", t("p3.exportsnote")));
+  return section;
+}
+
+function assessmentCounts(audit) {
+  const counts = Object.fromEntries(ASSESSMENTS.map((a) => [a, 0]));
+  for (const f of audit.findings || []) counts[f.assessment || "unverifiable"] += 1;
+  const wrap = node("p", "assessment-counts");
+  for (const a of ASSESSMENTS) {
+    wrap.append(node("span", `badge badge-a-${a}`, `${t(`assessment.${a}`)} ${counts[a]}`), " ");
+  }
+  return wrap;
+}
+
+// The detail a deterministic rule gives about its own finding.
+function ruleFacts(finding) {
+  const d = finding.detail || {};
+  const pairs = [[t("p3.assessment"), assessmentNode(finding)],
+                 [t("p3.source"), t(`source.${finding.source || "model"}`)]];
+  if (finding.rule_id) pairs.push([t("p3.rule"), node("span", "where", finding.rule_id)]);
+  if (d.owasp_mcp) pairs.push(["OWASP MCP", `${d.owasp_mcp} · ${d.owasp_mcp_name || ""}`]);
+  if (d.cwe) pairs.push(["CWE", d.cwe]);
+  if (d.confidence) pairs.push([t("p3.confidence"), t(`confidence.${d.confidence}`)]);
+  return pairs;
+}
+
+function ruleNotes(finding) {
+  const d = finding.detail || {};
+  const parts = document.createDocumentFragment();
+  const add = (key, value) => {
+    if (!value || (Array.isArray(value) && !value.length)) return;
+    parts.append(node("h3", null, t(key)));
+    parts.append(Array.isArray(value) ? list(value) : node("p", "prose", String(value)));
+  };
+  add("p3.prerequisites", d.prerequisites);
+  add("p3.impact", d.impact);
+  add("p3.mitigation", d.mitigation);
+  add("p3.limitsone", d.limits);
+  if (d.references) add("p3.references", d.references);
+  return parts;
+}
+
+function chainNode(chain) {
+  const wrap = node("div", "chain");
+  wrap.append(facts([
+    [t("p3.assessment"), node("span", `badge badge-a-${chain.conclusion.assessment}`,
+                              chain.conclusion.label)],
+    [t("p3.why"), chain.conclusion.why],
+    [t("detail.commit"), shortSha(chain.anchor.commit_sha) || "—"],
+    [t("findings.location"), node("span", "where", [chain.anchor.file,
+      chain.anchor.line].filter(Boolean).join(":") || "—")],
+    [t("p3.snippethash"), node("span", "where", chain.anchor.snippet_sha256
+      ? chain.anchor.snippet_sha256.slice(0, 16) : "—")],
+    [t("p3.confidence"), t(`confidence.${chain.confidence}`)],
+  ]));
+  wrap.append(node("h3", null, t("p3.checks")),
+              list(chain.checks.map((c) => `${c.check}: ${c.result}${c.note ? ` — ${c.note}` : ""}`)));
+  wrap.append(node("h3", null, t("p3.counterfactuals")),
+              list(chain.counterfactuals.map((c) => `[${t(`cond.${c.status}`)}] ${c.condition}`)));
+  if (chain.discarded_hypotheses.length) {
+    wrap.append(node("h3", null, t("p3.discarded")),
+                list(chain.discarded_hypotheses.map((h) => `${h.hypothesis} (${h.by})`)));
+  }
+  wrap.append(node("h3", null, t("p3.unknowns")), list(chain.unknowns));
+  wrap.append(node("p", "muted", `sha256 ${chain.sha256} — ${chain.integrity_note}`));
+  return wrap;
+}
+
+function chainButton(finding) {
+  const holder = node("div");
+  const b = button(t("p3.showchain"), "ghost", async () => {
+    b.disabled = true;
+    try {
+      const chain = await api(`/api/audits/${encodeURIComponent(state.current.id)}`
+        + `/findings/${finding.id}/evidence-chain`);
+      holder.replaceChildren(node("h3", null, t("p3.chain")), chainNode(chain));
+    } catch (e) {
+      holder.replaceChildren(node("p", "error", e.message));
+      b.disabled = false;
+    }
+  });
+  holder.append(b);
+  return holder;
+}
+
+function findingLink(f) {
+  const b = button(f.title, "link", () => openFinding(f.id, b));
+  b.dataset.finding = String(f.id);
+  return b;
+}
+
+function findingsTable(findings) {
+  return table(
+    [{ text: t("findings.severity") }, { text: t("p3.assessment") }, { text: t("p3.finding") },
+     { text: t("findings.location") }],
+    findings.map((f) => row([severityNode(f.severity), assessmentNode(f), findingLink(f),
+                             { className: "where", content: whereText(f) }])));
+}
+
+// --- MCP --------------------------------------------------------------------
+
+function renderMcp() {
+  const target = el("mcp-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const run = runOf(audit, "mcp");
+  if (moduleMissing(target, audit, run, "p3.notrun")) return;
+  const d = run.detail || {};
+  const parts = [];
+  const err = moduleError(run);
+  if (err) parts.push(err);
+  if (d.taxonomy) {
+    parts.push(node("p", "muted", t("mcp.taxonomy", d.taxonomy.name, d.taxonomy.checked,
+                                    d.taxonomy.url)));
+  }
+  const inv = d.inventory || { servers: [], clients: [], configs: [], tools: [] };
+  if (!d.detected) {
+    parts.push(block(t("mcp.inventory"), node("p", null, t("mcp.none"))));
+  } else {
+    const invBlock = block(t("mcp.inventory"),
+      node("p", null, t("mcp.counts", inv.servers.length, inv.clients.length,
+                        inv.configs.length, inv.tools.length)));
+    if (inv.configs.length) {
+      invBlock.append(table([{ text: t("mcp.config") }, { text: t("mcp.servers") }],
+        inv.configs.map((c) => row([{ className: "where", content: c.file },
+          (c.servers || []).map((s) => `${s.name} (${s.type}${s.command ? `: ${s.command}`
+            : s.url ? `: ${s.url}` : ""})`).join(" · ") || "—"]))));
+    }
+    if (inv.tools.length) {
+      invBlock.append(table([{ text: t("mcp.tool") }, { text: t("mcp.kind") },
+                             { text: t("findings.location") }],
+        inv.tools.map((x) => row([x.name, x.kind,
+                                  { className: "where", content: `${x.file}:${x.line}` }]))));
+    }
+    parts.push(invBlock);
+  }
+  const byCat = d.by_category || {};
+  const findings = (audit.findings || []).filter((f) => f.category === "mcp");
+  parts.push(block(t("mcp.categories"), table(
+    [{ text: "OWASP" }, { text: t("mcp.count"), className: "num" }],
+    MCP_CATEGORIES.map((c) => row([c, { className: "num", content: String(byCat[c] || 0) }])))));
+  parts.push(block(t("nav.findings"), findings.length ? findingsTable(findings)
+    : node("p", "muted", t("mcp.nofindings"))));
+  parts.push(lazyBlock(t("mcp.catalog"), `mcp-catalog-${lang}`,
+                       `/api/mcp/catalog?language=${lang}`, audit, (cat) => {
+    const wrap = document.createDocumentFragment();
+    for (const c of cat.categories) {
+      const det = node("details", "block");
+      det.append(node("summary", null, `${c.id} · ${c.name} · ${c.cwe}`), facts([
+        [t("mcp.inspects"), c.inspects], [t("mcp.static"), c.static],
+        [t("mcp.confirm"), c.confirm], [t("mcp.fp"), c.false_positives],
+        [t("p3.mitigation"), c.mitigation], [t("p3.limitsone"), c.limits]]));
+      wrap.append(det);
+    }
+    return wrap;
+  }));
+  target.replaceChildren(...parts);
+}
+
+// --- supply chain -------------------------------------------------------------
+
+function renderSupply() {
+  const target = el("supply-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const depRun = runOf(audit, "dependencies");
+  const secRun = runOf(audit, "secrets");
+  if (moduleMissing(target, audit, depRun || secRun, "p3.notrun")) return;
+  const parts = [];
+  if (depRun) {
+    const d = depRun.detail || {};
+    const err = moduleError(depRun);
+    if (err) parts.push(err);
+    const eco = Object.entries(d.by_ecosystem || {}).map(([k, v]) => `${k} ${v}`).join(" · ");
+    const b = block(t("supply.deps"),
+      node("p", null, t("supply.components", d.components || 0, d.direct || 0, eco || "—")),
+      node("p", "muted", t("supply.manifests", (d.manifests || []).join(", ") || "—")));
+    const osv = d.osv || {};
+    b.append(node("p", osv.error ? "error" : "muted",
+                  osv.queried ? t("supply.osvdone", osv.asked || 0, osv.vulnerable || 0)
+                    : osv.error ? t("supply.osverror", osv.error) : t("supply.osvoff")));
+    const details = node("details", "block");
+    details.append(node("summary", null, t("supply.list")));
+    const holder = node("div");
+    details.append(holder);
+    details.addEventListener("toggle", async () => {
+      if (!details.open || holder.childElementCount) return;
+      holder.append(node("p", "muted", t("summary.loading")));
+      try {
+        const comps = await fetchOnce("components",
+          `/api/audits/${encodeURIComponent(audit.id)}/components`, audit);
+        holder.replaceChildren(table(
+          [{ text: t("supply.name") }, { text: t("supply.version") }, { text: t("supply.direct") },
+           { text: t("supply.scope") }, { text: t("supply.vulns") }],
+          comps.slice(0, 500).map((c) => row([
+            `${c.ecosystem} · ${c.name}`, c.version || "—",
+            c.direct ? t("supply.yes") : t("supply.no"), c.scope || "—",
+            c.vulns === null ? "—" : (c.vulns || []).map((v) => v.id).join(", ") || "0"]))));
+      } catch (e) {
+        holder.replaceChildren(node("p", "error", e.message));
+      }
+    });
+    b.append(details);
+    parts.push(b);
+    const ghosts = d.ghosts || [];
+    parts.push(block(t("supply.ghosts"), node("p", "muted", t("supply.ghostsnote")),
+      ghosts.length ? table([{ text: t("supply.name") }, { text: t("supply.manifest") }],
+        ghosts.map((g) => row([`${g.ecosystem} · ${g.name}`,
+          { className: "where", content: g.line ? `${g.manifest}:${g.line}` : g.manifest }])))
+        : node("p", null, t("supply.noghosts"))));
+    const depFindings = (audit.findings || []).filter((f) => f.category === "dependencies"
+                                                          && f.source === "rule");
+    if (depFindings.length) parts.push(block(t("supply.signals"), findingsTable(depFindings)));
+  }
+  if (secRun) {
+    const d = secRun.detail || {};
+    const err = moduleError(secRun);
+    if (err) parts.push(err);
+    const tl = d.timeline || { secrets: [] };
+    const b = block(t("supply.secrets"),
+      node("p", null, t("supply.secretsline", d.found || 0, tl.commits_read || 0,
+                        d.history_only || 0)),
+      node("p", "coverage-warning", t("supply.rotate")));
+    if ((tl.secrets || []).length) {
+      b.append(table(
+        [{ text: t("supply.kind") }, { text: t("supply.mask") }, { text: t("supply.first") },
+         { text: t("supply.removed") }, { text: t("supply.now") }],
+        tl.secrets.map((s) => row([
+          s.kind, { className: "where", content: s.mask },
+          s.first_commit ? `${shortSha(s.first_commit)}${s.before_history ? " *" : ""}` : "—",
+          (s.removed_in || []).map((r) => shortSha(r.commit)).join(", ") || "—",
+          s.present_at_head ? t("supply.yes") : t("supply.no")]))));
+      if (tl.secrets.some((s) => s.before_history)) {
+        b.append(node("p", "muted", t("supply.beforehistory")));
+      }
+    }
+    if (tl.truncated) b.append(node("p", "muted", t("supply.truncated")));
+    parts.push(b);
+  }
+  target.replaceChildren(...parts);
+}
+
+// --- attack surface -----------------------------------------------------------
+
+function renderSurface() {
+  const target = el("surface-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  const run = runOf(audit, "surface");
+  if (moduleMissing(target, audit, run, "p3.notrun")) return;
+  const d = run.detail || {};
+  const parts = [];
+  const err = moduleError(run);
+  if (err) parts.push(err);
+  const kinds = Object.entries(d.by_kind || {}).map(([k, v]) => `${t(`kind.${k}`)} ${v}`);
+  parts.push(node("p", null, kinds.join(" · ") || t("surface.none")));
+  if ((d.not_inventoried || []).length) {
+    parts.push(node("p", "muted", t("surface.notinv", d.not_inventoried.join(", "))));
+  }
+  if ((d.boundaries || []).length) {
+    parts.push(block(t("surface.boundaries"), node("p", "muted", t("surface.boundariesnote")),
+      table([{ text: t("surface.via") }, { text: t("surface.to") },
+             { text: t("surface.entries"), className: "num" },
+             { text: t("surface.noauth"), className: "num" }],
+        d.boundaries.map((x) => row([t(`kind.${x.via}`), t(`asset.${x.to}`),
+          { className: "num", content: String(x.entries) },
+          { className: "num", content: String(x.auth_none_seen) }])))));
+  }
+  if ((d.items || []).length) {
+    parts.push(block(t("surface.items"), table(
+      [{ text: t("mcp.kind") }, { text: t("surface.route") }, { text: t("findings.location") },
+       { text: t("surface.auth") }, { text: t("surface.touches") }],
+      d.items.map((i) => row([t(`kind.${i.kind}`),
+        [i.method, i.path || i.name].filter(Boolean).join(" ") || "—",
+        { className: "where", content: `${i.file}:${i.line}` },
+        t(`auth.${i.auth}`),
+        (i.touches || []).map((x) => t(`asset.${x}`)).join(", ") || "—"])))));
+  }
+  target.replaceChildren(...parts);
+}
+
+// --- what changed -------------------------------------------------------------
+
+function renderChanges() {
+  const target = el("changes-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  if (audit.status !== "done") {
+    target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("findings.failed")));
+    return;
+  }
+  const parts = [lazyBlock(t("changes.findings"), "diff",
+    `/api/audits/${encodeURIComponent(audit.id)}/diff`, audit, (d) => {
+      const wrap = document.createDocumentFragment();
+      if (!d.previous_audit) {
+        wrap.append(node("p", "muted", t("changes.first")));
+      } else {
+        wrap.append(node("p", null, t("changes.against", shortSha(d.previous_commit) || "—",
+                                      shortSha(d.commit) || "—")));
+        for (const k of ["new", "reintroduced", "fixed", "persisting"]) {
+          const items = d[k] || [];
+          const det = node("details", "block");
+          det.append(node("summary", null, `${t(`changes.${k}`)} · ${items.length}`));
+          if (items.length) {
+            det.append(table([{ text: t("findings.severity") }, { text: t("p3.finding") },
+                              { text: t("findings.location") }],
+              items.map((f) => row([severityNode(f.severity), f.title,
+                { className: "where", content: f.line ? `${f.file}:${f.line}` : f.file || "" }]))));
+          }
+          if (k !== "persisting") det.open = items.length > 0 && items.length <= 20;
+          wrap.append(det);
+        }
+      }
+      const c = d.changes;
+      const drift = block(t("changes.drift"));
+      if (!c) {
+        drift.append(node("p", "muted", t("p3.notrun")));
+      } else if (!c.compared) {
+        drift.append(node("p", "muted", c.reason || t("changes.first")));
+      } else {
+        drift.append(node("p", null, t("changes.files", c.files_changed,
+                                       (c.critical_changed || []).length,
+                                       (c.workflows_changed || []).length)));
+        if ((c.critical_changed || []).length) {
+          drift.append(table([{ text: t("coverage.file") }, { text: t("coverage.tier") }],
+            c.critical_changed.map((f) => row([{ className: "where", content: f.file },
+                                                t(RISK_TIERS[f.risk_tier] || "tier.5")]))));
+        }
+        drift.append(node("p", "muted", t("changes.driftnote")));
+        drift.append((c.drift || []).length ? table(
+          [{ text: t("changes.control") }, { text: t("findings.location") },
+           { text: t("changes.side") }, { text: t("changes.line") }],
+          c.drift.map((x) => row([x.label,
+            { className: "where", content: x.line ? `${x.file}:${x.line}` : x.file },
+            t(`side.${x.side}`), { className: "where", content: x.text }])))
+          : node("p", null, t("changes.nodrift")));
+      }
+      wrap.append(drift);
+      return wrap;
+    })];
+  if (audit.project_id) {
+    parts.push(lazyBlock(t("changes.dna"), "history",
+      `/api/projects/${audit.project_id}/history`, audit, (h) => {
+        const wrap = document.createDocumentFragment();
+        wrap.append(node("p", "muted", t("changes.recurrent", h.recurrent_fingerprints || 0)));
+        wrap.append(table(
+          [{ text: t("detail.commit") }, { text: t("changes.new"), className: "num" },
+           { text: t("changes.fixed"), className: "num" },
+           { text: t("changes.reintroduced"), className: "num" },
+           { text: t("changes.total"), className: "num" }],
+          (h.audits || []).map((a) => row([shortSha(a.commit_sha) || "—",
+            { className: "num", content: String(a.new) },
+            { className: "num", content: String(a.fixed) },
+            { className: "num", content: String(a.reintroduced) },
+            { className: "num", content: String(a.total) }]))));
+        return wrap;
+      }));
+  }
+  target.replaceChildren(...parts);
+}

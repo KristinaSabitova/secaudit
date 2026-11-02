@@ -95,6 +95,18 @@
         <li><a href="#attacker" data-section="attacker">
           <span data-i18n="nav.attacker">attacker</span>
           <span class="nav-indicator" data-indicator="attacker"></span></a></li>
+        <li><a href="#mcp" data-section="mcp">
+          <span data-i18n="nav.mcp">mcp</span>
+          <span class="nav-indicator" data-indicator="mcp"></span></a></li>
+        <li><a href="#supply" data-section="supply">
+          <span data-i18n="nav.supply">supply</span>
+          <span class="nav-indicator" data-indicator="supply"></span></a></li>
+        <li><a href="#surface" data-section="surface">
+          <span data-i18n="nav.surface">surface</span>
+          <span class="nav-indicator" data-indicator="surface"></span></a></li>
+        <li><a href="#changes" data-section="changes">
+          <span data-i18n="nav.changes">changes</span>
+          <span class="nav-indicator" data-indicator="changes"></span></a></li>
       </ul>
       <ul class="nav-list nav-secondary">
         <li><a href="#history" data-section="history">
@@ -178,6 +190,16 @@
               <option value="manipulated_agent" data-i18n="persona.manipulated_agent">manipulated agent</option>
             </select>
           </div>
+          <div class="field">
+            <label for="filter-assessment" data-i18n="filter.assessment">assessment</label>
+            <select id="filter-assessment">
+              <option value="" data-i18n="filter.all">all</option>
+              <option value="confirmed" data-i18n="assessment.confirmed">confirmed</option>
+              <option value="potential" data-i18n="assessment.potential">potential</option>
+              <option value="unverifiable" data-i18n="assessment.unverifiable">not verifiable</option>
+              <option value="discarded" data-i18n="assessment.discarded">discarded</option>
+            </select>
+          </div>
         </form>
         <p id="findings-count" class="muted"></p>
         <div id="findings-body"></div>
@@ -216,6 +238,34 @@
         <p class="question" data-i18n="attacker.question"></p>
         <p class="muted settings-intro" data-i18n="attacker.what"></p>
         <div id="attacker-body"></div>
+      </section>
+
+      <section class="view module" data-view="mcp" aria-labelledby="h-mcp" hidden>
+        <h1 id="h-mcp" data-i18n="nav.mcp">mcp</h1>
+        <p class="question" data-i18n="mcp.question"></p>
+        <p class="muted settings-intro" data-i18n="mcp.what"></p>
+        <div id="mcp-body"></div>
+      </section>
+
+      <section class="view module" data-view="supply" aria-labelledby="h-supply" hidden>
+        <h1 id="h-supply" data-i18n="nav.supply">supply</h1>
+        <p class="question" data-i18n="supply.question"></p>
+        <p class="muted settings-intro" data-i18n="supply.what"></p>
+        <div id="supply-body"></div>
+      </section>
+
+      <section class="view module" data-view="surface" aria-labelledby="h-surface" hidden>
+        <h1 id="h-surface" data-i18n="nav.surface">surface</h1>
+        <p class="question" data-i18n="surface.question"></p>
+        <p class="muted settings-intro" data-i18n="surface.what"></p>
+        <div id="surface-body"></div>
+      </section>
+
+      <section class="view module" data-view="changes" aria-labelledby="h-changes" hidden>
+        <h1 id="h-changes" data-i18n="nav.changes">changes</h1>
+        <p class="question" data-i18n="changes.question"></p>
+        <p class="muted settings-intro" data-i18n="changes.what"></p>
+        <div id="changes-body"></div>
       </section>
 
       <section class="view" data-view="history" aria-labelledby="h-history" hidden>

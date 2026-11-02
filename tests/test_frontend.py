@@ -145,7 +145,8 @@ def language_keys(language):
 
 class TestStructure:
     SECTIONS = ["summary", "findings", "parallax", "falsifiability", "memory",
-                "leverage", "attacker", "history", "settings"]
+                "leverage", "attacker", "mcp", "supply", "surface", "changes",
+                "history", "settings"]
 
     def test_every_section_has_a_link_and_a_view(self):
         for section in self.SECTIONS:

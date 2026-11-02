@@ -1569,3 +1569,39 @@ tr.fragile td:first-child {
   margin-top: 0.8em;
   align-items: flex-end;
 }
+
+/* Practice 3: one word per finding. The colour is never the only signal:
+   the word is always written out. */
+.badge-a-confirmed {
+  border-color: var(--sev-critical);
+  color: var(--sev-critical);
+  font-weight: 600;
+}
+
+.badge-a-potential {
+  border-color: var(--sev-medium);
+  color: var(--sev-medium);
+}
+
+.badge-a-unverifiable {
+  border-style: dashed;
+}
+
+.badge-a-discarded {
+  text-decoration: line-through;
+}
+
+.assessment-counts .badge {
+  margin-right: 0.3em;
+}
+
+.export-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+}
+
+.chain ul {
+  margin: 0.2em 0 0.8em;
+  padding-left: 1.2em;
+}
