@@ -173,6 +173,10 @@ dependencias, hallazgos y atacantes, con sus relaciones.
 - Cada nodo dice lo que **no se sabe** de él: ficheros sin leer, entradas sin
   autenticación vista, lenguajes sin inventariar, dependencias sin consultar.
 - Es un mapa de lo medido, no una copia ejecutable.
+- **Simular**: marca hallazgos de los caminos de ataque como *arreglar* o
+  *confirmar* y pulsa **recalcular caminos**. Verás qué caminos se cierran,
+  cuáles cambian (por ejemplo, de hipotético a sólido) y cuáles siguen
+  abiertos. No se ejecuta nada ni se guarda nada.
 
 ## 3. Ajustes
 

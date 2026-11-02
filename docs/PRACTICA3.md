@@ -59,8 +59,8 @@ auditado. Dos puntos se completan en la segunda parte:
 
 | # | Funcionalidad | Estado | Dónde |
 |---|---|---|---|
-| B10 | Dependencias, SBOM, OSV y mantenimiento | **nuevo** | `analysis/deps.py`: PyPI, npm, Go, crates.io, RubyGems, Packagist y Maven (solo versiones literales); CycloneDX 1.5 en `/sbom.cdx.json`. OSV con `SECAUDIT_OSV_CHECK=1`. Paquetes abandonados (sin release en 730 días) y deprecados con `SECAUDIT_ABANDONED_CHECK=1` (PyPI, npm, crates.io). La UI dice si solo hay dependencias directas por falta de lockfile |
-| B11 | Taint | **nuevo** (con límites) | `analysis/taint.py`. Python con ast, intraprocedimental: de `request.*`, `sys.argv`, `input()` y parámetros de rutas hasta SQL, shell, eval, rutas, SSRF, plantillas, deserialización, redirecciones y respuestas, cortado por saneadores conocidos. JS/TS por patrón, con confianza baja. Cada hallazgo guarda el flujo paso a paso y queda POTENCIAL |
+| B10 | Dependencias, SBOM, OSV y mantenimiento | **nuevo** | `analysis/deps.py`: PyPI, npm, Go, crates.io, RubyGems, Packagist y Maven/Gradle (`pom.xml` con propiedades literales del mismo pom y `dependencyManagement`; `build.gradle(.kts)` leído como texto, nunca evaluado; catálogos `libs.versions.toml`; `gradle.lockfile`); CycloneDX 1.5 en `/sbom.cdx.json`. OSV con `SECAUDIT_OSV_CHECK=1`. Paquetes abandonados (sin release en 730 días) y deprecados con `SECAUDIT_ABANDONED_CHECK=1` (PyPI, npm, crates.io). La UI dice si solo hay dependencias directas por falta de lockfile |
+| B11 | Taint | **nuevo** (con límites) | `analysis/taint.py`. Python con ast, entre funciones del mismo fichero (hasta tres llamadas de profundidad, con resúmenes por función): de `request.*`, `sys.argv`, `input()` y parámetros de rutas hasta SQL, shell, eval, rutas, SSRF, plantillas, deserialización, redirecciones y respuestas, cortado por saneadores conocidos. JS/TS por patrón, con confianza baja. Cada hallazgo guarda el flujo paso a paso y queda POTENCIAL |
 | B12 | Prompt injection | **existente + nuevo** | Instrucciones ocultas en ficheros de agente (`parallax.py`); envenenamiento de herramientas MCP (MCP03, MCP06) |
 | B13 | Impacto | **existente** | `leverage.py`, `attacker.py` |
 | B14 | Diferencial de PR y commits | **nuevo** | `analysis/drift.py`: hallazgos nuevos, corregidos, persistentes y reintroducidos. Se compara con la auditoría anterior, con una base elegida (`base_ref`, rama o commit) o, para un pull request, con su base. El webhook atiende `pull_request` (opened, synchronize, reopened) y audita el commit de cabeza; un fork fuera de la allowlist se ignora. No se comenta en el PR |
@@ -87,8 +87,8 @@ auditado. Dos puntos se completan en la segunda parte:
 | C30 | Blue Team | **nuevo** | `reports.blue_team`: plantillas de detección y esqueleto Sigma, siempre marcadas «NO VALIDADO», en JSON, HTML y en la UI (botón en cada hallazgo) |
 | C31 | Explain Like an Analyst | **nuevo** | Tres vistas en la UI y en el informe HTML (dirección, desarrollo, analista), sección «Vistas», y `assessment.why` |
 | C32 | Replay | **nuevo** | `POST /api/audits/{id}/replay` relanza la auditoría sobre el mismo commit exacto, con las versiones actuales de los motores. `GET .../reproducibility` compara: hallazgos en ambas, solo en una, evaluación cambiada, acuerdo y si las reglas coinciden. Con un modelo, la diferencia mide también su variabilidad |
-| C33 | Challenge Mode | **nuevo** (escáneres) | `analysis/benchmark.py` y un corpus propio en `benchmark/`: 34 etiquetas en 7 repositorios, con controles limpios y engaños. Ejecutado: ver §7. Mide los escáneres deterministas; la auditoría del modelo hay que puntuarla con el backend de cada uno |
-| C34 | Digital Twin | **nuevo** | `analysis/twin.py` y la sección «Gemelo»: áreas, entradas, activos, servicios, dependencias, hallazgos y atacantes, con sus relaciones y lo que se desconoce de cada nodo. Es un mapa, no una copia ejecutable; no simula cambios (para eso está What If) |
+| C33 | Challenge Mode | **nuevo** (escáneres) | `analysis/benchmark.py` y un corpus propio en `benchmark/`: 38 etiquetas en 8 repositorios, con controles limpios y engaños. Ejecutado: ver §7. Mide los escáneres deterministas; la auditoría del modelo hay que puntuarla con el backend de cada uno |
+| C34 | Digital Twin | **nuevo** | `analysis/twin.py` y la sección «Gemelo»: áreas, entradas, activos, servicios, dependencias, hallazgos y atacantes, con sus relaciones y lo que se desconoce de cada nodo. Es un mapa, no una copia ejecutable. Simulación (`POST .../twin/simulate`): arreglar o confirmar hallazgos (y retirar capacidades del agente o divergencias) y recalcular los caminos de ataque: cuáles se cierran, cambian o se abren |
 | C35 | Evidence Chain | **nuevo** | `analysis/evidence_chain.py`, con hash SHA-256 de la cadena y del fragmento citado |
 
 ### D. Auditor de seguridad MCP
@@ -173,6 +173,7 @@ Todos exigen ser el dueño de la auditoría; la de otro usuario responde 404.
 | `GET /api/audits/{id}/report.pdf` | Informe PDF |
 | `GET /api/audits/{id}/findings/{fid}/blue-team` | Plantillas de detección, NO VALIDADAS |
 | `GET /api/audits/{id}/twin` | Gemelo digital |
+| `POST /api/audits/{id}/twin/simulate` | Caminos de ataque tras arreglar o confirmar hallazgos (no escribe nada) |
 | `POST` y `GET /api/audits/{id}/what-if` | Probar un parche en un clon temporal; historial |
 | `POST /api/audits/{id}/replay` | Repetir la auditoría sobre el mismo commit |
 | `GET /api/audits/{id}/reproducibility` | Comparación de un replay con su original |
@@ -276,15 +277,19 @@ de Python, que se leen con ast.
   cuenta como falso positivo. La línea temporal se limita al historial
   descargado (`SECAUDIT_HISTORY_DEPTH`).
 - Dependencias:
-  - Maven solo con versiones literales; una versión que viene de una
-    propiedad (`${...}`) se deja sin versión, no se adivina;
-  - Gradle no se inventaría;
+  - Maven y Gradle: una versión que viene de un pom padre, un BOM, una
+    propiedad definida en otro fichero, una variable no literal o un rango
+    dinámico (`1.+`) se deja sin versión, no se adivina. Gradle se lee como
+    texto: lo que un plugin o un script añade en ejecución no se ve;
   - las transitivas solo aparecen si hay lockfile, y la UI avisa cuando no
     lo hay;
   - el mantenimiento solo se consulta en PyPI, npm y crates.io.
 - Taint:
-  - es intraprocedimental: no sigue flujos a través de funciones auxiliares,
-    atributos, contenedores ni otros ficheros;
+  - sigue funciones auxiliares del mismo fichero (hasta tres llamadas de
+    profundidad), con confianza baja en esos flujos; no sigue atributos,
+    contenedores, funciones que comparten nombre ni otros ficheros. Una
+    función desconocida (de otro fichero o de una librería) se trata de forma
+    conservadora: si recibe la entrada, su resultado se da por contaminado;
   - reconoce los saneadores por nombre;
   - lee JS/TS por patrón, con confianza baja;
   - no cubre otros lenguajes, y lo dice en `not_analysed`.
@@ -304,8 +309,10 @@ de Python, que se leen con ast.
   en un servicio externo requiere un token con permisos y una autorización
   que no se ha pedido.
 - Las plantillas Blue Team no están validadas contra telemetría real.
-- El gemelo digital es un mapa de lo medido: no se puede ejecutar ni simula
-  cambios. La ausencia de un nodo no significa que la cosa no exista.
+- El gemelo digital es un mapa de lo medido: no se puede ejecutar. Su
+  simulación recalcula caminos sobre el grafo que midió la auditoría; un
+  camino que el grafo no contiene no se puede cerrar ni abrir ahí. La
+  ausencia de un nodo no significa que la cosa no exista.
 - El benchmark mide los escáneres deterministas sobre un corpus escrito por
   quien escribió los escáneres. Es optimista y no generalizable (ver
   `benchmark/README.md`).
@@ -315,15 +322,15 @@ de Python, que se leen con ast.
 Lo que sigue no está implementado:
 
 - **Ejecución de tests en What If**, con un sandbox (ver §5).
-- **Simulación sobre el gemelo** (quitar un control, añadir una entrada y
-  recalcular caminos). Hoy el gemelo solo muestra.
-- **Taint interprocedimental y JS con parser real** (dependencia nueva).
+- **Simulación del gemelo que añada entradas o controles nuevos** (hoy se
+  puede arreglar o confirmar lo que existe, no inventar lo que no está).
+- **Taint entre ficheros y JS con parser real** (dependencia nueva).
 - **Comentarios o checks en el PR** (requiere token de GitHub con escritura).
 - **Validación de las plantillas Blue Team** contra telemetría.
 - **Benchmark independiente:** etiquetar repositorios que nadie de aquí haya
   escrito (OWASP NodeGoat, DVWA…) y puntuar también la auditoría del modelo
   con un backend real.
-- **Gradle** y versiones de Maven por propiedad.
+- **Poms padre y BOM** de Maven (requerirían descargar otros poms).
 - **Fallos medidos por el benchmark:** `mcp10.unconfined_path` no reconoce
   `Path(param).read_text()`; `mcp09.undeclared_server` da falsos positivos en
   servidores pensados para que los configure quien los instala; un token en
@@ -336,10 +343,10 @@ Todos los resultados son reales, del 2026-11-02:
 
 | Comando | Resultado |
 |---|---|
-| `python3 -m pytest tests/ -q -p no:cacheprovider` | 918 passed |
-| `python3 -m pytest tests/test_practica3b.py -q -p no:cacheprovider` | 48 passed |
+| `python3 -m pytest tests/ -q -p no:cacheprovider` | 928 passed |
+| `python3 -m pytest tests/test_practica3b.py -q -p no:cacheprovider` | 58 passed |
 | `node --check web/static/app.js` | ok |
-| `python3 -m analysis.benchmark --corpus benchmark` | 34 etiquetas, 33 TP, 3 FP, 1 FN; precisión 0.917, recall 0.971 |
+| `python3 -m analysis.benchmark --corpus benchmark` | 38 etiquetas, 37 TP, 3 FP, 1 FN; precisión 0.925, recall 0.974 |
 | `python3 -m analysis.mcp_audit --check-taxonomy` | coincide: 10 categorías, edición 2025 |
 
 Qué cubren los tests de la segunda parte (`tests/test_practica3b.py`):
@@ -382,6 +389,17 @@ Qué cubren los tests de la segunda parte (`tests/test_practica3b.py`):
   no validada da 409.
 - El benchmark se ejecuta y el corpus no guarda ninguna cadena con forma de
   credencial.
+
+Tercera parte (después de la versión 0.4.0, en la misma fecha):
+
+- Maven con propiedades, Gradle, catálogos de versiones y `gradle.lockfile`.
+- Taint entre funciones del mismo fichero, con un caso nuevo en el corpus
+  (`flask-helpers`). Lo escribió quien escribió el análisis, después de
+  escribirlo, y el benchmark lo dice. Al añadirlo apareció un falso positivo
+  real (el resultado de una función auxiliar que sanea con `int()` se daba
+  por contaminado) y se corrigió.
+- Simulación sobre el gemelo, comprobada también en el navegador con la demo
+  local: arreglar MCP05 cerró 4 de 8 caminos.
 
 Durante esta parte los tests encontraron tres fallos en código nuevo, ya
 corregidos:

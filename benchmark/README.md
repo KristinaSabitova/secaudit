@@ -1,6 +1,6 @@
 # Labelled benchmark corpus (C33)
 
-Seven small repositories, written for this benchmark, with what each one
+Eight small repositories, written for this benchmark, with what each one
 contains labelled in `labels/<case>.json`:
 
 | case | kind | labels | what is planted |
@@ -9,6 +9,7 @@ contains labelled in `labels/<case>.json`:
 | express-api | vulnerable | 7 | command, SQL, path, redirect, reflected response, SSRF, eval |
 | mcp-tools | vulnerable | 10 | OWASP MCP01, 02, 03, 04 (x2), 05, 07, 08, 10 and the leaked token |
 | supply-chain | vulnerable | 4 | git dependencies (npm, Cargo), an http:// lockfile entry, curl piped into sh in an MCP config |
+| flask-helpers | vulnerable | 4 | command, SQL and path flows through helper functions of the same file (added after the inter-procedural taint, by its author) |
 | clean-python | clean | 0 | the safe version of each flask-shop handler |
 | clean-mcp | clean | 0 | a confined, logged, pinned MCP server |
 | clean-express | clean | 0 | the safe version of express-api |
@@ -37,12 +38,17 @@ your own backend, scored with
 
 | | |
 |---|---|
-| labels | 34 over 7 repositories (4 vulnerable, 3 clean) |
-| true positives | 33 |
+| labels | 38 over 8 repositories (5 vulnerable, 3 clean) |
+| true positives | 37 |
 | false positives | 3 (1 on a clean repository) |
 | false negatives | 1 |
-| precision | 0.917 |
-| recall | 0.971 |
+| precision | 0.925 |
+| recall | 0.974 |
+
+The first run, before flask-helpers was added, gave 34 labels, 33 true
+positives, 3 false positives and 1 false negative (precision 0.917, recall
+0.971). Adding flask-helpers found one real false positive, now fixed: the
+result of a helper that sanitises with `int()` was treated as tainted.
 
 What it missed or got wrong:
 
@@ -61,6 +67,6 @@ The corpus was written by the same people who wrote the scanners, knowing
 what the scanners look for. That makes the result optimistic. It is
 evidence that the scanners do what they claim on cases like these, not an
 estimate of precision or recall on real code. 34 labels is just over the
-30 below which `analysis/benchmark.py` calls a sample small. Real numbers
+30 below which `analysis/benchmark.py` calls a sample small (38 now). Real numbers
 need repositories nobody here wrote, such as OWASP NodeGoat, labelled
 independently.

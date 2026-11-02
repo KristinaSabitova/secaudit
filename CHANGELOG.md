@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Added
+- Maven versions taken from properties the same pom defines, and from
+  `dependencyManagement`. Gradle `build.gradle(.kts)` is read as text and
+  never evaluated, together with version catalogs and `gradle.lockfile`.
+  Gradle repositories over http are flagged.
+- Python taint follows helper functions of the same file, up to three calls
+  deep, into and out of them.
+- Twin simulation (`POST /api/audits/{id}/twin/simulate` and a panel in the
+  Twin section). Fix or confirm findings and see which attack paths close,
+  change or open. Nothing is run or written.
+- A benchmark case with flows through helper functions (38 labels now).
+
+Fixed
+- The result of a summarised helper that sanitises its input is no longer
+  treated as tainted.
+
 ## 0.4.0 — 2026-11-02
 
 Added

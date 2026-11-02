@@ -646,11 +646,12 @@ hallazgos llevan `source: "rule"` y un `rule_id`:
 - secretos, con línea temporal de exposición: primer commit, eliminación y si
   el secreto sigue en HEAD;
 - dependencias de manifiestos y lockfiles (PyPI, npm, Go, crates.io,
-  RubyGems, Packagist, Maven), con SBOM CycloneDX, señales de confusión de
+  RubyGems, Packagist, Maven, Gradle), con SBOM CycloneDX, señales de confusión de
   dependencias, dependencias fantasma y, si se activa, paquetes abandonados o
   deprecados;
 - flujos de taint desde la entrada de la petición hasta sumideros
-  peligrosos: Python con ast, y JS/TS por patrón;
+  peligrosos: Python con ast, siguiendo funciones auxiliares del mismo
+  fichero, y JS/TS por patrón;
 - un auditor OWASP MCP Top 10 para MCP01-MCP10, cuyos hallazgos también son
   pasos de los caminos de ataque.
 
@@ -664,7 +665,9 @@ Otras etapas aportan contexto, no hallazgos:
 - la deriva de seguridad frente a la auditoría anterior, una base elegida o
   la base de un pull request.
 
-Un gemelo digital lo reúne todo, con lo que se desconoce de cada nodo.
+Un gemelo digital lo reúne todo, con lo que se desconoce de cada nodo, y
+simula arreglar o confirmar hallazgos para ver qué caminos de ataque se
+cierran.
 
 Cada hallazgo tiene una evaluación, **CONFIRMADO**, **POTENCIAL**,
 **DESCARTADO** o **NO VERIFICABLE**, y una cadena de evidencia:

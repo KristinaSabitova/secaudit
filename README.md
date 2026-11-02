@@ -629,10 +629,10 @@ findings carry `source: "rule"` and a `rule_id`:
 - secrets, with an exposure timeline: first commit, removal and whether the
   secret is still at HEAD;
 - dependencies from manifests and lockfiles (PyPI, npm, Go, crates.io,
-  RubyGems, Packagist, Maven), with a CycloneDX SBOM, dependency-confusion
+  RubyGems, Packagist, Maven, Gradle), with a CycloneDX SBOM, dependency-confusion
   signals, ghost dependencies and opt-in stale/deprecated checks;
-- taint flows from request input to dangerous sinks: Python with ast, and
-  JS/TS by pattern;
+- taint flows from request input to dangerous sinks: Python with ast,
+  following helper functions of the same file, and JS/TS by pattern;
 - an OWASP MCP Top 10 auditor for MCP01-MCP10, whose findings also become
   attack-path steps.
 
@@ -646,7 +646,8 @@ More stages add context rather than findings:
 - security drift against the previous audit, a chosen base, or a pull
   request's base.
 
-A digital twin maps all of it, marking what is unknown about each node.
+A digital twin maps all of it, marking what is unknown about each node, and
+simulates fixing or confirming findings to see which attack paths close.
 
 Every finding has an assessment, **confirmed**, **potential**, **discarded** or
 **unverifiable**, and an evidence chain:
