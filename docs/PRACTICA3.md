@@ -432,7 +432,11 @@ corregidos:
 
 ## 8. Despliegue
 
-No se ha desplegado nada. Para desplegar hay que:
+Desplegado el 2026-11-02 en secaudit.ksabitova.dev, con copia previa de la
+base de datos. Las migraciones `0016`–`0018` se aplicaron al arrancar, el
+análisis con tree-sitter está activo y el sandbox y el informe en el PR están
+apagados. Producción no tenía reglas inmunes que aprobar. Para otro
+despliegue hay que:
 
 1. Aplicar las migraciones `0016`, `0017` y `0018`; la próxima será la `0019`.
 2. **Tras desplegar, aprobar las reglas inmunes existentes** que se quieran
