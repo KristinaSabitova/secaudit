@@ -80,6 +80,9 @@
         <li><a href="#findings" data-section="findings">
           <span data-i18n="nav.findings">findings</span>
           <span class="nav-indicator" data-indicator="findings"></span></a></li>
+        <li><a href="#views" data-section="views">
+          <span data-i18n="nav.views">views</span>
+          <span class="nav-indicator" data-indicator="views"></span></a></li>
         <li><a href="#parallax" data-section="parallax">
           <span data-i18n="nav.parallax">parallax</span>
           <span class="nav-indicator" data-indicator="parallax"></span></a></li>
@@ -107,6 +110,9 @@
         <li><a href="#changes" data-section="changes">
           <span data-i18n="nav.changes">changes</span>
           <span class="nav-indicator" data-indicator="changes"></span></a></li>
+        <li><a href="#twin" data-section="twin">
+          <span data-i18n="nav.twin">twin</span>
+          <span class="nav-indicator" data-indicator="twin"></span></a></li>
       </ul>
       <ul class="nav-list nav-secondary">
         <li><a href="#history" data-section="history">
@@ -205,6 +211,13 @@
         <div id="findings-body"></div>
       </section>
 
+      <section class="view module" data-view="views" aria-labelledby="h-views" hidden>
+        <h1 id="h-views" data-i18n="nav.views">views</h1>
+        <p class="question" data-i18n="views.question"></p>
+        <p class="muted settings-intro" data-i18n="views.what"></p>
+        <div id="views-body"></div>
+      </section>
+
       <section class="view module" data-view="parallax" aria-labelledby="h-parallax" hidden>
         <h1 id="h-parallax" data-i18n="nav.parallax">parallax</h1>
         <p class="question" data-i18n="parallax.question"></p>
@@ -268,6 +281,13 @@
         <div id="changes-body"></div>
       </section>
 
+      <section class="view module" data-view="twin" aria-labelledby="h-twin" hidden>
+        <h1 id="h-twin" data-i18n="nav.twin">twin</h1>
+        <p class="question" data-i18n="twin.question"></p>
+        <p class="muted settings-intro" data-i18n="twin.what"></p>
+        <div id="twin-body"></div>
+      </section>
+
       <section class="view" data-view="history" aria-labelledby="h-history" hidden>
         <h1 id="h-history" data-i18n="nav.history">history</h1>
         <form id="audit-form" class="audit-form" autocomplete="off">
@@ -275,6 +295,23 @@
           <input id="repo-url" name="repo-url" type="text" spellcheck="false"
                  placeholder="https://github.com/owner/repo" required>
           <button type="submit" data-i18n="audit.run">run audit</button>
+          <details class="audit-advanced">
+            <summary data-i18n="audit.advanced">options</summary>
+            <div class="field">
+              <label for="audit-branch" data-i18n="audit.branch">branch</label>
+              <input id="audit-branch" type="text" spellcheck="false" placeholder="main">
+            </div>
+            <div class="field">
+              <label for="audit-base" data-i18n="audit.base">compare with</label>
+              <input id="audit-base" type="text" spellcheck="false"
+                     data-i18n-placeholder="audit.baseph" placeholder="main or a commit sha">
+            </div>
+            <div class="field">
+              <label for="audit-commit" data-i18n="audit.commit">exact commit</label>
+              <input id="audit-commit" type="text" spellcheck="false"
+                     placeholder="40-character sha">
+            </div>
+          </details>
         </form>
         <p id="form-error" class="error" hidden></p>
         <h2><span data-i18n="audits.title">audits</span>

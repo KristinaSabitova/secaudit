@@ -1605,3 +1605,84 @@ tr.fragile td:first-child {
   margin: 0.2em 0 0.8em;
   padding-left: 1.2em;
 }
+
+.view-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em;
+  margin: 0.6em 0 1em;
+}
+
+.view-card .view-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3em;
+  margin: 0;
+}
+
+.twin {
+  display: grid;
+  grid-template-columns: minmax(12em, 1fr) 2fr;
+  gap: 1em;
+  align-items: start;
+}
+
+.twin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 32em;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+
+.twin-list li {
+  padding: 0.15em 0.4em 0.15em 0;
+  overflow-wrap: anywhere;
+}
+
+.twin-detail ul {
+  padding-left: 1.2em;
+}
+
+@media (max-width: 720px) {
+  .twin {
+    grid-template-columns: 1fr;
+  }
+  .twin-list {
+    border-right: none;
+    max-height: 16em;
+  }
+}
+
+textarea.patch {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  margin: 0.4em 0;
+  background: var(--surface);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5em;
+}
+
+ol.flow {
+  padding-left: 1.4em;
+}
+
+ol.flow li {
+  margin: 0.2em 0;
+  overflow-wrap: anywhere;
+}
+
+.audit-advanced {
+  flex-basis: 100%;
+  margin-top: 0.4em;
+}
+
+.audit-advanced .field {
+  margin: 0.4em 0;
+}

@@ -7,11 +7,11 @@ const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 const ACTIVE_STATUSES = new Set(["pending", "running"]);
 const POLL_MS = 3000;
 
-const SECTIONS = ["summary", "findings", "parallax", "falsifiability", "memory",
-                  "leverage", "attacker", "mcp", "supply", "surface", "changes",
+const SECTIONS = ["summary", "findings", "views", "parallax", "falsifiability", "memory",
+                  "leverage", "attacker", "mcp", "supply", "surface", "changes", "twin",
                   "history", "settings"];
 // The sections that need an audit to show anything; the rest stand alone.
-const AUDIT_SECTIONS = new Set(SECTIONS.slice(0, 11));
+const AUDIT_SECTIONS = new Set(SECTIONS.slice(0, 13));
 // Each module section, the module_runs name it reads, and the phase it lands in.
 const MODULES = {
   parallax: { run: "parallax", phase: 5 },
@@ -651,6 +651,142 @@ const TEXT = {
     "p3.snippethash": "snippet sha256",
     "p3.checks": "Checks",
     "p3.counterfactuals": "Exploitation conditions",
+    "nav.views": "Views",
+    "nav.twin": "Digital twin",
+    "views.question": "What does this audit mean for each reader?",
+    "views.what": "Three readings of the same findings and the same evidence: what is at stake, what to fix and where, and what each conclusion rests on.",
+    "views.intro": "Same evidence in every view; only the reading changes.",
+    "views.exec": "Executive",
+    "views.dev": "Developer",
+    "views.analyst": "Analyst",
+    "views.stake": "What is at stake",
+    "views.execline": (n, c, s) => `${n} finding(s) still standing, ${c} confirmed, ${s} critical or high.`,
+    "views.execpaths": (n, c) => `${n} attack path(s), ${c} reaching something critical. Every path is argued from the code, never demonstrated.`,
+    "views.top": "Most severe",
+    "views.devnote": "Where, the code, and what to change. Discarded findings are left out.",
+    "views.analystnote": "Every finding, discarded ones included, with how it was assessed. Open one for its evidence chain.",
+    "twin.question": "What is this system made of, and where are the unknowns?",
+    "twin.what": "A navigable model of the audited commit built from what the modules measured: areas of code, entry points, assets, services, dependencies, findings and attack paths. It is a map, not an executable copy.",
+    "twin.note": "Built from the audit's measurements. Every attack path is hypothetical: nothing was run. A missing node is not a missing thing.",
+    "twin.counts": (n, e, u) => `${n} node(s), ${e} link(s); ${u} node(s) with something unknown.`,
+    "twin.type.area": "Areas",
+    "twin.type.entry": "Entries",
+    "twin.type.asset": "Assets",
+    "twin.type.service": "Services",
+    "twin.type.dependency": "Dependencies",
+    "twin.type.finding": "Findings",
+    "twin.type.persona": "Attackers",
+    "twin.type.jewel": "Targets",
+    "twin.pick": "Pick a node to see what it links to and what is unknown about it.",
+    "twin.unknown": "Unknown",
+    "twin.nounknown": "Nothing flagged as unknown.",
+    "twin.links": "Links",
+    "twin.rel.contains": "contains",
+    "twin.rel.touches": "touches",
+    "twin.rel.depends_on": "depends on",
+    "twin.rel.affects": "affects",
+    "twin.rel.reaches": "reaches",
+    "twin.rel.crosses": "crosses into",
+    "twin.rel.runs": "runs",
+    "attacker.hypothetical": "hypothetical",
+    "attacker.hypotheticalnote": "argued from the code; no step was executed",
+    "blue.show": "detection proposal (Blue Team)",
+    "blue.none": "No detection template for this category.",
+    "blue.title": "Detection proposal",
+    "blue.log": "log",
+    "blue.detect": "detect",
+    "whatif.title": "What if? Try a fix on a copy",
+    "whatif.intro": "Paste a unified diff. It is applied to a temporary copy of the audited commit; the original repository is never touched and none of its code is run. The repository's tests are not run.",
+    "whatif.patch": "patch (unified diff)",
+    "whatif.run": "try this fix",
+    "whatif.running": "cloning the commit and measuring the fix…",
+    "whatif.failed": "The fix could not be evaluated.",
+    "whatif.verdict.promising": "Promising: the cited code is gone and nothing new appeared",
+    "whatif.verdict.introduces_issues": "The fix introduces something to look at",
+    "whatif.verdict.not_shown": "Not shown to fix the finding",
+    "whatif.cited": "cited code still there",
+    "whatif.gone": "rule findings gone",
+    "whatif.new": "new rule findings",
+    "whatif.drift": "controls weakened by the patch",
+    "whatif.immune": "approved immune rules matching",
+    "whatif.immuneoff": "not run",
+    "whatif.untouched": "original untouched",
+    "whatif.tests": "Tests",
+    "whatif.diff": "the applied diff",
+    "memory.approval": "approval",
+    "memory.approved": (who) => `approved by ${who}`,
+    "memory.pending": "waiting for approval: not used yet",
+    "memory.approve": "approve",
+    "memory.revoke": "revoke",
+    "replay.title": "Replay",
+    "replay.intro": "Audit the same commit again with the engine and settings in force now, and compare. A model does not answer twice the same; deterministic rules should.",
+    "replay.run": "replay this audit",
+    "replay.compare": "Against the original",
+    "replay.agreement": (a, both, o, r) => `Agreement ${a}: ${both} finding(s) in both, ${o} only in the original, ${r} only in the replay.`,
+    "replay.rulesagree": "Rule findings agree exactly.",
+    "replay.rulesdiffer": "Rule findings differ: the engine or its settings changed.",
+    "replay.note": "Model findings vary between runs: disagreement there is expected and measured, not hidden.",
+    "replay.only_original": "Only in the original",
+    "replay.only_replay": "Only in the replay",
+    "mcp.check": "check the taxonomy against the official page now",
+    "mcp.checkfailed": (e) => `Could not check (${e}): the pinned version is still the one in use.`,
+    "mcp.checkok": (at, ed) => `Matches the official OWASP MCP Top 10 (edition ${ed}), checked ${at}.`,
+    "mcp.checkdiff": (d) => `The official names differ: ${d}`,
+    "surface.services": "Services",
+    "surface.servicesnote": "Containers, datastores, third-party SDKs and external hosts named in the code and its configuration.",
+    "surface.ports": "published ports",
+    "surface.flags": "flags",
+    "surface.datastores": "datastores",
+    "surface.thirdparty": "third-party services",
+    "surface.hosts": "external hosts",
+    "surface.noservices": "No services found in the code.",
+    "surface.novalidation": "no validation seen",
+    "surface.validation": "validation",
+    "validation.declared": "seen",
+    "validation.none_seen": "not seen",
+    "taint.title": "Taint: source to sink",
+    "taint.line": (l, k) => `Analysed: ${l}. Flows by sink: ${k}.`,
+    "taint.flow": "Flow",
+    "taint.step.source": "source",
+    "taint.step.assign": "through",
+    "taint.step.sink": "sink",
+    "claims.title": "Documentation against code",
+    "claims.intro": "Security promises in README, SECURITY and docs, and whether the code shows them.",
+    "claims.none": "The documentation makes no security claim this checks.",
+    "claims.lowers": "The documentation promises controls the code does not show: trust the code, not the README.",
+    "claims.claim": "claim",
+    "claims.status": "status",
+    "claims.said": "said in",
+    "claims.code": "in the code",
+    "claims.backed": "backed",
+    "claims.unbacked": "not seen in code",
+    "claims.contradicted": "contradicted",
+    "dead.title": "Apparently unused code",
+    "dead.note": "Functions, files and blueprints nothing in the repository mentions. Reflection, plugins and dynamic imports can still reach them.",
+    "dead.none": "Nothing apparently unused.",
+    "dead.function": "function",
+    "dead.class": "class",
+    "dead.export": "export",
+    "dead.file": "file",
+    "dead.blueprint": "blueprint not registered",
+    "supply.maintdone": (n, s, d, days) => `Registries asked about ${n} direct dependency(ies): ${s} with no release in ${days} days, ${d} deprecated.`,
+    "supply.maintoff": "Maintenance not checked: registries are only asked with SECAUDIT_ABANDONED_CHECK=1 (package names leave the server).",
+    "supply.directonly": "No lockfile: only direct dependencies are known; transitive ones need a lockfile.",
+    "supply.maint": "maintenance",
+    "supply.deprecated": "deprecated",
+    "supply.days": (d) => `${d} days since release`,
+    "detail.pr": "pull request",
+    "detail.base": "compared with",
+    "detail.replayof": "replay of",
+    "trigger.replay": "replay",
+    "changes.pr": (n) => `Pull request #${n}: the head compared with its base.`,
+    "changes.replay": "A replay: compared with the audit it repeats.",
+    "changes.basenoaudit": (b) => `No finished audit of ${b} to compare findings with; the code changes are below.`,
+    "audit.advanced": "options",
+    "audit.branch": "branch",
+    "audit.base": "compare with (branch or commit)",
+    "audit.baseph": "main or a commit sha",
+    "audit.commit": "exact commit",
     "p3.discarded": "Discarded hypotheses",
     "p3.unknowns": "Unknowns",
     "p3.showchain": "show the evidence chain",
@@ -1347,6 +1483,142 @@ const TEXT = {
     "p3.snippethash": "sha256 del fragmento",
     "p3.checks": "Comprobaciones",
     "p3.counterfactuals": "Condiciones de explotación",
+    "nav.views": "Vistas",
+    "nav.twin": "Gemelo digital",
+    "views.question": "¿Qué significa esta auditoría para cada lector?",
+    "views.what": "Tres lecturas de los mismos hallazgos y la misma evidencia: qué está en juego, qué corregir y dónde, y en qué se apoya cada conclusión.",
+    "views.intro": "La misma evidencia en todas las vistas; solo cambia la lectura.",
+    "views.exec": "Dirección",
+    "views.dev": "Desarrollo",
+    "views.analyst": "Analista",
+    "views.stake": "Qué está en juego",
+    "views.execline": (n, c, s) => `${n} hallazgo(s) en pie, ${c} confirmados, ${s} críticos o altos.`,
+    "views.execpaths": (n, c) => `${n} camino(s) de ataque, ${c} hasta algo crítico. Todos se argumentan desde el código; ninguno se ha demostrado.`,
+    "views.top": "Lo más grave",
+    "views.devnote": "Dónde, el código y qué cambiar. Los descartados no aparecen.",
+    "views.analystnote": "Todos los hallazgos, descartados incluidos, con cómo se evaluaron. Abre uno para ver su cadena de evidencia.",
+    "twin.question": "¿De qué está hecho este sistema y dónde están las incógnitas?",
+    "twin.what": "Un modelo navegable del commit auditado, construido con lo que midieron los módulos: zonas de código, puntos de entrada, activos, servicios, dependencias, hallazgos y caminos de ataque. Es un mapa, no una copia ejecutable.",
+    "twin.note": "Construido con las mediciones de la auditoría. Todos los caminos de ataque son hipotéticos: no se ejecutó nada. Que falte un nodo no significa que falte la cosa.",
+    "twin.counts": (n, e, u) => `${n} nodo(s), ${e} enlace(s); ${u} nodo(s) con algo desconocido.`,
+    "twin.type.area": "Zonas",
+    "twin.type.entry": "Entradas",
+    "twin.type.asset": "Activos",
+    "twin.type.service": "Servicios",
+    "twin.type.dependency": "Dependencias",
+    "twin.type.finding": "Hallazgos",
+    "twin.type.persona": "Atacantes",
+    "twin.type.jewel": "Objetivos",
+    "twin.pick": "Elige un nodo para ver con qué enlaza y qué se desconoce de él.",
+    "twin.unknown": "Desconocido",
+    "twin.nounknown": "Nada marcado como desconocido.",
+    "twin.links": "Enlaces",
+    "twin.rel.contains": "contiene",
+    "twin.rel.touches": "toca",
+    "twin.rel.depends_on": "depende de",
+    "twin.rel.affects": "afecta a",
+    "twin.rel.reaches": "alcanza",
+    "twin.rel.crosses": "entra en",
+    "twin.rel.runs": "ejecuta",
+    "attacker.hypothetical": "hipotético",
+    "attacker.hypotheticalnote": "argumentado desde el código; no se ejecutó ningún paso",
+    "blue.show": "propuesta de detección (Blue Team)",
+    "blue.none": "No hay plantilla de detección para esta categoría.",
+    "blue.title": "Propuesta de detección",
+    "blue.log": "registrar",
+    "blue.detect": "detectar",
+    "whatif.title": "¿Y si…? Prueba un arreglo en una copia",
+    "whatif.intro": "Pega un diff unificado. Se aplica a una copia temporal del commit auditado; el repositorio original no se toca y no se ejecuta nada de su código. Los tests del repositorio no se ejecutan.",
+    "whatif.patch": "parche (diff unificado)",
+    "whatif.run": "probar este arreglo",
+    "whatif.running": "clonando el commit y midiendo el arreglo…",
+    "whatif.failed": "No se pudo evaluar el arreglo.",
+    "whatif.verdict.promising": "Prometedor: el código citado ya no está y no ha aparecido nada nuevo",
+    "whatif.verdict.introduces_issues": "El arreglo introduce algo que revisar",
+    "whatif.verdict.not_shown": "No se ha visto que corrija el hallazgo",
+    "whatif.cited": "el código citado sigue ahí",
+    "whatif.gone": "hallazgos de regla que desaparecen",
+    "whatif.new": "hallazgos de regla nuevos",
+    "whatif.drift": "controles debilitados por el parche",
+    "whatif.immune": "reglas inmunes aprobadas que coinciden",
+    "whatif.immuneoff": "no ejecutadas",
+    "whatif.untouched": "original sin tocar",
+    "whatif.tests": "Tests",
+    "whatif.diff": "el diff aplicado",
+    "memory.approval": "aprobación",
+    "memory.approved": (who) => `aprobada por ${who}`,
+    "memory.pending": "pendiente de aprobación: aún no se usa",
+    "memory.approve": "aprobar",
+    "memory.revoke": "retirar",
+    "replay.title": "Replay",
+    "replay.intro": "Audita otra vez el mismo commit con el motor y la configuración actuales, y compara. Un modelo no responde dos veces igual; las reglas deterministas sí deberían.",
+    "replay.run": "repetir esta auditoría",
+    "replay.compare": "Frente a la original",
+    "replay.agreement": (a, both, o, r) => `Coincidencia ${a}: ${both} hallazgo(s) en ambas, ${o} solo en la original, ${r} solo en la repetición.`,
+    "replay.rulesagree": "Los hallazgos de regla coinciden exactamente.",
+    "replay.rulesdiffer": "Los hallazgos de regla difieren: cambió el motor o su configuración.",
+    "replay.note": "Los hallazgos del modelo varían entre ejecuciones: esa diferencia se espera y se mide, no se oculta.",
+    "replay.only_original": "Solo en la original",
+    "replay.only_replay": "Solo en la repetición",
+    "mcp.check": "comprobar ahora la taxonomía contra la página oficial",
+    "mcp.checkfailed": (e) => `No se pudo comprobar (${e}): se sigue usando la versión fijada.`,
+    "mcp.checkok": (at, ed) => `Coincide con el OWASP MCP Top 10 oficial (edición ${ed}), comprobado el ${at}.`,
+    "mcp.checkdiff": (d) => `Los nombres oficiales difieren: ${d}`,
+    "surface.services": "Servicios",
+    "surface.servicesnote": "Contenedores, almacenes de datos, SDKs de terceros y hosts externos que nombran el código y su configuración.",
+    "surface.ports": "puertos publicados",
+    "surface.flags": "marcas",
+    "surface.datastores": "almacenes de datos",
+    "surface.thirdparty": "servicios de terceros",
+    "surface.hosts": "hosts externos",
+    "surface.noservices": "No se encontraron servicios en el código.",
+    "surface.novalidation": "sin validación visible",
+    "surface.validation": "validación",
+    "validation.declared": "visible",
+    "validation.none_seen": "no visible",
+    "taint.title": "Taint: de la fuente al sumidero",
+    "taint.line": (l, k) => `Analizado: ${l}. Flujos por sumidero: ${k}.`,
+    "taint.flow": "Flujo",
+    "taint.step.source": "fuente",
+    "taint.step.assign": "pasa por",
+    "taint.step.sink": "sumidero",
+    "claims.title": "Documentación frente a código",
+    "claims.intro": "Promesas de seguridad del README, SECURITY y la documentación, y si el código las muestra.",
+    "claims.none": "La documentación no hace ninguna afirmación de seguridad de las que se comprueban.",
+    "claims.lowers": "La documentación promete controles que el código no muestra: fíate del código, no del README.",
+    "claims.claim": "afirmación",
+    "claims.status": "estado",
+    "claims.said": "dicho en",
+    "claims.code": "en el código",
+    "claims.backed": "respaldada",
+    "claims.unbacked": "no se ve en el código",
+    "claims.contradicted": "contradicha",
+    "dead.title": "Código aparentemente sin uso",
+    "dead.note": "Funciones, ficheros y blueprints que nada del repositorio menciona. La reflexión, los plugins y las importaciones dinámicas pueden alcanzarlos igualmente.",
+    "dead.none": "Nada aparentemente sin uso.",
+    "dead.function": "función",
+    "dead.class": "clase",
+    "dead.export": "export",
+    "dead.file": "fichero",
+    "dead.blueprint": "blueprint sin registrar",
+    "supply.maintdone": (n, s, d, days) => `Se preguntó a los registros por ${n} dependencia(s) directa(s): ${s} sin versiones en ${days} días, ${d} obsoletas.`,
+    "supply.maintoff": "Mantenimiento no comprobado: los registros solo se consultan con SECAUDIT_ABANDONED_CHECK=1 (salen del servidor los nombres de paquetes).",
+    "supply.directonly": "Sin lockfile: solo se conocen las dependencias directas; las transitivas necesitan un lockfile.",
+    "supply.maint": "mantenimiento",
+    "supply.deprecated": "obsoleta",
+    "supply.days": (d) => `${d} días desde la última versión`,
+    "detail.pr": "pull request",
+    "detail.base": "comparado con",
+    "detail.replayof": "repetición de",
+    "trigger.replay": "replay",
+    "changes.pr": (n) => `Pull request #${n}: la cabeza comparada con su base.`,
+    "changes.replay": "Una repetición: comparada con la auditoría que repite.",
+    "changes.basenoaudit": (b) => `No hay una auditoría terminada de ${b} con la que comparar hallazgos; los cambios de código están abajo.`,
+    "audit.advanced": "opciones",
+    "audit.branch": "rama",
+    "audit.base": "comparar con (rama o commit)",
+    "audit.baseph": "main o un sha de commit",
+    "audit.commit": "commit exacto",
     "p3.discarded": "Hipótesis descartadas",
     "p3.unknowns": "Incógnitas",
     "p3.showchain": "ver la cadena de evidencia",
@@ -1846,6 +2118,8 @@ function renderSection() {
   else if (state.section === "supply") renderSupply();
   else if (state.section === "surface") renderSurface();
   else if (state.section === "changes") renderChanges();
+  else if (state.section === "views") renderViews();
+  else if (state.section === "twin") renderTwin();
   else if (state.section === "settings") renderJewels();
   else if (state.section === "history") renderHistory();
   renderDrawerFinding();
@@ -1915,6 +2189,9 @@ function auditHead(audit) {
     [t("detail.started"),
      audit.created_at ? new Date(audit.created_at).toLocaleString(lang) : "—"],
   ];
+  if (audit.pr_number) pairs.push([t("detail.pr"), `#${audit.pr_number}`]);
+  if (audit.base_ref) pairs.push([t("detail.base"), shortSha(audit.base_ref) || audit.base_ref]);
+  if (audit.replay_of) pairs.push([t("detail.replayof"), audit.replay_of]);
   if (audit.error) pairs.push([t("detail.error"), audit.error]);
   wrap.append(head, facts(pairs));
   return wrap;
@@ -2058,6 +2335,7 @@ function renderSummary() {
     coverageBlock(audit),
     findings,
     exportsBlock(audit),
+    replayBlock(audit),
     pathsBlock(audit),
     moduleRunsBlock(audit),
   );
@@ -2163,8 +2441,11 @@ function findingBody(finding, { full }) {
     parts.append(node("p", "prose", finding.description));
   }
   if (full) {
-    parts.append(ruleNotes(finding), hypothesisNodes(finding));
-    if (finding.id !== undefined && state.current) parts.append(chainButton(finding));
+    parts.append(flowNode(finding), ruleNotes(finding), hypothesisNodes(finding));
+    if (finding.id !== undefined && state.current) {
+      parts.append(chainButton(finding), blueTeamButton(finding));
+      if (state.current.status === "done") parts.append(whatIfForm(finding));
+    }
   }
   return parts;
 }
@@ -2715,7 +2996,8 @@ function renderParallax() {
     }
     parts.push(details);
   }
-  parts.push(publishedBlock(run), node("p", "muted small", t("parallax.notes")));
+  parts.push(publishedBlock(run), claimsBlock(audit),
+             node("p", "muted small", t("parallax.notes")));
   const focused = document.activeElement && target.contains(document.activeElement)
     ? document.activeElement.dataset.divergence : null;
   target.replaceChildren(...parts);
@@ -2915,7 +3197,8 @@ function rulesBlock(audit) {
   }
   section.append(table(
     [{ text: t("memory.rule") }, { text: t("parallax.file"), className: "hide-narrow" },
-     { text: t("memory.validation") }, { text: t("memory.fixedin"), className: "hide-narrow" },
+     { text: t("memory.validation") }, { text: t("memory.approval") },
+     { text: t("memory.fixedin"), className: "hide-narrow" },
      { text: t("memory.matches"), className: "num" }],
     rules.map((r) => {
       const name = node("details", "rule-yaml");
@@ -2934,11 +3217,12 @@ function rulesBlock(audit) {
         name,
         { className: "where hide-narrow", content: r.file || "—" },
         verdict,
+        approvalNode(audit, r),
         { className: "hide-narrow", content: commitNode(r.fix_commit) },
         { className: "num", content: r.matches || 0 },
       ]);
     })));
-  if (rules.some((r) => r.validated) && audit.project_id) {
+  if (rules.some((r) => r.validated && r.approved) && audit.project_id) {
     const a = node("a", null, t("memory.export"));
     a.href = `/api/projects/${encodeURIComponent(audit.project_id)}/immune-rules.yaml`;
     a.setAttribute("download", "");
@@ -3406,6 +3690,7 @@ function stepNode(edge, index) {
   head.append(node("span", "attack-gain", nodeLabel(target)));
   if (ex.cwe) head.append(node("span", "badge", ex.cwe));
   if (ex.attack) head.append(node("span", "badge", `ATT&CK ${ex.attack}`));
+  if (ex.owasp_mcp) head.append(node("span", "badge", `OWASP ${ex.owasp_mcp}`));
   head.append(node("span", "muted small", t("attacker.cost", edge.cost)));
   li.append(head);
   if (ex.structural) {
@@ -3461,6 +3746,8 @@ function pathBlock(index) {
   const head = node("p", "attack-path-head");
   head.append(severityNode(p.severity), ` ${t("attacker.cost", p.cost)}`);
   if (p.tentative) head.append(node("span", "muted", ` · ${t("attacker.tentative")}`));
+  head.append(" ", node("span", "badge", t("attacker.hypothetical")),
+              node("span", "muted small", ` ${t("attacker.hypotheticalnote")}`));
   const chain = node("ol", "attack-chain");
   const start = index.nodes.get((index.edges.get(p.edges[0]) || {}).source);
   const first = node("li", "attack-step attack-start");
@@ -3633,9 +3920,15 @@ el("audit-form").addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       // The findings come back written in the language of the interface: the
       // backend is asked for it, so nothing is translated afterwards.
-      body: JSON.stringify({ repo_url: input.value.trim(), language: lang }),
+      body: JSON.stringify({
+        repo_url: input.value.trim(), language: lang,
+        branch: el("audit-branch").value.trim() || null,
+        base_ref: el("audit-base").value.trim() || null,
+        commit: el("audit-commit").value.trim() || null,
+      }),
     });
     input.value = "";
+    for (const id of ["audit-branch", "audit-base", "audit-commit"]) el(id).value = "";
     await refresh();
     go("summary", audit.id);
   } catch (e) {
@@ -4051,6 +4344,7 @@ function exportsBlock(audit) {
   const base = `/api/audits/${encodeURIComponent(audit.id)}`;
   const row1 = node("div", "export-links");
   row1.append(download(t("p3.export.html"), `${base}/report.html`, true),
+              download("PDF", `${base}/report.pdf`),
               download("JSON", `${base}/report.json`),
               download("SARIF", `${base}/report.sarif`),
               download("CycloneDX SBOM", `${base}/sbom.cdx.json`),
@@ -4170,6 +4464,7 @@ function renderMcp() {
     parts.push(node("p", "muted", t("mcp.taxonomy", d.taxonomy.name, d.taxonomy.checked,
                                     d.taxonomy.url)));
   }
+  parts.push(taxonomyCheck());
   const inv = d.inventory || { servers: [], clients: [], configs: [], tools: [] };
   if (!d.detected) {
     parts.push(block(t("mcp.inventory"), node("p", null, t("mcp.none"))));
@@ -4236,6 +4531,12 @@ function renderSupply() {
     b.append(node("p", osv.error ? "error" : "muted",
                   osv.queried ? t("supply.osvdone", osv.asked || 0, osv.vulnerable || 0)
                     : osv.error ? t("supply.osverror", osv.error) : t("supply.osvoff")));
+    const mt = d.maintenance || {};
+    b.append(node("p", "muted", mt.queried
+      ? t("supply.maintdone", mt.asked || 0, mt.stale || 0, mt.deprecated || 0,
+          mt.threshold_days || 730)
+      : t("supply.maintoff")));
+    if (d.transitive_note === "direct_only") b.append(node("p", "muted", t("supply.directonly")));
     const details = node("details", "block");
     details.append(node("summary", null, t("supply.list")));
     const holder = node("div");
@@ -4248,11 +4549,15 @@ function renderSupply() {
           `/api/audits/${encodeURIComponent(audit.id)}/components`, audit);
         holder.replaceChildren(table(
           [{ text: t("supply.name") }, { text: t("supply.version") }, { text: t("supply.direct") },
-           { text: t("supply.scope") }, { text: t("supply.vulns") }],
+           { text: t("supply.scope") }, { text: t("supply.vulns") },
+           { text: t("supply.maint") }],
           comps.slice(0, 500).map((c) => row([
             `${c.ecosystem} · ${c.name}`, c.version || "—",
             c.direct ? t("supply.yes") : t("supply.no"), c.scope || "—",
-            c.vulns === null ? "—" : (c.vulns || []).map((v) => v.id).join(", ") || "0"]))));
+            c.vulns === null ? "—" : (c.vulns || []).map((v) => v.id).join(", ") || "0",
+            !c.maintenance ? "—" : c.maintenance.deprecated ? t("supply.deprecated")
+              : c.maintenance.days_since_release === null ? "?"
+              : t("supply.days", c.maintenance.days_since_release)]))));
       } catch (e) {
         holder.replaceChildren(node("p", "error", e.message));
       }
@@ -4265,6 +4570,7 @@ function renderSupply() {
         ghosts.map((g) => row([`${g.ecosystem} · ${g.name}`,
           { className: "where", content: g.line ? `${g.manifest}:${g.line}` : g.manifest }])))
         : node("p", null, t("supply.noghosts"))));
+    parts.push(deadcodeBlock(audit));
     const depFindings = (audit.findings || []).filter((f) => f.category === "dependencies"
                                                           && f.source === "rule");
     if (depFindings.length) parts.push(block(t("supply.signals"), findingsTable(depFindings)));
@@ -4318,21 +4624,28 @@ function renderSurface() {
     parts.push(block(t("surface.boundaries"), node("p", "muted", t("surface.boundariesnote")),
       table([{ text: t("surface.via") }, { text: t("surface.to") },
              { text: t("surface.entries"), className: "num" },
-             { text: t("surface.noauth"), className: "num" }],
+             { text: t("surface.noauth"), className: "num" },
+             { text: t("surface.novalidation"), className: "num" }],
         d.boundaries.map((x) => row([t(`kind.${x.via}`), t(`asset.${x.to}`),
           { className: "num", content: String(x.entries) },
-          { className: "num", content: String(x.auth_none_seen) }])))));
+          { className: "num", content: String(x.auth_none_seen) },
+          { className: "num", content: x.validation_none_seen === undefined ? "—"
+            : String(x.validation_none_seen) }])))));
   }
   if ((d.items || []).length) {
     parts.push(block(t("surface.items"), table(
       [{ text: t("mcp.kind") }, { text: t("surface.route") }, { text: t("findings.location") },
-       { text: t("surface.auth") }, { text: t("surface.touches") }],
+       { text: t("surface.auth") }, { text: t("surface.validation") },
+       { text: t("surface.touches") }],
       d.items.map((i) => row([t(`kind.${i.kind}`),
         [i.method, i.path || i.name].filter(Boolean).join(" ") || "—",
         { className: "where", content: `${i.file}:${i.line}` },
         t(`auth.${i.auth}`),
+        i.validation ? t(`validation.${i.validation}`) : "—",
         (i.touches || []).map((x) => t(`asset.${x}`)).join(", ") || "—"])))));
   }
+  if (d.services) parts.push(servicesBlock(d.services));
+  parts.push(taintBlock(audit));
   target.replaceChildren(...parts);
 }
 
@@ -4350,8 +4663,11 @@ function renderChanges() {
   const parts = [lazyBlock(t("changes.findings"), "diff",
     `/api/audits/${encodeURIComponent(audit.id)}/diff`, audit, (d) => {
       const wrap = document.createDocumentFragment();
+      if (d.pr_number) wrap.append(node("p", null, t("changes.pr", d.pr_number)));
+      if (d.replay_of) wrap.append(node("p", "muted", t("changes.replay")));
       if (!d.previous_audit) {
-        wrap.append(node("p", "muted", t("changes.first")));
+        wrap.append(node("p", "muted", d.base_ref ? t("changes.basenoaudit",
+          shortSha(d.base_ref) || d.base_ref) : t("changes.first")));
       } else {
         wrap.append(node("p", null, t("changes.against", shortSha(d.previous_commit) || "—",
                                       shortSha(d.commit) || "—")));
@@ -4415,4 +4731,460 @@ function renderChanges() {
       }));
   }
   target.replaceChildren(...parts);
+}
+
+// ---------------------------------------------------------------------------
+// Practice 3, second part: views, twin, what if, blue team, approval, replay
+// ---------------------------------------------------------------------------
+
+const auditPath = (audit, rest = "") => `/api/audits/${encodeURIComponent(audit.id)}${rest}`;
+
+// --- C31: three views over the same evidence ----------------------------------
+
+const VIEWS = ["exec", "dev", "analyst"];
+
+function renderViews() {
+  const target = el("views-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  if (!VIEWS.includes(state.view)) state.view = stored("secaudit-view") || "dev";
+  if (!VIEWS.includes(state.view)) state.view = "dev";
+  const tabs = node("div", "view-tabs");
+  tabs.setAttribute("role", "tablist");
+  for (const v of VIEWS) {
+    const b = button(t(`views.${v}`), v === state.view ? "" : "ghost", () => {
+      state.view = v;
+      store("secaudit-view", v);
+      renderViews();
+    });
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(v === state.view));
+    tabs.append(b);
+  }
+  const findings = (audit.findings || []).slice();
+  const live = findings.filter((f) => f.assessment !== "discarded");
+  const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+  live.sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9));
+  const parts = [node("p", "muted", t("views.intro")), tabs];
+  if (audit.status !== "done") {
+    parts.push(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("findings.failed")));
+    target.replaceChildren(...parts);
+    return;
+  }
+  if (state.view === "exec") {
+    const confirmed = live.filter((f) => f.assessment === "confirmed");
+    const severe = live.filter((f) => ["critical", "high"].includes(f.severity));
+    const run = attackerRun(audit);
+    const paths = run && run.status === "ok" ? (run.detail || {}) : {};
+    parts.push(block(t("views.stake"),
+      node("p", null, t("views.execline", live.length, confirmed.length, severe.length)),
+      node("p", null, t("views.execpaths", paths.items || 0,
+                        (paths.by_severity || {}).critical || 0)),
+      assessmentCounts(audit)));
+    const [first] = paths.min_cut || [];
+    if (first) parts.push(block(t("summary.topfix"), node("p", null, fixText(first))));
+    parts.push(trustBlock(audit));
+    parts.push(block(t("views.top"), live.length ? list(live.slice(0, 5).map((f) =>
+      `${t(`severity.${f.severity}`)} · ${f.title}`)) : node("p", "muted", t("findings.none"))));
+  } else if (state.view === "dev") {
+    parts.push(node("p", "muted", t("views.devnote")));
+    for (const f of live.slice(0, 100)) {
+      const d = f.detail || {};
+      const card = node("section", "block view-card");
+      const head = node("p", "view-head");
+      head.append(severityNode(f.severity), " ", assessmentNode(f), " ", findingLink(f));
+      card.append(head, node("p", "where", whereText(f) || "—"));
+      if (f.code_snippet && f.verification_status === "verified") {
+        card.append(node("pre", "snippet", f.code_snippet));
+      }
+      const fix = d.mitigation || (f.hypothesis && f.hypothesis.fix) || f.description;
+      if (fix) card.append(node("p", "prose", fix));
+      parts.push(card);
+    }
+    if (!live.length) parts.push(node("p", "muted", t("findings.none")));
+  } else {
+    parts.push(node("p", "muted", t("views.analystnote")));
+    parts.push(table(
+      [{ text: t("findings.severity") }, { text: t("p3.assessment") }, { text: t("p3.finding") },
+       { text: t("p3.source") }, { text: "CWE" }, { text: t("findings.epistemic") },
+       { text: t("p3.confidence") }],
+      findings.map((f) => row([severityNode(f.severity), assessmentNode(f), findingLink(f),
+        t(`source.${f.source || "model"}`), (f.detail || {}).cwe || "—",
+        f.epistemic_status || "—",
+        (f.detail || {}).confidence ? t(`confidence.${f.detail.confidence}`) : "—"]))));
+  }
+  target.replaceChildren(...parts);
+}
+
+// --- C34: the digital twin ------------------------------------------------------
+
+const TWIN_TYPES = ["area", "entry", "asset", "service", "dependency", "finding", "persona",
+                    "jewel"];
+
+function renderTwin() {
+  const target = el("twin-body");
+  if (needsAudit(target)) return;
+  const audit = state.current;
+  if (audit.status !== "done") {
+    target.replaceChildren(node("p", "muted", ACTIVE_STATUSES.has(audit.status)
+      ? t("findings.inprogress") : t("findings.failed")));
+    return;
+  }
+  const cached = cachedOnly("twin", audit);
+  if (cached === undefined) {
+    target.replaceChildren(node("p", "muted", t("summary.loading")));
+    fetchOnce("twin", auditPath(audit, "/twin"), audit).then(() => renderTwin())
+      .catch((e) => target.replaceChildren(node("p", "error", e.message)));
+    return;
+  }
+  const tw = cached;
+  const byId = new Map(tw.nodes.map((n) => [n.id, n]));
+  if (!state.twinType || !TWIN_TYPES.includes(state.twinType)) {
+    state.twinType = TWIN_TYPES.find((x) => tw.counts[x]) || "area";
+  }
+  const parts = [node("p", "muted", t("twin.note")),
+                 node("p", null, t("twin.counts", tw.nodes.length, tw.edges.length,
+                                   tw.uncertain_nodes))];
+  const tabs = node("div", "view-tabs");
+  for (const ty of TWIN_TYPES) {
+    if (!tw.counts[ty]) continue;
+    tabs.append(button(`${t(`twin.type.${ty}`)} · ${tw.counts[ty]}`,
+                       ty === state.twinType ? "" : "ghost",
+                       () => { state.twinType = ty; state.twinNode = null; renderTwin(); }));
+  }
+  parts.push(tabs);
+  const nodes = tw.nodes.filter((n) => n.type === state.twinType);
+  const layout = node("div", "twin");
+  const listing = node("ul", "twin-list");
+  for (const n of nodes.slice(0, 400)) {
+    const li = document.createElement("li");
+    const b = button(n.label || n.id, n.id === state.twinNode ? "" : "link",
+                     () => { state.twinNode = n.id; renderTwin(); });
+    li.append(b);
+    if (n.uncertainty.length) li.append(node("span", "badge badge-a-unverifiable", "?"));
+    listing.append(li);
+  }
+  layout.append(listing);
+  const detail = node("div", "twin-detail");
+  const current = byId.get(state.twinNode);
+  if (!current) {
+    detail.append(node("p", "muted", t("twin.pick")));
+  } else {
+    detail.append(node("h3", null, `${t(`twin.type.${current.type}`)}: ${current.label}`));
+    const pairs = [];
+    for (const [k, v] of Object.entries(current)) {
+      if (["id", "type", "label", "uncertainty"].includes(k) || v === null
+          || v === undefined || (Array.isArray(v) && !v.length)) continue;
+      pairs.push([k, Array.isArray(v) ? v.join(", ") : String(v)]);
+    }
+    if (pairs.length) detail.append(facts(pairs));
+    detail.append(node("h3", null, t("twin.unknown")),
+                  current.uncertainty.length ? list(current.uncertainty)
+                    : node("p", "muted", t("twin.nounknown")));
+    const links = tw.edges.filter((e) => e.from === current.id || e.to === current.id);
+    detail.append(node("h3", null, t("twin.links")));
+    detail.append(links.length ? list(links.slice(0, 200).map((e) => {
+      const other = byId.get(e.from === current.id ? e.to : e.from) || {};
+      const li = node("span");
+      li.append(node("span", "muted", `${e.from === current.id ? "→" : "←"} ${t(`twin.rel.${e.rel}`)} `),
+                button(other.label || other.id || "?", "link", () => {
+                  state.twinType = other.type;
+                  state.twinNode = other.id;
+                  renderTwin();
+                }));
+      if (e.hypothetical) li.append(node("span", "muted small", ` (${t("attacker.hypothetical")})`));
+      return li;
+    })) : node("p", "muted", "—"));
+  }
+  layout.append(detail);
+  parts.push(layout);
+  target.replaceChildren(...parts);
+}
+
+// --- C30: blue team, in the finding --------------------------------------------
+
+function blueTeamButton(finding) {
+  const holder = node("div");
+  const b = button(t("blue.show"), "ghost", async () => {
+    b.disabled = true;
+    try {
+      const bt = await api(auditPath(state.current, `/findings/${finding.id}/blue-team`));
+      if (!bt || !bt.sigma) {
+        holder.replaceChildren(node("p", "muted", t("blue.none")));
+        return;
+      }
+      holder.replaceChildren(
+        node("h3", null, t("blue.title")),
+        node("p", "coverage-warning", bt.label),
+        facts([[t("blue.log"), bt.log], [t("blue.detect"), bt.detect]]),
+        node("pre", "snippet", bt.sigma));
+    } catch (e) {
+      holder.replaceChildren(node("p", "error", e.message));
+      b.disabled = false;
+    }
+  });
+  holder.append(b);
+  return holder;
+}
+
+// --- C29: what if ----------------------------------------------------------------
+
+function whatIfResult(w) {
+  const wrap = node("div", "chain");
+  if (w.status !== "ok") {
+    wrap.append(node("p", "error", (w.result || {}).error || t("whatif.failed")));
+    return wrap;
+  }
+  const r = w.result || {};
+  wrap.append(node("p", r.verdict === "promising" ? "note" : "coverage-warning",
+                   `${t(`whatif.verdict.${r.verdict}`)} — ${r.verdict_note}`));
+  wrap.append(facts([
+    [t("whatif.cited"), t(r.cited_code_still_present ? "supply.yes" : "supply.no")],
+    [t("whatif.gone"), String((r.rule_findings_gone || []).length)],
+    [t("whatif.new"), String((r.rule_findings_new || []).length)],
+    [t("whatif.drift"), String((r.drift || []).length)],
+    [t("whatif.immune"), r.immune && r.immune.ran
+      ? String((r.immune.matches || []).length) : t("whatif.immuneoff")],
+    [t("whatif.untouched"), t("supply.yes")],
+  ]));
+  if ((r.rule_findings_new || []).length) {
+    wrap.append(node("h3", null, t("whatif.new")),
+                list(r.rule_findings_new.map((x) => `${x.rule_id} · ${x.file}:${x.line || ""} · ${x.title}`)));
+  }
+  if ((r.drift || []).length) {
+    wrap.append(node("h3", null, t("whatif.drift")),
+                list(r.drift.map((x) => `${x.label} · ${x.file}:${x.line || ""}`)));
+  }
+  const tests = r.tests || {};
+  wrap.append(node("h3", null, t("whatif.tests")), node("p", "muted", tests.reason || ""));
+  if ((tests.candidates || []).length) wrap.append(list(tests.candidates));
+  const det = node("details", "block");
+  det.append(node("summary", null, t("whatif.diff")), node("pre", "snippet", r.diff || ""));
+  wrap.append(det);
+  return wrap;
+}
+
+function whatIfForm(finding) {
+  const det = node("details", "block whatif");
+  det.append(node("summary", null, t("whatif.title")));
+  det.append(node("p", "muted", t("whatif.intro")));
+  const area = document.createElement("textarea");
+  area.rows = 8;
+  area.spellcheck = false;
+  area.className = "patch";
+  area.placeholder = "--- a/app.py\n+++ b/app.py\n@@ -1,3 +1,3 @@\n...";
+  area.setAttribute("aria-label", t("whatif.patch"));
+  const out = node("div");
+  const go_ = button(t("whatif.run"), "", async () => {
+    go_.disabled = true;
+    out.replaceChildren(node("p", "muted", t("whatif.running")));
+    try {
+      const w = await api(auditPath(state.current, "/what-if"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ finding_id: finding.id, patch: area.value }),
+      });
+      out.replaceChildren(whatIfResult(w));
+    } catch (e) {
+      out.replaceChildren(node("p", "error", e.message));
+    } finally {
+      go_.disabled = false;
+    }
+  });
+  det.append(area, go_, out);
+  return det;
+}
+
+// --- C26: approving learnt rules --------------------------------------------------
+
+function approvalNode(audit, r) {
+  const wrap = node("div");
+  if (!r.validated) return wrap;
+  wrap.append(node("span", r.approved ? "badge badge-a-confirmed" : "badge badge-a-unverifiable",
+                   r.approved ? t("memory.approved", r.approved_by || "—")
+                     : t("memory.pending")));
+  if (!audit.project_id) return wrap;
+  const path = `/api/projects/${encodeURIComponent(audit.project_id)}/immune-rules/${r.id}/approval`;
+  wrap.append(" ", button(r.approved ? t("memory.revoke") : t("memory.approve"), "ghost",
+    async (event) => {
+      event.target.disabled = true;
+      try {
+        await api(path, { method: r.approved ? "DELETE" : "POST" });
+        await loadDetail(audit.id);
+      } catch (e) {
+        wrap.append(node("p", "error", e.message));
+        event.target.disabled = false;
+      }
+    }));
+  return wrap;
+}
+
+// --- C32: replay ---------------------------------------------------------------------
+
+function replayBlock(audit) {
+  const section = block(t("replay.title"), node("p", "muted", t("replay.intro")));
+  if (audit.status === "done" && audit.commit_sha) {
+    const b = button(t("replay.run"), "ghost", async () => {
+      b.disabled = true;
+      try {
+        const created = await api(auditPath(audit, "/replay"), { method: "POST" });
+        await refresh();
+        go("changes", created.id);
+      } catch (e) {
+        section.append(node("p", "error", e.message));
+        b.disabled = false;
+      }
+    });
+    section.append(b);
+  }
+  if (audit.replay_of) {
+    section.append(lazyBlock(t("replay.compare"), "repro", auditPath(audit, "/reproducibility"),
+      audit, (r) => {
+        const wrap = document.createDocumentFragment();
+        wrap.append(node("p", null, t("replay.agreement",
+          r.agreement === null ? "—" : `${Math.round(r.agreement * 100)}%`, r.in_both,
+          r.only_original.length, r.only_replay.length)));
+        wrap.append(node("p", r.rules_agree ? "muted" : "coverage-warning",
+                         t(r.rules_agree ? "replay.rulesagree" : "replay.rulesdiffer")));
+        wrap.append(node("p", "muted", t("replay.note")));
+        for (const [k, items] of [["only_original", r.only_original],
+                                  ["only_replay", r.only_replay]]) {
+          if (!items.length) continue;
+          const det = node("details", "block");
+          det.append(node("summary", null, `${t(`replay.${k}`)} · ${items.length}`),
+                     list(items.map((f) => `${f.title} · ${f.file || ""}:${f.line || ""}`)));
+          wrap.append(det);
+        }
+        return wrap;
+      }));
+  }
+  return section;
+}
+
+// --- MCP: the taxonomy, checked now ------------------------------------------------
+
+function taxonomyCheck() {
+  const holder = node("div");
+  const b = button(t("mcp.check"), "ghost", async () => {
+    b.disabled = true;
+    holder.replaceChildren(b, node("p", "muted", t("summary.loading")));
+    try {
+      const r = await api("/api/mcp/taxonomy-check", { method: "POST" });
+      const text = !r.checked ? t("mcp.checkfailed", r.error || "—")
+        : r.matches ? t("mcp.checkok", r.at, (r.official_editions || []).join(", "))
+        : t("mcp.checkdiff", r.differences.map((d) => `${d.id}: ${d.official || "—"}`).join("; "));
+      holder.replaceChildren(b, node("p", r.checked && r.matches ? "note" : "coverage-warning",
+                                     text));
+    } catch (e) {
+      holder.replaceChildren(b, node("p", "error", e.message));
+    }
+    b.disabled = false;
+  });
+  holder.append(b);
+  return holder;
+}
+
+// --- surface, supply and views additions --------------------------------------------
+
+function servicesBlock(s) {
+  const section = block(t("surface.services"), node("p", "muted", t("surface.servicesnote")));
+  if ((s.containers || []).length) {
+    section.append(table([{ text: t("supply.name") }, { text: "image" },
+                          { text: t("surface.ports") }, { text: t("surface.flags") }],
+      s.containers.map((c) => row([c.name, c.image || c.kubernetes || "—",
+        (c.published_ports || []).join(", ") || "—",
+        [c.privileged ? "privileged" : "", c.host_network ? "host network" : ""]
+          .filter(Boolean).join(", ") || "—"]))));
+  }
+  const line = (key, items, fmt) => {
+    if (items && items.length) section.append(node("p", null, `${t(key)}: ${items.map(fmt).join(" · ")}`));
+  };
+  line("surface.datastores", s.datastores, (d) => d.kind);
+  line("surface.thirdparty", s.third_party, (d) => d.kind);
+  line("surface.hosts", (s.external_hosts || []).slice(0, 40), (h) => h.host);
+  if (section.childElementCount <= 2) section.append(node("p", "muted", t("surface.noservices")));
+  return section;
+}
+
+function taintBlock(audit) {
+  const run = runOf(audit, "taint");
+  const section = block(t("taint.title"));
+  if (!run) {
+    section.append(node("p", "muted", t("p3.notrun")));
+    return section;
+  }
+  const err = moduleError(run);
+  if (err) section.append(err);
+  const d = run.detail || {};
+  section.append(node("p", "muted", d.limits || ""));
+  const kinds = Object.entries(d.by_kind || {}).map(([k, v]) => `${k} ${v}`).join(" · ");
+  section.append(node("p", null, t("taint.line", (d.languages || []).join(", ") || "—",
+                                    kinds || "0")));
+  const found = (audit.findings || []).filter((f) => (f.rule_id || "").startsWith("taint."));
+  if (found.length) section.append(findingsTable(found));
+  return section;
+}
+
+function flowNode(finding) {
+  const flow = (finding.detail || {}).flow;
+  if (!flow || !flow.length) return document.createDocumentFragment();
+  const wrap = document.createDocumentFragment();
+  wrap.append(node("h3", null, t("taint.flow")));
+  const ol = node("ol", "flow");
+  for (const s of flow) {
+    const li = node("li");
+    li.append(node("span", "badge", t(`taint.step.${s.step}`)), " ",
+              node("span", "where", `${finding.file}:${s.line}`), " ",
+              node("code", null, s.text || ""));
+    ol.append(li);
+  }
+  wrap.append(ol);
+  return wrap;
+}
+
+function claimsBlock(audit) {
+  const run = runOf(audit, "claims");
+  const section = block(t("claims.title"), node("p", "muted", t("claims.intro")));
+  if (!run) {
+    section.append(node("p", "muted", t("p3.notrun")));
+    return section;
+  }
+  const err = moduleError(run);
+  if (err) section.append(err);
+  const d = run.detail || {};
+  const items = d.items || [];
+  if (!items.length) {
+    section.append(node("p", null, t("claims.none")));
+    return section;
+  }
+  if (d.lowers_confidence) section.append(node("p", "coverage-warning", t("claims.lowers")));
+  section.append(table(
+    [{ text: t("claims.claim") }, { text: t("claims.status") }, { text: t("claims.said") },
+     { text: t("claims.code") }],
+    items.map((i) => row([i.label,
+      node("span", i.status === "backed" ? "badge badge-a-confirmed"
+        : i.status === "contradicted" ? "badge badge-a-discarded" : "badge badge-a-unverifiable",
+        t(`claims.${i.status}`)),
+      { className: "where", content: `${i.claim.file}:${i.claim.line} — ${i.claim.text}` },
+      { className: "where", content: i.contradiction
+        ? `${i.contradiction.file}:${i.contradiction.line} — ${i.contradiction.match}`
+        : i.evidence ? `${i.evidence.file}:${i.evidence.line} — ${i.evidence.match}` : "—" }]))));
+  if (d.note) section.append(node("p", "muted", d.note));
+  return section;
+}
+
+function deadcodeBlock(audit) {
+  const run = runOf(audit, "deadcode");
+  const section = block(t("dead.title"), node("p", "muted", t("dead.note")));
+  if (!run) {
+    section.append(node("p", "muted", t("p3.notrun")));
+    return section;
+  }
+  const items = (run.detail || {}).items || [];
+  section.append(items.length ? table(
+    [{ text: t("mcp.kind") }, { text: t("supply.name") }, { text: t("findings.location") }],
+    items.map((i) => row([t(`dead.${i.kind}`), i.name,
+                          { className: "where", content: `${i.file}:${i.line}` }])))
+    : node("p", null, t("dead.none")));
+  return section;
 }
