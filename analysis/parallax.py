@@ -1429,23 +1429,63 @@ MAX_SCAN_CHARS = 2_000_000
 MAX_DIVERGENCES = 300
 
 
-def repository_texts(project: Path) -> dict[str, str]:
-    """Every text file of the checkout, outside dependency and VCS folders."""
-    texts = {}
+class Texts(dict):
+    """The text files of a checkout, and what was left unread to stay in bounds."""
+
+    def __init__(self):
+        super().__init__()
+        self.skipped: list[str] = []        # path: reason
+        self.truncated = False
+
+
+def _scan_limit(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name) or default))
+    except ValueError:
+        return default
+
+
+# The whole scan is bounded too, not only each file: a repository made of
+# twenty thousand files of almost 2 MB each is a way to exhaust the server.
+MAX_TOTAL_SCAN_CHARS = 64_000_000
+MAX_SCAN_FILES = 20_000
+
+
+def repository_texts(project: Path) -> Texts:
+    """Every text file of the checkout, outside dependency and VCS folders.
+
+    Bounded per file (MAX_SCAN_CHARS), in total (SECAUDIT_MAX_SCAN_CHARS) and
+    in number of files (SECAUDIT_MAX_SCAN_FILES); what the bounds leave out is
+    listed in .skipped, never dropped silently.
+    """
+    texts = Texts()
+    total_limit = _scan_limit("SECAUDIT_MAX_SCAN_CHARS", MAX_TOTAL_SCAN_CHARS)
+    files_limit = _scan_limit("SECAUDIT_MAX_SCAN_FILES", MAX_SCAN_FILES)
+    total = 0
     for root, dirs, files in os.walk(project, followlinks=False):
         dirs[:] = sorted(d for d in dirs if d != ".git" and d not in SKIP_DIRS)
         for name in sorted(files):
             full = Path(root) / name
+            rel = full.relative_to(project).as_posix()
             if full.is_symlink():
                 continue
             try:
-                if full.stat().st_size > MAX_SCAN_CHARS:
-                    continue
+                size = full.stat().st_size
             except OSError:
+                continue
+            if size > MAX_SCAN_CHARS:
+                if len(texts.skipped) < MAX_LISTED:
+                    texts.skipped.append(f"{rel}: larger than {MAX_SCAN_CHARS} bytes")
+                continue
+            if len(texts) >= files_limit or total + size > total_limit:
+                texts.truncated = True
+                if len(texts.skipped) < MAX_LISTED:
+                    texts.skipped.append(f"{rel}: over the scan budget")
                 continue
             text = read_text(full)
             if text is not None:
-                texts[full.relative_to(project).as_posix()] = text
+                texts[rel] = text
+                total += len(text)
     return texts
 
 

@@ -1,5 +1,6 @@
 """FastAPI app exposing the secaudit engine over HTTP."""
 
+import json
 import logging
 import mimetypes
 import os
@@ -24,9 +25,10 @@ from .auth import AuthError, AuthUnavailable, NotInvited
 from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
-from .gitclone import CloneError, clone_at_commit, clone_repo, validate_repo_url
+from .gitclone import (CloneError, check_repo_owner, clone_at_commit, clone_repo,
+                       validate_repo_url)
 from .models import (LANGUAGES, AgentCapability, AttackEdge, AttackNode, AttackPath,
-                     Audit, CanaryRun, CrownJewel, FileLeverage, Finding, Hypothesis,
+                     Audit, CanaryRun, Component, component_to_dict, CrownJewel, FileLeverage, Finding, Hypothesis,
                      ImmuneRule,
                      ModuleRun, RefutationAttempt, User, ViewDivergence, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
@@ -44,6 +46,9 @@ from .webhook import (
 
 # Importable once .engine has put the repository root on sys.path.
 from analysis import attacker, evidence, falsify, immune, leverage, parallax  # noqa: E402
+from analysis import (assessment, deps, drift, evidence_chain,  # noqa: E402
+                      mcp_audit, reports, secrets_scan, surface, trust)
+from .engine import engine as cli_engine  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +89,9 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="secaudit web", version="0.2.0", lifespan=lifespan)
+TOOL_VERSION = "0.3.0"
+
+app = FastAPI(title="secaudit web", version=TOOL_VERSION, lifespan=lifespan)
 
 
 class AuditRequest(BaseModel):
@@ -157,8 +164,12 @@ def check_evidence(session: Session, audit: Audit, checkout: Path,
 
 def store_result(session: Session, audit: Audit, findings: list[dict],
                  coverage: list[dict] | None,
-                 coverage_summary: dict | None) -> list[tuple[Finding, dict]]:
+                 coverage_summary: dict | None,
+                 rule_findings: list[dict] | None = None) -> list[tuple[Finding, dict]]:
     """Persist a finished audit: its findings, its coverage, and done.
+
+    rule_findings come from this server's own deterministic scanners, never
+    from the request: only they are stored with source "rule".
 
     Returns each stored finding with the dict it was made from, for the
     modules that work on findings once they have an id.
@@ -168,6 +179,15 @@ def store_result(session: Session, audit: Audit, findings: list[dict],
         row = finding_from_dict(audit.id, f)
         session.add(row)
         stored.append((row, f))
+    for f in rule_findings or []:
+        f["fingerprint"] = cli_engine.make_fingerprint(f["category"], f["file"], f["anchor"])
+        row = finding_from_dict(audit.id, f)
+        row.source = assessment.SOURCE_RULE
+        row.rule_id = str(f.get("rule_id") or "")[:64] or None
+        row.detail = f.get("detail")
+        session.add(row)
+        stored.append((row, f))
+    findings = list(findings) + list(rule_findings or [])
     for row in coverage or []:
         if isinstance(row, dict):
             session.add(coverage_from_dict(audit.id, row))
@@ -493,7 +513,8 @@ def record_immune(session: Session, audit: Audit, checkout: Path | None,
                     anchor=origin.anchor, fingerprint=origin.fingerprint,
                     code_snippet=code, verification_status="verified",
                     verification_note=f"matched by immune rule {rule.rule_id}"[:255],
-                    epistemic_status=falsify.EXISTS, zombie_of=origin.id)
+                    epistemic_status=falsify.EXISTS, zombie_of=origin.id,
+                    source="immune", rule_id=rule.rule_id[:64])
                 session.add(row)
                 session.flush()
                 stored.append((row, finding_to_dict(row)))
@@ -721,6 +742,139 @@ def record_attacker(session: Session, audit: Audit, checkout: Path | None,
                           duration_ms=_ms_since(start), error=error, detail=detail))
 
 
+def _overlap(a: dict, b: dict) -> bool:
+    if immune._norm_path(a.get("file") or "") != immune._norm_path(b.get("file") or ""):
+        return False
+    if not a.get("line") or not b.get("line"):
+        return False
+    return a["line"] <= (b.get("line_end") or b["line"]) and \
+        b["line"] <= (a.get("line_end") or a["line"])
+
+
+def run_rule_scanners(session: Session, audit: Audit, checkout: Path | None,
+                      texts: dict | None, model_findings: list[dict]) -> list[dict]:
+    """Secrets, dependencies and the MCP auditor, on this server's checkout.
+
+    Each is its own module run and each failure is its own: the audit stands
+    without them. What they return are finding dicts with source "rule",
+    checked by the same evidence check as the model's (without a manifest:
+    nothing was "sent" for a rule). A secret the model already reported on
+    the same lines is not reported twice.
+    """
+    language = audit.language or "en"
+    out: list[dict] = []
+
+    def run(module, fn):
+        start = time.monotonic()
+        try:
+            if checkout is None or texts is None:
+                raise RuntimeError("the audited commit could not be checked out")
+            found, detail = fn()
+            evidence.verify_findings(checkout, found, None)
+            out.extend(found)
+            detail = {"items": len(found), **detail}
+            status, error = "ok", None
+        except Exception as e:      # the audit stands without it
+            log.exception("%s failed for audit %s", module, audit.id)
+            detail, status, error = {"items": 0}, "error", sanitize_error(str(e))[:500]
+        session.add(ModuleRun(audit_id=audit.id, module=module, status=status,
+                              duration_ms=_ms_since(start), error=error, detail=detail))
+
+    def secrets():
+        found, summary = secrets_scan.scan(texts, language)
+        found = [f for f in found if not any(
+            m.get("category") == "secrets" and _overlap(m, f) for m in model_findings)]
+        history = secrets_scan.timeline(checkout, int(immune_history_depth()))
+        present = {(f.get("detail") or {}).get("secret_id") for f in found}
+        for s in history["secrets"]:
+            # The checkout itself is the better witness of what is there now.
+            s["present_at_head"] = s["present_at_head"] or s["secret_id"] in present
+        return found, {**summary, "timeline": history,
+                       "history_only": sum(1 for s in history["secrets"]
+                                           if not s["present_at_head"])}
+
+    def dependencies():
+        inv = deps.inventory(texts)
+        osv = {"queried": False, "enabled": deps.osv_enabled()}
+        if deps.osv_enabled():
+            osv.update(deps.query_osv(inv["components"]))
+        for c in inv["components"]:
+            session.add(Component(audit_id=audit.id, ecosystem=c["ecosystem"],
+                                  name=c["name"][:255], version=(c["version"] or None)
+                                  and str(c["version"])[:128], direct=bool(c["direct"]),
+                                  scope=c["scope"], manifest=c["manifest"][:512],
+                                  purl=c["purl"][:512], vulns=c.get("vulns")))
+        found = deps.signal_findings(inv["signals"], language) + \
+            deps.vulnerability_findings(inv["components"], language)
+        ghosts = deps.ghost_dependencies(inv["components"], texts, inv["manifests"])
+        by_eco: dict[str, int] = {}
+        for c in inv["components"]:
+            by_eco[c["ecosystem"]] = by_eco.get(c["ecosystem"], 0) + 1
+        return found, {"components": len(inv["components"]),
+                       "direct": sum(1 for c in inv["components"] if c["direct"]),
+                       "by_ecosystem": by_eco, "manifests": inv["manifests"][:50],
+                       "truncated": inv["truncated"], "osv": osv,
+                       "ghosts": ghosts, "version": deps.DEPS_VERSION}
+
+    def mcp():
+        result = mcp_audit.analyze(texts, language)
+        inv = result["inventory"]
+        inv["tools"] = inv["tools"][:200]
+        return result["findings"], {"detected": result["detected"],
+                                    "by_category": result["by_category"],
+                                    "inventory": inv, "taxonomy": result["taxonomy"],
+                                    "version": result["version"]}
+
+    run("secrets", secrets)
+    run("dependencies", dependencies)
+    run("mcp", mcp)
+    return out
+
+
+def immune_history_depth() -> str:
+    from .gitclone import history_depth
+    return history_depth()
+
+
+def record_surface(session: Session, audit: Audit, texts: dict | None) -> None:
+    """C27/B21: the attack surface and the trust boundaries, from the code."""
+    start = time.monotonic()
+    try:
+        if texts is None:
+            raise RuntimeError("the audited commit could not be checked out")
+        result = surface.analyze(texts)
+        detail = {"items": len(result["items"]), **result}
+        status, error = "ok", None
+    except Exception as e:
+        log.exception("surface failed for audit %s", audit.id)
+        detail, status, error = {"items": 0}, "error", sanitize_error(str(e))[:500]
+    session.add(ModuleRun(audit_id=audit.id, module="surface", status=status,
+                          duration_ms=_ms_since(start), error=error, detail=detail))
+
+
+def record_drift(session: Session, audit: Audit, checkout: Path | None) -> None:
+    """B14/C24: what changed since the previous audit, and what got weaker."""
+    start = time.monotonic()
+    try:
+        if checkout is None:
+            raise RuntimeError("the audited commit could not be checked out")
+        previous = previous_audit(session, audit)
+        result = drift.compare(checkout, previous.commit_sha if previous else None,
+                               audit.language or "en")
+        result["previous_audit"] = previous.id if previous else None
+        detail = {"items": len(result.get("drift") or []), **result}
+        status, error = "ok", None
+    except Exception as e:
+        log.exception("drift failed for audit %s", audit.id)
+        detail, status, error = {"items": 0}, "error", sanitize_error(str(e))[:500]
+    session.add(ModuleRun(audit_id=audit.id, module="drift", status=status,
+                          duration_ms=_ms_since(start), error=error, detail=detail))
+
+
+def _texts_of(checkout: Path | None):
+    return parallax.repository_texts(checkout) if checkout is not None else None
+
+
 def execute_audit(audit_id: str) -> None:
     """Background task: clone the repo, run the engine, persist the outcome."""
     session = get_session()
@@ -761,8 +915,10 @@ def execute_audit(audit_id: str) -> None:
                 # the process that talked to the backend.
                 findings = check_evidence(session, audit, dest, result["findings"],
                                           result.get("manifest"))
+                texts = _texts_of(dest)
+                rules = run_rule_scanners(session, audit, dest, texts, findings)
                 stored = store_result(session, audit, findings, result.get("coverage"),
-                                      result.get("coverage_summary"))
+                                      result.get("coverage_summary"), rules)
                 record_falsifiability(session, audit, dest, stored,
                                       *backend_identity(config),
                                       result.get("refutation_usage"))
@@ -773,6 +929,8 @@ def execute_audit(audit_id: str) -> None:
                               *backend_identity(config))
                 record_leverage(session, audit, dest, stored)
                 record_attacker(session, audit, dest, stored)
+                record_surface(session, audit, texts)
+                record_drift(session, audit, dest)
             except (CloneError, AuditError) as e:
                 audit.status = "error"
                 audit.error = sanitize_error(str(e))
@@ -936,6 +1094,10 @@ def create_audit(req: AuditRequest, background_tasks: BackgroundTasks,
         url = validate_repo_url(req.repo_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    try:
+        check_repo_owner(url)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     language = (req.language or "en").lower()
     if language not in LANGUAGES:
         raise HTTPException(status_code=400,
@@ -979,6 +1141,12 @@ async def github_webhook(request: Request, response: Response,
     if push is None:
         response.status_code = 200
         return {"status": "ignored", "reason": "push does not update a branch"}
+    try:
+        check_repo_owner(push["repo_url"])
+    except (PermissionError, ValueError) as e:
+        # Signed by GitHub, so answered; but nothing is cloned for it.
+        response.status_code = 200
+        return {"status": "ignored", "reason": str(e)}
 
     # Nobody picks a language for a webhook audit, so the instance sets one.
     language = os.environ.get("SECAUDIT_DEFAULT_LANGUAGE", "en").lower()
@@ -1130,6 +1298,195 @@ def export_immune_rules(project_id: int, user: User = Depends(require_user),
                              f'attachment; filename="secaudit-immune-{project_id}.yaml"'})
 
 
+# ---------------------------------------------------------------------------
+# Reading an audit: trust, evidence chains, exports, changes, replay
+# ---------------------------------------------------------------------------
+
+ENGINE_VERSIONS = {
+    "secaudit": TOOL_VERSION,
+    "trust": trust.TRUST_VERSION,
+    "evidence_chain": evidence_chain.CHAIN_VERSION,
+    "secrets": secrets_scan.SCANNER_VERSION,
+    "dependencies": deps.DEPS_VERSION,
+    "mcp_audit": mcp_audit.MCP_AUDIT_VERSION,
+    "owasp_mcp": mcp_audit.OWASP_MCP_VERSION,
+    "surface": surface.SURFACE_VERSION,
+    "drift": drift.DRIFT_VERSION,
+    "reports": reports.REPORT_VERSION,
+}
+
+
+def owned_audit(session: Session, user: User, audit_id: str) -> Audit:
+    audit = session.get(Audit, audit_id)
+    if audit is None or not (user.is_admin or audit.user_id == user.id):
+        raise HTTPException(status_code=404, detail="audit not found")
+    return audit
+
+
+def _trust_of(audit: Audit) -> dict:
+    d = audit_to_dict(audit, include_findings=True)
+    return trust.compute(d, [coverage_to_dict(r) for r in audit.coverage])
+
+
+def _download(content: str, media_type: str, name: str) -> Response:
+    return Response(content=content, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{name}"',
+                             "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/audits/{audit_id}/trust")
+def get_trust(audit_id: str, user: User = Depends(require_user),
+              session: Session = Depends(db_session)):
+    """Audit Confidence: coverage, evidence and adversarial resistance, apart."""
+    return _trust_of(owned_audit(session, user, audit_id))
+
+
+@app.get("/api/audits/{audit_id}/findings/{finding_id}/evidence-chain")
+def get_evidence_chain(audit_id: str, finding_id: int, user: User = Depends(require_user),
+                       session: Session = Depends(db_session)):
+    audit = owned_audit(session, user, audit_id)
+    row = next((f for f in audit.findings if f.id == finding_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    d = audit_to_dict(audit)
+    return evidence_chain.build(finding_to_dict(row), d, language=audit.language or "en")
+
+
+@app.get("/api/audits/{audit_id}/report.sarif")
+def report_sarif(audit_id: str, user: User = Depends(require_user),
+                 session: Session = Depends(db_session)):
+    audit = owned_audit(session, user, audit_id)
+    body = reports.to_sarif(audit_to_dict(audit, include_findings=True), TOOL_VERSION)
+    return _download(json.dumps(body, indent=2, ensure_ascii=False),
+                     "application/sarif+json", f"secaudit-{audit.id}.sarif")
+
+
+@app.get("/api/audits/{audit_id}/report.json")
+def report_json(audit_id: str, user: User = Depends(require_user),
+                session: Session = Depends(db_session)):
+    audit = owned_audit(session, user, audit_id)
+    body = reports.to_json_report(audit_to_dict(audit, include_findings=True),
+                                  _trust_of(audit), TOOL_VERSION)
+    return _download(json.dumps(body, indent=2, ensure_ascii=False, default=str),
+                     "application/json", f"secaudit-{audit.id}.json")
+
+
+@app.get("/api/audits/{audit_id}/report.html")
+def report_html(audit_id: str, user: User = Depends(require_user),
+                session: Session = Depends(db_session)):
+    """The printable report. It quotes the audited repository, so it runs no
+    script at all: the CSP allows its own inline style and nothing else."""
+    audit = owned_audit(session, user, audit_id)
+    body = reports.to_html(audit_to_dict(audit, include_findings=True),
+                           _trust_of(audit), TOOL_VERSION)
+    return Response(content=body, media_type="text/html; charset=utf-8", headers={
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                   "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/api/audits/{audit_id}/components")
+def list_components(audit_id: str, user: User = Depends(require_user),
+                    session: Session = Depends(db_session)):
+    audit = owned_audit(session, user, audit_id)
+    return [component_to_dict(c) for c in audit.components]
+
+
+@app.get("/api/audits/{audit_id}/sbom.cdx.json")
+def sbom(audit_id: str, user: User = Depends(require_user),
+         session: Session = Depends(db_session)):
+    """The dependency inventory as a CycloneDX 1.5 SBOM."""
+    audit = owned_audit(session, user, audit_id)
+    comps = [component_to_dict(c) for c in audit.components]
+    body = deps.to_cyclonedx(comps, audit.repo_url, audit.commit_sha, TOOL_VERSION)
+    return _download(json.dumps(body, indent=2), "application/vnd.cyclonedx+json",
+                     f"secaudit-{audit.id}.cdx.json")
+
+
+@app.get("/api/audits/{audit_id}/diff")
+def audit_diff(audit_id: str, user: User = Depends(require_user),
+               session: Session = Depends(db_session)):
+    """New, fixed, persisting and reintroduced findings since the previous
+    audit of the project, with the files and controls that changed."""
+    audit = owned_audit(session, user, audit_id)
+    previous = previous_audit(session, audit)
+    fixed_before = set()
+    if audit.project_id is not None:
+        fixed_before = {fp for (fp,) in session.execute(
+            select(Finding.fingerprint).join(Audit, Finding.audit_id == Audit.id)
+            .where(Audit.project_id == audit.project_id, Audit.id != audit.id,
+                   Finding.fix_commit.is_not(None)))}
+    current = [finding_to_dict(f) for f in audit.findings]
+    before = [finding_to_dict(f) for f in previous.findings] if previous else []
+    diff = drift.finding_diff(before, current, fixed_before)
+    run = next((m for m in reversed(audit.module_runs) if m.module == "drift"), None)
+
+    def brief(f):
+        return {k: f.get(k) for k in ("id", "title", "severity", "category", "file",
+                                      "line", "fingerprint", "assessment")}
+    return {"previous_audit": previous.id if previous else None,
+            "previous_commit": previous.commit_sha if previous else None,
+            "commit": audit.commit_sha,
+            **{k: [brief(f) for f in v] for k, v in diff.items()},
+            "changes": run.detail if run else None}
+
+
+@app.get("/api/audits/{audit_id}/replay.json")
+def replay(audit_id: str, user: User = Depends(require_user),
+           session: Session = Depends(db_session)):
+    """SecAudit Replay: what this audit ran on, with which versions and settings."""
+    audit = owned_audit(session, user, audit_id)
+    d = audit_to_dict(audit, include_findings=True)
+    config = backend_config(settings_store.config_overrides(session, audit.user_id))
+    safe = {k: v for k, v in config.items()
+            if k in ("backend", "model", "context_chars", "max_output_tokens", "max_chunks",
+                     "max_refutations", "canaries", "max_rules")}
+    safe.update({"history_depth": immune_history_depth(),
+                 "osv_check": deps.osv_enabled(),
+                 "published_check": parallax.published_check_enabled(),
+                 "github_token": bool(leverage.github_token()),
+                 "note": "the configuration in force now; the model actually used is "
+                         "under 'model'"})
+    body = reports.replay_manifest(d, safe, ENGINE_VERSIONS, d.get("immune_rules") or [],
+                                   TOOL_VERSION)
+    return _download(json.dumps(body, indent=2, default=str), "application/json",
+                     f"secaudit-{audit.id}-replay.json")
+
+
+@app.get("/api/projects/{project_id}/history")
+def project_history(project_id: int, user: User = Depends(require_user),
+                    session: Session = Depends(db_session)):
+    """SecAudit DNA: per audit, what was new, fixed and recurrent."""
+    project = owned_project(session, user, project_id)
+    audits = list(session.scalars(select(Audit).where(
+        Audit.project_id == project.id, Audit.status == "done")
+        .order_by(Audit.created_at)))
+    out, previous, fixed_ever = [], [], set()
+    for a in audits:
+        current = [finding_to_dict(f) for f in a.findings]
+        diff = drift.finding_diff(previous, current, fixed_ever)
+        fixed_ever |= {f["fingerprint"] for f in diff["fixed"]}
+        out.append({"audit_id": a.id, "commit_sha": a.commit_sha,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                    "total": len(current),
+                    **{k: len(v) for k, v in diff.items()}})
+        previous = current
+    recurring: dict[str, int] = {}
+    for a in audits:
+        for f in a.findings:
+            recurring[f.fingerprint] = recurring.get(f.fingerprint, 0) + 1
+    return {"project_id": project.id, "repo_url": project.repo_url, "audits": out,
+            "recurrent_fingerprints": sum(1 for n in recurring.values() if n > 1)}
+
+
+@app.get("/api/mcp/catalog")
+def mcp_catalog(language: str = "en", user: User = Depends(require_user)):
+    """The MCP rules per OWASP MCP category: what, how, limits."""
+    return {"taxonomy": {"name": mcp_audit.OWASP_MCP_VERSION, "url": mcp_audit.OWASP_MCP_URL,
+                         "checked": mcp_audit.OWASP_MCP_CHECKED},
+            "categories": mcp_audit.catalog(language)}
+
+
 @app.delete("/api/audits/{audit_id}", status_code=204)
 def delete_audit(audit_id: str, user: User = Depends(require_user),
                  session: Session = Depends(db_session)):
@@ -1247,8 +1604,10 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             record_llm_audit(session, audit, runnerqueue.RUNNER_BACKEND, None,
                              result.get("usage"), result.get("duration_ms"),
                              result.get("coverage_summary"))
+            texts = _texts_of(checkout)
+            rules = run_rule_scanners(session, audit, checkout, texts, findings)
             stored = store_result(session, audit, findings, result.get("coverage"),
-                                  result.get("coverage_summary"))
+                                  result.get("coverage_summary"), rules)
             record_falsifiability(session, audit, checkout, stored,
                                   runnerqueue.RUNNER_BACKEND, None,
                                   result.get("refutation_usage"))
@@ -1259,6 +1618,8 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
                           runnerqueue.RUNNER_BACKEND, None)
             record_leverage(session, audit, checkout, stored)
             record_attacker(session, audit, checkout, stored)
+            record_surface(session, audit, texts)
+            record_drift(session, audit, checkout)
         audit.runner_claimed_at = None
         session.commit()
     except Exception as e:  # never leave an audit stuck in "running"

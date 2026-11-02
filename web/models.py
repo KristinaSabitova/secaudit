@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
+from analysis import assessment  # noqa: E402
+
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 
 # Findings are only presented as confirmed when they carry evidence from the
@@ -135,6 +137,9 @@ class Audit(Base):
     )
     attack_paths: Mapped[list["AttackPath"]] = relationship(
         cascade="all, delete-orphan", passive_deletes=True, order_by="AttackPath.id",
+    )
+    components: Mapped[list["Component"]] = relationship(
+        cascade="all, delete-orphan", order_by="Component.id",
     )
     project: Mapped["Project | None"] = relationship()
 
@@ -306,6 +311,13 @@ class Finding(Base):
     # Module 5: who can trigger it, and what it is worth in context.
     personas: Mapped[list | None] = mapped_column(JSON, nullable=True)
     contextual_severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Who produced it: NULL is the model; "rule" a deterministic rule run on the
+    # server's checkout; "immune" a validated immune rule. See analysis/assessment.
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rule_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # What a rule states about its own finding: taxonomy (OWASP MCP, CWE),
+    # prerequisites, impact, confidence and its own assessment.
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     audit: Mapped[Audit] = relationship(back_populates="findings")
     hypothesis: Mapped["Hypothesis | None"] = relationship(
@@ -521,6 +533,31 @@ class AttackPath(Base):
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class Component(Base):
+    """A dependency the audit found in a manifest or a lockfile (SBOM)."""
+
+    __tablename__ = "components"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    ecosystem: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    direct: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    manifest: Mapped[str] = mapped_column(String(512), nullable=False)
+    purl: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    vulns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+def component_to_dict(c: "Component") -> dict:
+    return {"id": c.id, "ecosystem": c.ecosystem, "name": c.name, "version": c.version,
+            "direct": c.direct, "scope": c.scope, "manifest": c.manifest,
+            "purl": c.purl, "vulns": c.vulns}
+
+
 def _line_number(value) -> int | None:
     """A positive line number, or None for anything else a backend sends."""
     try:
@@ -564,6 +601,10 @@ def finding_from_dict(audit_id: str, f: dict) -> Finding:
         # The first rung of module 2: a finding whose snippet was found in the
         # file is known to exist. Anything less has not been shown at all.
         epistemic_status=EXISTS if status == VERIFIED else None,
+        # Only the server's own rules set these; a runner cannot claim to be one.
+        source=None,
+        rule_id=None,
+        detail=None,
     )
 
 
@@ -597,6 +638,13 @@ def finding_to_dict(f: Finding) -> dict:
     if f.contextual_severity:
         d["contextual_severity"] = f.contextual_severity
         d["personas"] = f.personas or []
+    if f.source:
+        d["source"] = f.source
+    if f.rule_id:
+        d["rule_id"] = f.rule_id
+    if f.detail:
+        d["detail"] = f.detail
+    d["assessment"] = assessment.assess(d)
     if f.zombie_of:
         origin = f.zombie_origin
         d["zombie_of"] = {"finding_id": f.zombie_of,

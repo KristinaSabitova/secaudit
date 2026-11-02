@@ -56,6 +56,12 @@ services:
       SECAUDIT_GITHUB_TOKEN: ${SECAUDIT_GITHUB_TOKEN:-}
       # 0 stops the server from asking PyPI and npm for published packages.
       SECAUDIT_PUBLISHED_CHECK: ${SECAUDIT_PUBLISHED_CHECK:-}
+      # Owners whose repositories may be audited; empty is any.
+      SECAUDIT_ALLOWED_REPO_OWNERS: ${SECAUDIT_ALLOWED_REPO_OWNERS:-}
+      # 1 sends package names and versions to OSV.dev for known vulnerabilities.
+      SECAUDIT_OSV_CHECK: ${SECAUDIT_OSV_CHECK:-}
+      SECAUDIT_MAX_SCAN_CHARS: ${SECAUDIT_MAX_SCAN_CHARS:-}
+      SECAUDIT_MAX_SCAN_FILES: ${SECAUDIT_MAX_SCAN_FILES:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as
     # http://host.docker.internal:11434.
     extra_hosts:

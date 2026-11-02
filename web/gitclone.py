@@ -96,6 +96,35 @@ def validate_repo_url(url: str) -> str:
     return f"https://github.com/{owner}/{repo}.git"
 
 
+ALLOWED_OWNERS_ENV = "SECAUDIT_ALLOWED_REPO_OWNERS"
+
+
+def allowed_repo_owners() -> set[str]:
+    """GitHub accounts whose repositories this instance may audit.
+
+    Empty means any: who may sign in is SECAUDIT_ALLOWED_GITHUB_LOGINS, and
+    this one restricts what they may point the instance at. GitHub logins are
+    case-insensitive, so the comparison is too.
+    """
+    raw = os.environ.get(ALLOWED_OWNERS_ENV, "")
+    return {o.strip().lower() for o in raw.split(",") if o.strip()}
+
+
+def repo_owner(url: str) -> str:
+    m = _GITHUB_RE.match(url.strip())
+    if not m:
+        raise ValueError("not a github.com repository URL")
+    return m.group(1)
+
+
+def check_repo_owner(url: str) -> None:
+    """Raise PermissionError when the instance does not audit this owner."""
+    allowed = allowed_repo_owners()
+    if allowed and repo_owner(url).lower() not in allowed:
+        raise PermissionError(
+            f"this instance only audits repositories of: {', '.join(sorted(allowed))}")
+
+
 def validate_branch(name: str) -> str:
     """Return the branch name unchanged, or raise ValueError."""
     name = name.strip()
