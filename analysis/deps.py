@@ -5,7 +5,10 @@ a package manager (no `pip`, no `npm install`: both run code from the
 packages). Supported: requirements*.txt, pyproject.toml (PEP 621 and
 Poetry), poetry.lock, uv.lock, package.json, package-lock.json (v1-v3),
 go.mod, Cargo.toml, Cargo.lock, Gemfile.lock, composer.json, composer.lock
-and pom.xml (literal versions only; Gradle is not read). A lockfile gives the transitive set with exact versions; a manifest
+pom.xml (literal versions, or properties the same pom defines), build.gradle
+and build.gradle.kts (read as text, never evaluated), Gradle version
+catalogs and gradle.lockfile. A lockfile gives the transitive set with exact
+versions; a manifest
 alone gives the direct dependencies with the range as declared.
 
 From that inventory:
@@ -388,11 +391,65 @@ def parse_composer_json(rel: str, text: str) -> list[dict]:
     return out
 
 
+_POM_PROP = re.compile(r"\$\{([\w.\-]+)\}")
+
+
+def _pom_properties(text: str) -> dict[str, str]:
+    """The literal <properties> of a pom, and project.version from its own
+    <version> (not the parent's, not a dependency's)."""
+    props: dict[str, str] = {}
+    for block in re.findall(r"<properties>(.*?)</properties>", text, re.S):
+        for name, value in re.findall(r"<([\w.\-]+)>\s*([^<]*?)\s*</\1>", block):
+            props[name] = value
+    # The project's own version: outside <parent>, <dependencies>, <build>...
+    bare = re.sub(r"<(parent|dependencies|dependencyManagement|build|profiles|plugins|"
+                  r"reporting)>.*?</\1>", "", text, flags=re.S)
+    m = re.search(r"<version>\s*([^<\s]+)\s*</version>", bare)
+    if m:
+        props.setdefault("project.version", m.group(1))
+        props.setdefault("version", m.group(1))
+    return props
+
+
+def _resolve(value: str | None, props: dict[str, str], depth: int = 0) -> str | None:
+    """A ${...} version resolved from literal properties of the same file,
+    or None. Never guessed: an unknown or circular property stays unknown."""
+    if not value:
+        return None
+    if "${" not in value:
+        return value
+    if depth > 5:
+        return None
+    out = value
+    for name in _POM_PROP.findall(value):
+        if name not in props:
+            return None
+        repl = _resolve(props[name], props, depth + 1)
+        if repl is None:
+            return None
+        out = out.replace("${" + name + "}", repl)
+    return out
+
+
 def parse_pom(rel: str, text: str) -> list[dict]:
-    """Dependencies with a literal version. Properties and parents are not
-    resolved: a version from ${...} is left out rather than guessed."""
+    """Dependencies with a literal version, or one taken from a property the
+    same pom defines literally. A version from a parent pom, a BOM or a
+    property defined elsewhere is left out rather than guessed."""
+    props = _pom_properties(text)
+    managed: dict[str, str] = {}
+    for block in re.findall(r"<dependencyManagement>(.*?)</dependencyManagement>", text, re.S):
+        for d in re.findall(r"<dependency>(.*?)</dependency>", block, re.S):
+            g = re.search(r"<groupId>\s*([^<\s]+)\s*</groupId>", d)
+            a = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", d)
+            v = re.search(r"<version>\s*([^<\s]+)\s*</version>", d)
+            if g and a and v and _resolve(v.group(1), props):
+                managed[f"{g.group(1)}:{a.group(1)}"] = _resolve(v.group(1), props)
+    # Managed versions are not dependencies by themselves; blank them out,
+    # keeping the newlines so line numbers stay right.
+    used = re.sub(r"<dependencyManagement>.*?</dependencyManagement>",
+                  lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
     out = []
-    for m in re.finditer(r"<dependency>(.*?)</dependency>", text, re.S):
+    for m in re.finditer(r"<dependency>(.*?)</dependency>", used, re.S):
         block = m.group(1)
         g = re.search(r"<groupId>\s*([^<\s]+)\s*</groupId>", block)
         a = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", block)
@@ -400,10 +457,107 @@ def parse_pom(rel: str, text: str) -> list[dict]:
         sc = re.search(r"<scope>\s*([^<\s]+)\s*</scope>", block)
         if not g or not a:
             continue
-        version = v.group(1) if v and "${" not in v.group(1) else None
-        out.append(_component(MAVEN, f"{g.group(1)}:{a.group(1)}", version, True, rel,
+        name = f"{_resolve(g.group(1), props) or g.group(1)}:{a.group(1)}"
+        version = _resolve(v.group(1), props) if v else managed.get(name)
+        out.append(_component(MAVEN, name, version, True, rel,
                               "dev" if sc and sc.group(1) == "test" else "runtime",
                               text.count("\n", 0, m.start()) + 1))
+    return out
+
+
+# Gradle: the configurations that put a dependency on a classpath.
+_GRADLE_CONF = (r"(?:implementation|api|compileOnly|runtimeOnly|compile|runtime|"
+                r"testImplementation|testCompileOnly|testRuntimeOnly|androidTestImplementation|"
+                r"debugImplementation|releaseImplementation|annotationProcessor|kapt|ksp|"
+                r"classpath)")
+_GRADLE_DEP = re.compile(
+    _GRADLE_CONF + r"\s*\(?\s*(?:platform\s*\(\s*)?[\"']([\w.\-]+):([\w.\-]+)(?::([^\"'@:]+))?"
+    r"(?::[\w\-]+)?(?:@\w+)?[\"']")
+_GRADLE_MAP = re.compile(
+    _GRADLE_CONF + r"\s*\(?\s*group\s*[:=]\s*[\"']([\w.\-]+)[\"']\s*,\s*name\s*[:=]\s*"
+    r"[\"']([\w.\-]+)[\"'](?:\s*,\s*version\s*[:=]\s*[\"']([^\"']+)[\"'])?")
+_GRADLE_VAR = re.compile(r"(?m)^\s*(?:(?:def|val|var)\s+|ext\.)?([A-Za-z_]\w*)\s*=\s*[\"']"
+                         r"([\w.\-+]+)[\"']\s*$")
+_GRADLE_REF = re.compile(r"^\$\{?([A-Za-z_][\w.]*)\}?$")
+
+
+def parse_gradle(rel: str, text: str) -> tuple[list[dict], list[dict]]:
+    """build.gradle and build.gradle.kts, read as text, never evaluated: a
+    Gradle build is a program. Coordinates written as a string or a map are
+    read; a version in a variable is resolved only from a literal assignment
+    in the same file. Version catalogs are read from libs.versions.toml."""
+    variables = dict(_GRADLE_VAR.findall(text))
+    out, signals = [], []
+    for rx in (_GRADLE_DEP, _GRADLE_MAP):
+        for m in rx.finditer(text):
+            line = text.count("\n", 0, m.start()) + 1
+            conf = m.group(0).split("(")[0].split()[0]
+            version = m.group(3)
+            if version:
+                ref = _GRADLE_REF.match(version)
+                if ref:
+                    version = variables.get(ref.group(1).split(".")[-1])
+                elif "$" in version or version.endswith("+") or version in ("latest.release",
+                                                                              "latest.integration"):
+                    version = None
+            out.append(_component(MAVEN, f"{m.group(1)}:{m.group(2)}", version, True, rel,
+                                  "dev" if conf.startswith(("test", "androidTest"))
+                                  else "runtime", line))
+    for m in re.finditer(r"\bmaven\s*\{[^}]*?url\s*[=(]?\s*(?:uri\s*\(\s*)?[\"'](http://[^\"']+)",
+                         text):
+        signals.append(_signal("dep.insecure_resolved", rel,
+                               text.count("\n", 0, m.start(1)) + 1,
+                               f"repository over http: {m.group(1)}"))
+    return out, signals
+
+
+def parse_version_catalog(rel: str, text: str) -> list[dict]:
+    """gradle/libs.versions.toml: [libraries] with a literal version or a
+    version.ref into [versions]."""
+    try:
+        data = tomllib.loads(text)
+    except Exception:
+        return []
+    versions = {k: v for k, v in (data.get("versions") or {}).items() if isinstance(v, str)}
+    out = []
+    for alias, lib in (data.get("libraries") or {}).items():
+        version = None
+        if isinstance(lib, str):
+            parts = lib.split(":")
+            if len(parts) < 2:
+                continue
+            module, version = ":".join(parts[:2]), parts[2] if len(parts) > 2 else None
+        elif isinstance(lib, dict):
+            module = lib.get("module") or (f"{lib.get('group')}:{lib.get('name')}"
+                                           if lib.get("group") and lib.get("name") else None)
+            v = lib.get("version")
+            if isinstance(v, str):
+                version = v
+            elif isinstance(v, dict) and isinstance(v.get("ref"), str):
+                version = versions.get(v["ref"])
+            elif isinstance(lib.get("version.ref"), str):
+                version = versions.get(lib["version.ref"])
+        else:
+            continue
+        if not module:
+            continue
+        out.append(_component(MAVEN, module, version, True, rel, "runtime",
+                              _line_of(text, str(alias))))
+    return out
+
+
+def parse_gradle_lockfile(rel: str, text: str) -> list[dict]:
+    """gradle.lockfile: group:artifact:version=configurations, every
+    resolved component with its exact version."""
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        m = re.match(r"^([\w.\-]+):([\w.\-]+):([^=\s]+)=(.*)$", line.strip())
+        if m:
+            confs = m.group(4)
+            scope = "dev" if confs and all(c.startswith("test") for c in confs.split(",")) \
+                else "runtime"
+            out.append(_component(MAVEN, f"{m.group(1)}:{m.group(2)}", m.group(3), False,
+                                  rel, scope, n))
     return out
 
 
@@ -442,6 +596,13 @@ def inventory(texts: dict[str, str]) -> dict:
             got = parse_composer_json(rel, text)
         elif name == "pom.xml":
             got = parse_pom(rel, text)
+        elif name in ("build.gradle", "build.gradle.kts", "settings.gradle",
+                      "settings.gradle.kts"):
+            got, sig = parse_gradle(rel, text)
+        elif name.endswith(".versions.toml"):
+            got = parse_version_catalog(rel, text)
+        elif name == "gradle.lockfile":
+            got = parse_gradle_lockfile(rel, text)
         else:
             continue
         manifests.append(rel)
