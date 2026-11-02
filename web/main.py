@@ -1668,6 +1668,69 @@ def digital_twin(audit_id: str, user: User = Depends(require_user),
     return twin.build(d, [coverage_to_dict(r) for r in audit.coverage])
 
 
+class TwinSimulation(BaseModel):
+    fix_findings: list[int] = []
+    confirm_findings: list[int] = []
+    remove_capabilities: list[int] = []
+    remove_divergences: list[int] = []
+
+
+def attack_inputs(session: Session, audit: Audit) -> dict:
+    """What the attack graph was built from, as stored: the same inputs
+    record_attacker passed to attacker.analyze, read back without writing."""
+    lev_run = session.scalar(select(ModuleRun).where(
+        ModuleRun.audit_id == audit.id, ModuleRun.module == "leverage")
+        .order_by(ModuleRun.id.desc()).limit(1))
+    jewels = [j for j in (audit.project.crown_jewels if audit.project else [])
+              if j.declared_by != DISMISSED] or [CrownJewel(kind="secrets", target="secrets")]
+    return {
+        "findings": [finding_to_dict(f) for f in audit.findings],
+        "divergences": [{"id": v.id, "kind": v.kind, "file": v.file, "detail": v.detail}
+                        for v in session.scalars(select(ViewDivergence)
+                                                 .where(ViewDivergence.audit_id == audit.id))],
+        "leverage": [{"id": r.id, "file": r.file, "leverage": r.leverage_score,
+                      "oversight": r.oversight_score, "reasons": r.reasons or []}
+                     for r in session.scalars(select(FileLeverage)
+                                              .where(FileLeverage.audit_id == audit.id))],
+        "agent": {"capabilities": [{"id": c.id, "capability": c.capability,
+                                    "source_file": c.source_file}
+                                   for c in session.scalars(select(AgentCapability).where(
+                                       AgentCapability.audit_id == audit.id))],
+                  "combinations": ((lev_run.detail or {}).get("combinations") or [])
+                  if lev_run else []},
+        "jewels": [{"id": j.id, "kind": j.kind} for j in jewels],
+    }
+
+
+@app.post("/api/audits/{audit_id}/twin/simulate")
+def simulate_twin(audit_id: str, req: TwinSimulation, user: User = Depends(require_user),
+                  session: Session = Depends(db_session)):
+    """Change the twin and see which attack paths close, harden or open.
+
+    Fixing a finding removes its steps; confirming one makes its steps solid.
+    Recomputed on the stored graph: nothing runs, nothing is written."""
+    audit = owned_audit(session, user, audit_id)
+    if audit.status != "done":
+        raise HTTPException(409, "the audit has not finished")
+    inputs = attack_inputs(session, audit)
+    known = {
+        "fix_findings": {f["id"] for f in inputs["findings"]},
+        "confirm_findings": {f["id"] for f in inputs["findings"]},
+        "remove_capabilities": {c["id"] for c in inputs["agent"]["capabilities"]},
+        "remove_divergences": {d["id"] for d in inputs["divergences"]},
+    }
+    changes = req.model_dump()
+    for key, ids in changes.items():
+        if len(ids) > 500:
+            raise HTTPException(400, f"{key}: too many ids")
+        unknown = set(ids) - known[key]
+        if unknown:
+            raise HTTPException(400, f"{key}: not in this audit: {sorted(unknown)[:10]}")
+    if not any(changes.values()):
+        raise HTTPException(400, "nothing to change")
+    return twin.simulate(inputs, **changes)
+
+
 @app.post("/api/audits/{audit_id}/replay", status_code=202)
 def replay_audit(audit_id: str, background_tasks: BackgroundTasks,
                  user: User = Depends(require_user), session: Session = Depends(db_session)):

@@ -681,6 +681,22 @@ const TEXT = {
     "twin.unknown": "Unknown",
     "twin.nounknown": "Nothing flagged as unknown.",
     "twin.links": "Links",
+    "twin.sim.title": "Simulate: fix or confirm findings and recompute the attack paths",
+    "twin.sim.intro": "Choose what happens to each finding on an attack path. Fixing removes its steps; confirming makes them solid, as a dynamic test would.",
+    "twin.sim.none": "No finding is on an attack path: there is nothing to simulate.",
+    "twin.sim.finding": "Finding",
+    "twin.sim.keep": "keep",
+    "twin.sim.fix": "fix",
+    "twin.sim.confirm": "confirm",
+    "twin.sim.run": "recompute paths",
+    "twin.sim.nothing": "Choose at least one finding to fix or confirm.",
+    "twin.sim.cost": (c) => `cost ${c}`,
+    "twin.sim.summary": (b, a) => `Paths: ${b} before, ${a} after.`,
+    "twin.sim.closed": "Closed",
+    "twin.sim.changed": "Changed",
+    "twin.sim.opened": "Opened",
+    "twin.sim.remaining": "Still open",
+    "twin.sim.note": "Recomputed on the attack graph the audit measured; nothing ran and the code is unchanged. A path the graph does not contain cannot be closed here.",
     "twin.rel.contains": "contains",
     "twin.rel.touches": "touches",
     "twin.rel.depends_on": "depends on",
@@ -1513,6 +1529,22 @@ const TEXT = {
     "twin.unknown": "Desconocido",
     "twin.nounknown": "Nada marcado como desconocido.",
     "twin.links": "Enlaces",
+    "twin.sim.title": "Simular: arreglar o confirmar hallazgos y recalcular los caminos de ataque",
+    "twin.sim.intro": "Elige qué pasa con cada hallazgo que está en un camino de ataque. Arreglarlo quita sus pasos; confirmarlo los vuelve sólidos, como haría una prueba dinámica.",
+    "twin.sim.none": "Ningún hallazgo está en un camino de ataque: no hay nada que simular.",
+    "twin.sim.finding": "Hallazgo",
+    "twin.sim.keep": "dejar",
+    "twin.sim.fix": "arreglar",
+    "twin.sim.confirm": "confirmar",
+    "twin.sim.run": "recalcular caminos",
+    "twin.sim.nothing": "Elige al menos un hallazgo que arreglar o confirmar.",
+    "twin.sim.cost": (c) => `coste ${c}`,
+    "twin.sim.summary": (b, a) => `Caminos: ${b} antes, ${a} después.`,
+    "twin.sim.closed": "Cerrados",
+    "twin.sim.changed": "Cambiados",
+    "twin.sim.opened": "Abiertos",
+    "twin.sim.remaining": "Siguen abiertos",
+    "twin.sim.note": "Recalculado sobre el grafo de ataque que midió la auditoría; no se ejecutó nada y el código no cambia. Un camino que el grafo no contiene no se puede cerrar aquí.",
     "twin.rel.contains": "contiene",
     "twin.rel.touches": "toca",
     "twin.rel.depends_on": "depende de",
@@ -4899,7 +4931,86 @@ function renderTwin() {
   }
   layout.append(detail);
   parts.push(layout);
+  parts.push(twinSimulator(audit, tw));
   target.replaceChildren(...parts);
+}
+
+// What a change to the twin does to the attack paths.
+function twinSimulator(audit, tw) {
+  const box = node("details", "block twin-sim");
+  box.append(node("summary", null, t("twin.sim.title")));
+  box.append(node("p", "muted", t("twin.sim.intro")));
+  const onPath = new Set(tw.edges.filter((e) => e.rel === "reaches" && e.to.startsWith("finding:"))
+    .map((e) => e.to));
+  const findings = tw.nodes.filter((n) => n.type === "finding" && onPath.has(n.id));
+  if (!findings.length) {
+    box.append(node("p", "muted", t("twin.sim.none")));
+    return box;
+  }
+  const choice = new Map();
+  const table = node("table", "data");
+  const head = document.createElement("tr");
+  for (const h of ["twin.sim.finding", "twin.sim.keep", "twin.sim.fix", "twin.sim.confirm"]) {
+    head.append(node("th", null, t(h)));
+  }
+  table.append(head);
+  for (const f of findings) {
+    const id = Number(f.id.split(":")[1]);
+    const tr = document.createElement("tr");
+    tr.append(node("td", null, `${f.label} (${f.assessment ? t(`assessment.${f.assessment}`) : "—"})`));
+    for (const action of ["keep", "fix", "confirm"]) {
+      const td = document.createElement("td");
+      const r = document.createElement("input");
+      r.type = "radio";
+      r.name = `twin-sim-${id}`;
+      r.checked = action === "keep";
+      r.setAttribute("aria-label", `${t(`twin.sim.${action}`)}: ${f.label}`);
+      r.addEventListener("change", () => choice.set(id, action));
+      td.append(r);
+      tr.append(td);
+    }
+    table.append(tr);
+  }
+  const out = node("div");
+  const go_ = button(t("twin.sim.run"), "", async () => {
+    const fix = [...choice].filter(([, a]) => a === "fix").map(([i]) => i);
+    const confirm = [...choice].filter(([, a]) => a === "confirm").map(([i]) => i);
+    if (!fix.length && !confirm.length) {
+      out.replaceChildren(node("p", "muted", t("twin.sim.nothing")));
+      return;
+    }
+    go_.disabled = true;
+    try {
+      const r = await api(auditPath(audit, "/twin/simulate"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fix_findings: fix, confirm_findings: confirm }),
+      });
+      out.replaceChildren(twinSimResult(r));
+    } catch (e) {
+      out.replaceChildren(node("p", "error", e.message));
+    } finally {
+      go_.disabled = false;
+    }
+  });
+  box.append(table, go_, out);
+  return box;
+}
+
+function twinSimResult(r) {
+  const pathText = (p) => `${t(`persona.${p.persona}`)} → ${t(`jewel.${p.jewel}`)}`
+    + ` (${t("twin.sim.cost", p.cost)}${p.tentative ? `, ${t("attacker.hypothetical")}` : ""})`;
+  const wrap = node("div");
+  wrap.append(node("p", null, t("twin.sim.summary", r.before, r.after)));
+  const section = (key, items, text) => {
+    wrap.append(node("h4", null, `${t(key)} · ${items.length}`));
+    wrap.append(items.length ? list(items.map(text)) : node("p", "muted", "—"));
+  };
+  section("twin.sim.closed", r.closed, pathText);
+  section("twin.sim.changed", r.changed, (c) => `${pathText(c.before)} ⇒ ${pathText(c.after)}`);
+  section("twin.sim.opened", r.opened, pathText);
+  section("twin.sim.remaining", r.remaining, pathText);
+  wrap.append(node("p", "muted small", t("twin.sim.note")));
+  return wrap;
 }
 
 // --- C30: blue team, in the finding --------------------------------------------

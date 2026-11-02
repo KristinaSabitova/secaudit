@@ -177,3 +177,80 @@ def build(audit: dict, coverage: list[dict] | None = None) -> dict:
             "uncertain_nodes": sum(1 for n in nodes.values() if n["uncertainty"]),
             "note": ("A map built from the audit's measurements, not an executable copy. "
                      "Every path is hypothetical: nothing was run.")}
+
+
+# ---------------------------------------------------------------------------
+# Simulation: change the twin, recompute the attack paths
+# ---------------------------------------------------------------------------
+
+def _path_table(result: dict) -> dict:
+    return {(p["persona"], p["jewel"]): {"persona": p["persona"], "jewel": p["jewel"],
+                                         "cost": p["cost"], "severity": p["severity"],
+                                         "tentative": p["tentative"],
+                                         "findings": sorted({result["edges"][i].finding_id
+                                                             for i in p["edges"]
+                                                             if result["edges"][i].finding_id
+                                                             is not None})}
+            for p in result["paths"]}
+
+
+def simulate(inputs: dict, fix_findings=(), confirm_findings=(),
+             remove_capabilities=(), remove_divergences=()) -> dict:
+    """The attack paths before and after a change to the model.
+
+    inputs: what attacker.analyze takes (findings, divergences, leverage,
+    agent, jewels), as the audit stored them. The changes:
+
+      fix_findings         the finding is gone (as if fixed): its steps vanish;
+      confirm_findings     the finding is taken as confirmed: its steps stop
+                           being tentative (what a dynamic test would settle);
+      remove_capabilities  an agent capability is withdrawn;
+      remove_divergences   a divergence between views is resolved.
+
+    Nothing runs and the code is not touched: this answers "which paths
+    would this close or harden", on the graph secaudit measured. A path the
+    graph does not know about cannot be closed or opened here.
+    """
+    from . import attacker
+    fix, confirm = set(fix_findings), set(confirm_findings)
+    caps, divs = set(remove_capabilities), set(remove_divergences)
+
+    def run(findings, divergences, agent):
+        return attacker.analyze(findings, divergences, inputs["leverage"], agent,
+                                inputs["jewels"])
+
+    before = run(inputs["findings"], inputs["divergences"], inputs["agent"])
+    changed = []
+    for f in inputs["findings"]:
+        if f.get("id") in fix:
+            continue
+        if f.get("id") in confirm:
+            f = dict(f, assessment="confirmed", epistemic_status="reachable",
+                     verification_status="verified")
+        changed.append(f)
+    agent = dict(inputs["agent"])
+    agent["capabilities"] = [c for c in agent.get("capabilities") or []
+                             if c.get("id") not in caps]
+    agent["combinations"] = [c for c in agent.get("combinations") or []
+                             if not caps & set(c.get("steps") or [])]
+    after = run(changed, [d for d in inputs["divergences"] if d.get("id") not in divs], agent)
+    b, a = _path_table(before), _path_table(after)
+    closed = [b[k] for k in b if k not in a]
+    opened = [a[k] for k in a if k not in b]
+    changed_paths = []
+    for k in b.keys() & a.keys():
+        if (b[k]["cost"], b[k]["tentative"], b[k]["findings"]) != \
+                (a[k]["cost"], a[k]["tentative"], a[k]["findings"]):
+            changed_paths.append({"persona": k[0], "jewel": k[1], "before": b[k],
+                                  "after": a[k]})
+    return {
+        "changes": {"fix_findings": sorted(fix), "confirm_findings": sorted(confirm),
+                    "remove_capabilities": sorted(caps),
+                    "remove_divergences": sorted(divs)},
+        "before": len(b), "after": len(a),
+        "closed": closed, "opened": opened, "changed": changed_paths,
+        "remaining": [a[k] for k in a],
+        "note": ("Recomputed on the attack graph the audit measured; nothing ran and the "
+                 "code is unchanged. A path the graph does not contain cannot be "
+                 "closed or opened here."),
+    }
