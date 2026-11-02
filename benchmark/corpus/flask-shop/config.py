@@ -1,0 +1,6 @@
+import os
+
+GITHUB_TOKEN = "@@GITHUB_TOKEN@@"
+AWS_ACCESS_KEY_ID = "@@AWS_KEY@@"
+DATABASE_PASSWORD = os.environ.get("DATABASE_PASSWORD")
+SECRET_KEY = "changeme"

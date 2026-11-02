@@ -16,10 +16,21 @@ repositories: the result says how many labels it rests on and refuses to
 call a sample under 30 labels anything but small.
 
     python3 -m analysis.benchmark labels.json audit.json
+    python3 -m analysis.benchmark --corpus benchmark
+
+The second form runs the deterministic scanners (secrets, dependencies, MCP,
+taint) over the labelled corpus in benchmark/ and scores them: no model, no
+network, so anyone can reproduce the numbers. It measures the scanners, not
+the model's audit; that needs an audit made with the person's own backend,
+scored with the first form.
 """
 
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from . import assessment
 
@@ -102,9 +113,69 @@ def aggregate(scores: list[dict]) -> dict:
                             if labels < SMALL_SAMPLE else None)}
 
 
+# Credential-shaped values are kept out of the corpus files (a repository
+# holding them trips every secret scanner, GitHub's included) and written in
+# at run time. They match the formats and are not real.
+_PLACEHOLDERS = {
+    "@@GITHUB_TOKEN@@": "ghp_" + "Zq8RtY2uWx4Vb6Nm1Kp3Ls5Dj7Hg9Fc0Ae2B",
+    "@@GITHUB_TOKEN_2@@": "ghp_" + "Mn4Bv6Cx8Zl1Kj3Hg5Fd7Sa9Qw2Er4Ty6Uio",
+    "@@GITHUB_TOKEN_FIXTURE@@": "ghp_" + "Fx1Fx2Fx3Fx4Fx5Fx6Fx7Fx8Fx9Fx0Fx1Fx2",
+    "@@AWS_KEY@@": "AKIA" + "Q3RZ7TBN2KWX5YLD",
+}
+
+
+def _materialise(src: Path, dest: Path) -> None:
+    shutil.copytree(src, dest)
+    for f in dest.rglob("*"):
+        if f.is_file():
+            text = f.read_text()
+            for k, v in _PLACEHOLDERS.items():
+                text = text.replace(k, v)
+            f.write_text(text)
+    for args in (("init", "-q"), ("add", "-A"),
+                 ("-c", "user.name=bench", "-c", "user.email=bench@invalid",
+                  "-c", "commit.gpgsign=false", "commit", "-qm", "corpus", "--no-verify")):
+        subprocess.run(["git", *args], cwd=dest, check=True, capture_output=True)
+
+
+def scanner_findings(project: Path, language: str = "en") -> list[dict]:
+    """What the deterministic scanners report on a checkout, verified as the
+    server verifies them."""
+    from . import evidence, scan
+    result = scan.run(project, language, 10)
+    if result["errors"]:
+        raise RuntimeError(f"scanner errors: {result['errors']}")
+    found = []
+    for key in ("secrets", "mcp", "taint"):
+        found += (result.get(key) or {}).get("findings") or []
+    found += (result.get("dependencies") or {}).get("signals") or []
+    evidence.verify_findings(project, found, None)
+    return found
+
+
+def run_corpus(root: Path) -> dict:
+    scores = []
+    for labels_file in sorted((root / "labels").glob("*.json")):
+        labels = json.loads(labels_file.read_text())
+        with tempfile.TemporaryDirectory(prefix="secaudit-bench-") as tmp:
+            dest = Path(tmp) / labels_file.stem
+            _materialise(root / "corpus" / labels_file.stem, dest)
+            found = scanner_findings(dest)
+        s = score(labels, {"findings": found, "repo_url": labels_file.stem})
+        s["deceptions"] = labels.get("deceptions") or []
+        scores.append(s)
+    return {"measured": "deterministic scanners only (no model)",
+            "cases": scores, "total": aggregate(scores)}
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "--corpus":
+        json.dump(run_corpus(Path(argv[1])), sys.stdout, indent=2)
+        print()
+        return 0
     if len(argv) != 2:
-        print("usage: python3 -m analysis.benchmark labels.json audit.json", file=sys.stderr)
+        print("usage: python3 -m analysis.benchmark labels.json audit.json\n"
+              "       python3 -m analysis.benchmark --corpus DIR", file=sys.stderr)
         return 2
     with open(argv[0]) as a, open(argv[1]) as b:
         json.dump(score(json.load(a), json.load(b)), sys.stdout, indent=2)

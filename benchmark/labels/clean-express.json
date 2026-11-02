@@ -1,0 +1,10 @@
+{
+  "repository": "clean-express",
+  "kind": "clean",
+  "expected": [],
+  "deceptions": [
+    "Number() before a parameterised query",
+    "path.basename + root for sendFile",
+    "res.json of a String()"
+  ]
+}

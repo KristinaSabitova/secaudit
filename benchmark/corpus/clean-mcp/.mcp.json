@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "uvx",
+      "args": ["notes-mcp==1.4.2"],
+      "env": {"NOTES_TOKEN": "${NOTES_TOKEN}"}
+    }
+  }
+}

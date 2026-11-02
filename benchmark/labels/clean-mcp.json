@@ -1,0 +1,11 @@
+{
+  "repository": "clean-mcp",
+  "kind": "clean",
+  "expected": [],
+  "deceptions": [
+    "a path tool confined to its root",
+    "a pinned package (==1.4.2)",
+    "a token from ${NOTES_TOKEN}",
+    "logging of every tool call"
+  ]
+}

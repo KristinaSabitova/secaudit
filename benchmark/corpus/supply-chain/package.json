@@ -1,0 +1,8 @@
+{
+  "name": "supply",
+  "version": "1.0.0",
+  "dependencies": {
+    "express": "4.19.2",
+    "internal-utils": "git+https://github.com/acme/internal-utils.git"
+  }
+}

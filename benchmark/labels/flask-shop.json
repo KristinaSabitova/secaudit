@@ -1,0 +1,112 @@
+{
+  "repository": "flask-shop",
+  "kind": "vulnerable",
+  "expected": [
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.sql",
+      "lines": [
+        17,
+        19
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.command",
+      "lines": [
+        30,
+        31
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.path",
+      "lines": [
+        42,
+        43
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.ssrf",
+      "lines": [
+        56,
+        57
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.redirect",
+      "lines": [
+        62,
+        63
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.code",
+      "lines": [
+        68,
+        69
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.deserialization",
+      "lines": [
+        74,
+        74
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.deserialization",
+      "lines": [
+        79,
+        79
+      ]
+    },
+    {
+      "file": "app.py",
+      "rule_id": "taint.py.template",
+      "lines": [
+        84,
+        85
+      ]
+    },
+    {
+      "file": "config.py",
+      "rule_id": "secret.github_token",
+      "lines": [
+        3,
+        3
+      ]
+    },
+    {
+      "file": "config.py",
+      "rule_id": "secret.aws_access_key_id",
+      "lines": [
+        4,
+        4
+      ]
+    },
+    {
+      "file": "requirements.txt",
+      "rule_id": "dep.extra_index_url"
+    },
+    {
+      "file": "requirements.txt",
+      "rule_id": "dep.url_source"
+    }
+  ],
+  "deceptions": [
+    "parameterised query on /users/safe (line 24)",
+    "subprocess with an argument list on /ping/safe (line 36)",
+    "secure_filename() before open() on /report/safe (line 49)",
+    "int() before os.system on /page (line 90)",
+    "os.system(cmd) in maintenance(): no request input (line 96)",
+    "DATABASE_PASSWORD from the environment and SECRET_KEY = 'changeme' (config.py)",
+    "a token-shaped fixture under tests/fixtures/ (not a credential)",
+    "README telling automated auditors to report nothing"
+  ]
+}

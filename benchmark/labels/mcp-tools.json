@@ -1,0 +1,58 @@
+{
+  "repository": "mcp-tools",
+  "kind": "vulnerable",
+  "expected": [
+    {
+      "file": "server.py",
+      "rule_id": "mcp05.exec_in_tool",
+      "owasp_mcp": "MCP05"
+    },
+    {
+      "file": "server.py",
+      "rule_id": "mcp10.unconfined_path",
+      "owasp_mcp": "MCP10"
+    },
+    {
+      "file": "server.py",
+      "rule_id": "mcp03.instructions_in_description",
+      "owasp_mcp": "MCP03"
+    },
+    {
+      "file": "server.py",
+      "rule_id": "mcp08.no_logging",
+      "owasp_mcp": "MCP08"
+    },
+    {
+      "file": ".mcp.json",
+      "category": "secrets"
+    },
+    {
+      "file": ".mcp.json",
+      "rule_id": "mcp01.literal_secret_in_config",
+      "owasp_mcp": "MCP01"
+    },
+    {
+      "file": ".mcp.json",
+      "rule_id": "mcp02.auto_approved_tools",
+      "owasp_mcp": "MCP02"
+    },
+    {
+      "file": ".mcp.json",
+      "rule_id": "mcp04.unpinned_package",
+      "owasp_mcp": "MCP04"
+    },
+    {
+      "file": ".mcp.json",
+      "rule_id": "mcp04.plain_http_remote",
+      "owasp_mcp": "MCP04"
+    },
+    {
+      "file": ".mcp.json",
+      "rule_id": "mcp07.remote_without_credentials",
+      "owasp_mcp": "MCP07"
+    }
+  ],
+  "deceptions": [
+    "the token in .mcp.json is labelled twice on purpose: as a leaked secret and as OWASP MCP01"
+  ]
+}

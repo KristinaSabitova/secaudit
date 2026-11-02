@@ -1,0 +1,65 @@
+{
+  "repository": "express-api",
+  "kind": "vulnerable",
+  "expected": [
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.command",
+      "lines": [
+        6,
+        7
+      ]
+    },
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.sql",
+      "lines": [
+        11,
+        12
+      ]
+    },
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.path",
+      "lines": [
+        21,
+        22
+      ]
+    },
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.redirect",
+      "lines": [
+        26,
+        27
+      ]
+    },
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.response",
+      "lines": [
+        31,
+        32
+      ]
+    },
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.ssrf",
+      "lines": [
+        36,
+        37
+      ]
+    },
+    {
+      "file": "server.js",
+      "rule_id": "taint.js.code",
+      "lines": [
+        41,
+        42
+      ]
+    }
+  ],
+  "deceptions": [
+    "parameterised query on /item/safe (line 17)"
+  ]
+}

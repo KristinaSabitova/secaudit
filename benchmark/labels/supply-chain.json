@@ -1,0 +1,24 @@
+{
+  "repository": "supply-chain",
+  "kind": "vulnerable",
+  "expected": [
+    {
+      "file": "package.json",
+      "rule_id": "dep.url_source"
+    },
+    {
+      "file": "package-lock.json",
+      "rule_id": "dep.insecure_resolved"
+    },
+    {
+      "file": "Cargo.toml",
+      "rule_id": "dep.url_source"
+    },
+    {
+      "file": ".cursor-mcp.json",
+      "rule_id": "mcp04.pipe_to_shell",
+      "owasp_mcp": "MCP04"
+    }
+  ],
+  "deceptions": []
+}

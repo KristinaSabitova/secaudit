@@ -1,0 +1,15 @@
+{
+  "repository": "clean-python",
+  "kind": "clean",
+  "expected": [],
+  "deceptions": [
+    "parameterised SQL",
+    "argument-list subprocess after validation",
+    "secure_filename",
+    "yaml.safe_load",
+    "int() sanitiser",
+    "token from os.environ",
+    "placeholder password",
+    "a comment quoting eval(request.args[...])"
+  ]
+}
