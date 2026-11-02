@@ -99,7 +99,7 @@ class TestTaint:
         raw = taint.analyze({"app.py": FLASK})["raw"]
         found = taint.to_findings(raw, "es")
         assert all(f["detail"]["assessment"] == "potential" for f in found)
-        assert all("Intraprocedimental" in f["detail"]["limits"] for f in found)
+        assert all("mismo fichero" in f["detail"]["limits"] for f in found)
         assert all(f["rule_id"].startswith("taint.py.") for f in found)
 
     def test_other_languages_are_said_not_analysed(self):
@@ -743,3 +743,185 @@ class TestSignalEvidence:
         evidence.verify_findings(tmp_path, found, None)
         assert {f["rule_id"] for f in found} == {"dep.url_source", "dep.insecure_resolved"}
         assert all(f["verification_status"] == "verified" for f in found), found
+
+
+# ---------------------------------------------------------------------------
+# Practice 3, part 3: Gradle, Maven properties, inter-procedural taint
+# ---------------------------------------------------------------------------
+
+POM = """<project><parent><version>9.9</version></parent><version>2.0.0</version>
+<properties><spring.version>5.3.1</spring.version><alias>${spring.version}</alias>
+<loop>${loop}</loop></properties>
+<dependencyManagement><dependencies><dependency><groupId>m</groupId>
+<artifactId>n</artifactId><version>3.1</version></dependency></dependencies>
+</dependencyManagement>
+<dependencies>
+<dependency><groupId>org.springframework</groupId><artifactId>core</artifactId>
+<version>${spring.version}</version></dependency>
+<dependency><groupId>x</groupId><artifactId>j</artifactId><version>${alias}</version></dependency>
+<dependency><groupId>me</groupId><artifactId>self</artifactId><version>${project.version}</version></dependency>
+<dependency><groupId>m</groupId><artifactId>n</artifactId></dependency>
+<dependency><groupId>u</groupId><artifactId>k</artifactId><version>${from.parent}</version></dependency>
+<dependency><groupId>c</groupId><artifactId>c</artifactId><version>${loop}</version></dependency>
+</dependencies></project>"""
+
+GRADLE = '''def okVersion = "4.12.0"
+val kotlinV = "1.9.0"
+repositories { maven { url "http://repo.corp/maven" } }
+dependencies {
+  implementation "com.squareup.okhttp3:okhttp:$okVersion"
+  implementation("org.jetbrains.kotlin:kotlin-stdlib:${kotlinV}")
+  testImplementation 'junit:junit:4.13.2'
+  api group: 'com.google.guava', name: 'guava', version: '32.1.2-jre'
+  implementation 'org.x:dynamic:1.+'
+  implementation "org.y:unknown:$elsewhere"
+}
+'''
+
+
+class TestJvmManifests:
+    def test_maven_properties_are_resolved_only_when_literal(self):
+        got = {c["name"]: c["version"] for c in deps.parse_pom("pom.xml", POM)}
+        assert got == {"org.springframework:core": "5.3.1", "x:j": "5.3.1",
+                       "me:self": "2.0.0", "m:n": "3.1", "u:k": None, "c:c": None}
+
+    def test_gradle_is_read_not_run(self):
+        comps, signals = deps.parse_gradle("build.gradle", GRADLE)
+        got = {c["name"]: (c["version"], c["scope"]) for c in comps}
+        assert got["com.squareup.okhttp3:okhttp"] == ("4.12.0", "runtime")
+        assert got["org.jetbrains.kotlin:kotlin-stdlib"] == ("1.9.0", "runtime")
+        assert got["junit:junit"] == ("4.13.2", "dev")
+        assert got["com.google.guava:guava"] == ("32.1.2-jre", "runtime")
+        # A dynamic or unknown version is left out, not guessed.
+        assert got["org.x:dynamic"][0] is None and got["org.y:unknown"][0] is None
+        assert [s["rule"] for s in signals] == ["dep.insecure_resolved"]
+
+    def test_version_catalog_and_lockfile(self):
+        catalog = ('[versions]\nktor = "2.3.4"\n[libraries]\n'
+                   'ktor-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }\n'
+                   'plain = "a.b:c:1.0"\n')
+        inv = deps.inventory({
+            "gradle/libs.versions.toml": catalog,
+            "gradle.lockfile": "io.ktor:ktor-server-core:2.3.4=runtimeClasspath\n"
+                               "org.slf4j:slf4j-api:2.0.9=runtimeClasspath\n"
+                               "junit:junit:4.13=testRuntimeClasspath\nempty=\n"})
+        by = {c["purl"]: c for c in inv["components"]}
+        assert by["pkg:maven/io.ktor/ktor-server-core@2.3.4"]["direct"] is True
+        assert by["pkg:maven/org.slf4j/slf4j-api@2.0.9"]["direct"] is False
+        assert by["pkg:maven/junit/junit@4.13"]["scope"] == "dev"
+        assert "pkg:maven/a.b/c@1.0" in by
+
+
+HELPERS = '''import os, subprocess
+from flask import request, Flask
+app = Flask(__name__)
+
+def shell(c):
+    return subprocess.check_output(c, shell=True)
+
+def where(q):
+    return "SELECT * FROM t WHERE x = '" + q + "'"
+
+def name_param():
+    return request.args.get("n")
+
+def wrap(v):
+    shell(v)
+
+def as_int(v):
+    return int(v)
+
+@app.route("/a")
+def a():
+    shell(request.args["h"])
+
+@app.route("/b")
+def b(db):
+    q = where(request.args["q"])
+    db.execute(q)
+
+@app.route("/c")
+def c():
+    os.system("echo " + name_param())
+
+@app.route("/d")
+def d():
+    wrap(request.form["x"])
+
+@app.route("/e")
+def e():
+    n = as_int(request.form["x"])
+    shell("echo %d" % n)
+
+@app.route("/f")
+def f():
+    shell("uptime")
+'''
+
+
+class TestInterproceduralTaint:
+    def flows(self):
+        return {(r["kind"], r["flow"][0]["line"], r["line"]): r
+                for r in taint.analyze({"app.py": HELPERS})["raw"]}
+
+    def test_into_and_out_of_helpers(self):
+        got = self.flows()
+        assert ("command", 22, 6) in got                 # a() → shell()
+        assert ("sql", 26, 27) in got                    # where() returns the input
+        assert ("command", 12, 31) in got                # name_param() reads it
+        assert ("command", 35, 6) in got                 # d() → wrap() → shell()
+        chain = got[("command", 35, 6)]["flow"]
+        assert [s["step"] for s in chain] == ["source", "call", "call", "sink"]
+        assert got[("command", 22, 6)]["confidence"] == "low"
+
+    def test_sanitised_helpers_and_constants_stay_quiet(self):
+        sources = {k[1] for k in self.flows()}
+        assert 39 not in sources and 40 not in sources   # e(): as_int() is int()
+        assert 44 not in sources                         # f(): a constant
+
+    def test_two_callers_are_two_findings(self):
+        found = taint.to_findings(taint.analyze({"app.py": HELPERS})["raw"], "en")
+        anchors = [f["anchor"] for f in found if f["line"] == 6]
+        assert len(anchors) == len(set(anchors)) == 2
+
+
+class TestTwinSimulation:
+    def inputs(self):
+        return {"findings": [mcp_finding(1, "mcp07.network_server_without_auth", "MCP07"),
+                             mcp_finding(2, "mcp05.exec_in_tool", "MCP05")],
+                "divergences": [], "leverage": [], "agent": {"capabilities": [],
+                                                              "combinations": []},
+                "jewels": [{"id": 1, "kind": "code_execution"}]}
+
+    def anon(self, rows):
+        return [p for p in rows if p["persona"] == "anonymous"]
+
+    def test_fixing_a_step_closes_the_path(self):
+        r = twin.simulate(self.inputs(), fix_findings=[2])
+        assert self.anon(r["closed"]) and not self.anon(r["remaining"])
+        assert r["opened"] == [] and "nothing ran" in r["note"]
+
+    def test_confirming_makes_a_hypothetical_path_solid(self):
+        r = twin.simulate(self.inputs(), confirm_findings=[1, 2])
+        [change] = [c for c in r["changed"] if c["persona"] == "anonymous"]
+        assert change["before"]["tentative"] is True and change["after"]["tentative"] is False
+
+    def test_the_inputs_are_not_modified(self):
+        inputs = self.inputs()
+        twin.simulate(inputs, fix_findings=[1], confirm_findings=[2])
+        assert [f["assessment"] for f in inputs["findings"]] == ["potential", "potential"]
+
+    def test_through_the_app(self, client, signed_in, stub_audit, from_repo):
+        audit = run_audit(client)
+        path = f"/api/audits/{audit['id']}/twin/simulate"
+        assert client.post(path, json={}).status_code == 400
+        assert client.post(path, json={"fix_findings": [999999]}).status_code == 400
+        ids = [f["id"] for f in audit["findings"]]
+        r = client.post(path, json={"fix_findings": ids})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["before"] - len(body["closed"]) == body["after"] - len(body["opened"])
+        assert body["opened"] == [] and body["after"] <= body["before"]
+        # Nothing about the audit changed.
+        again = client.get(f"/api/audits/{audit['id']}").json()
+        assert len(again["findings"]) == len(ids)
