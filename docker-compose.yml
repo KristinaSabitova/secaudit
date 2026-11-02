@@ -60,6 +60,10 @@ services:
       SECAUDIT_ALLOWED_REPO_OWNERS: ${SECAUDIT_ALLOWED_REPO_OWNERS:-}
       # 1 sends package names and versions to OSV.dev for known vulnerabilities.
       SECAUDIT_OSV_CHECK: ${SECAUDIT_OSV_CHECK:-}
+      # 1 asks package registries for last release and deprecation.
+      SECAUDIT_ABANDONED_CHECK: ${SECAUDIT_ABANDONED_CHECK:-}
+      SECAUDIT_SCAN_TIMEOUT: ${SECAUDIT_SCAN_TIMEOUT:-}
+      SECAUDIT_SCAN_MEMORY_MB: ${SECAUDIT_SCAN_MEMORY_MB:-}
       SECAUDIT_MAX_SCAN_CHARS: ${SECAUDIT_MAX_SCAN_CHARS:-}
       SECAUDIT_MAX_SCAN_FILES: ${SECAUDIT_MAX_SCAN_FILES:-}
     # Lets SECAUDIT_OLLAMA_URL point at an Ollama running on the host as

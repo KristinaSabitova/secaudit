@@ -26,10 +26,11 @@ from .db import get_session
 from .engine import (AuditError, backend_config, backend_identity, backend_status,
                      run_audit, sanitize_error)
 from .gitclone import (CloneError, check_repo_owner, clone_at_commit, clone_repo,
+                       fetch_ref, validate_branch, validate_ref,
                        validate_repo_url)
 from .models import (LANGUAGES, AgentCapability, AttackEdge, AttackNode, AttackPath,
                      Audit, CanaryRun, Component, component_to_dict, CrownJewel, FileLeverage, Finding, Hypothesis,
-                     ImmuneRule,
+                     ImmuneRule, WhatIf, immune_rule_to_dict, what_if_to_dict,
                      ModuleRun, RefutationAttempt, User, ViewDivergence, audit_to_dict,
                      coverage_from_dict, coverage_to_dict, finding_from_dict,
                      finding_to_dict, jewel_to_dict, Project, project_for, summarize)
@@ -39,6 +40,7 @@ from .webhook import (
     SIGNATURE_HEADER,
     WebhookError,
     decode_payload,
+    parse_pull_request_event,
     parse_push_event,
     verify_signature,
     webhook_secret,
@@ -46,9 +48,11 @@ from .webhook import (
 
 # Importable once .engine has put the repository root on sys.path.
 from analysis import attacker, evidence, falsify, immune, leverage, parallax  # noqa: E402
-from analysis import (assessment, deps, drift, evidence_chain,  # noqa: E402
-                      mcp_audit, reports, secrets_scan, surface, trust)
+from analysis import (assessment, deadcode, deps, doc_claims, drift,  # noqa: E402
+                      evidence_chain, mcp_audit, reports, secrets_scan, surface, taint,
+                      pdf, trust, twin)
 from .engine import engine as cli_engine  # noqa: E402
+from . import scanproc, whatif  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +93,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-TOOL_VERSION = "0.3.0"
+TOOL_VERSION = "0.4.0"
 
 app = FastAPI(title="secaudit web", version=TOOL_VERSION, lifespan=lifespan)
 
@@ -99,6 +103,11 @@ class AuditRequest(BaseModel):
     # The findings are written in this language by the backend itself; there is
     # no translation pass afterwards.
     language: str = "en"
+    branch: str | None = None
+    # Compare with this commit or branch instead of the previous audit (B14).
+    base_ref: str | None = None
+    # Audit exactly this commit, whatever the branch points at now.
+    commit: str | None = None
 
 
 class SettingsRequest(BaseModel):
@@ -351,6 +360,24 @@ def previous_audit(session: Session, audit: Audit) -> Audit | None:
         .order_by(Audit.created_at.desc()).limit(1))
 
 
+def comparison_audit(session: Session, audit: Audit) -> Audit | None:
+    """What an audit's changes are measured against: the audit it replays,
+    the last audit of its base commit, or the previous audit."""
+    if audit.replay_of:
+        original = session.get(Audit, audit.replay_of)
+        if original is not None:
+            return original
+    if audit.base_ref and audit.project_id is not None:
+        same = session.scalar(select(Audit).where(
+            Audit.project_id == audit.project_id, Audit.id != audit.id,
+            Audit.status == "done", Audit.commit_sha == audit.base_ref)
+            .order_by(Audit.created_at.desc()).limit(1))
+        if same is not None:
+            return same
+        return None
+    return previous_audit(session, audit)
+
+
 def immune_context(session: Session, audit: Audit) -> dict | None:
     """What the audit process needs to propose rules for the fixes since the
     previous audit: that audit's commit and its findings shown to hold."""
@@ -474,9 +501,11 @@ def record_immune(session: Session, audit: Audit, checkout: Path | None,
                 detail["zombies"] += 1
 
         # And what the validated rules catch, whether the model saw it or not.
+        # Validated is the test passing; only a rule a person approved is used.
         rules = list(session.scalars(select(ImmuneRule).where(
             ImmuneRule.project_id == audit.project_id,
-            ImmuneRule.validated.is_(True)))) if audit.project_id is not None else []
+            ImmuneRule.validated.is_(True),
+            ImmuneRule.approved.is_(True)))) if audit.project_id is not None else []
         by_id = {r.rule_id: r for r in rules if (r.validation or {}).get("rule")}
         if by_id and detail["semgrep"]:
             matches = immune.run_semgrep([r.validation["rule"] for r in by_id.values()],
@@ -752,27 +781,53 @@ def _overlap(a: dict, b: dict) -> bool:
 
 
 def run_rule_scanners(session: Session, audit: Audit, checkout: Path | None,
-                      texts: dict | None, model_findings: list[dict]) -> list[dict]:
-    """Secrets, dependencies and the MCP auditor, on this server's checkout.
+                      model_findings: list[dict]) -> list[dict]:
+    """Every deterministic scanner, in its own limited process (web/scanproc).
 
-    Each is its own module run and each failure is its own: the audit stands
-    without them. What they return are finding dicts with source "rule",
-    checked by the same evidence check as the model's (without a manifest:
-    nothing was "sent" for a rule). A secret the model already reported on
-    the same lines is not reported twice.
+    Secrets, dependencies, the MCP auditor, taint, the attack surface, the
+    documentation's claims and apparently unused code are each their own
+    module run, and each failure is its own: the audit stands without them.
+    What they return as findings carry source "rule" and go through the same
+    evidence check as the model's (without a manifest: nothing was "sent"
+    for a rule). Where the model already reported the same lines in the same
+    category, the rule's copy is dropped.
+
+    The only network calls are made here, in the server, after the scan and
+    each behind its own opt-in: OSV.dev (SECAUDIT_OSV_CHECK) and the package
+    registries (SECAUDIT_ABANDONED_CHECK). Only package names and versions go.
     """
     language = audit.language or "en"
     out: list[dict] = []
+    scan, scan_error = None, "the audited commit could not be checked out"
+    started = time.monotonic()
+    if checkout is not None:
+        try:
+            scan = scanproc.run_scan(checkout, language, int(immune_history_depth()))
+        except scanproc.ScanError as e:
+            log.warning("scanners failed for audit %s: %s", audit.id, e)
+            scan_error = str(e)
+    scan_ms = _ms_since(started)
 
-    def run(module, fn):
+    def duplicate(f: dict) -> bool:
+        return any(m.get("category") == f.get("category") and _overlap(m, f)
+                   for m in model_findings)
+
+    def run(module, key, fn):
         start = time.monotonic()
         try:
-            if checkout is None or texts is None:
-                raise RuntimeError("the audited commit could not be checked out")
-            found, detail = fn()
-            evidence.verify_findings(checkout, found, None)
+            if scan is None:
+                raise RuntimeError(scan_error)
+            part = scan.get(key)
+            if part is None:
+                raise RuntimeError((scan.get("errors") or {}).get(key)
+                                   or "the scanner returned nothing")
+            found, detail = fn(part)
+            if found:
+                evidence.verify_findings(checkout, found, None)
             out.extend(found)
-            detail = {"items": len(found), **detail}
+            detail = {"items": len(found) if found else detail.pop("items", 0), **detail,
+                      "isolated": True, "scan_ms": scan_ms,
+                      "read": scan.get("read")}
             status, error = "ok", None
         except Exception as e:      # the audit stands without it
             log.exception("%s failed for audit %s", module, audit.id)
@@ -780,33 +835,36 @@ def run_rule_scanners(session: Session, audit: Audit, checkout: Path | None,
         session.add(ModuleRun(audit_id=audit.id, module=module, status=status,
                               duration_ms=_ms_since(start), error=error, detail=detail))
 
-    def secrets():
-        found, summary = secrets_scan.scan(texts, language)
-        found = [f for f in found if not any(
-            m.get("category") == "secrets" and _overlap(m, f) for m in model_findings)]
-        history = secrets_scan.timeline(checkout, int(immune_history_depth()))
-        present = {(f.get("detail") or {}).get("secret_id") for f in found}
+    def secrets(part):
+        found = [f for f in part["findings"] if not duplicate(f)]
+        history = part["timeline"]
+        present = {(f.get("detail") or {}).get("secret_id") for f in part["findings"]}
         for s in history["secrets"]:
             # The checkout itself is the better witness of what is there now.
             s["present_at_head"] = s["present_at_head"] or s["secret_id"] in present
-        return found, {**summary, "timeline": history,
+        return found, {**part["summary"], "timeline": history,
                        "history_only": sum(1 for s in history["secrets"]
                                            if not s["present_at_head"])}
 
-    def dependencies():
-        inv = deps.inventory(texts)
+    def dependencies(part):
+        inv = part["inventory"]
         osv = {"queried": False, "enabled": deps.osv_enabled()}
         if deps.osv_enabled():
             osv.update(deps.query_osv(inv["components"]))
+        maintenance = {"queried": False, "enabled": deps.abandoned_enabled()}
+        if deps.abandoned_enabled():
+            maintenance.update(deps.query_abandoned(inv["components"]))
         for c in inv["components"]:
             session.add(Component(audit_id=audit.id, ecosystem=c["ecosystem"],
                                   name=c["name"][:255], version=(c["version"] or None)
                                   and str(c["version"])[:128], direct=bool(c["direct"]),
                                   scope=c["scope"], manifest=c["manifest"][:512],
-                                  purl=c["purl"][:512], vulns=c.get("vulns")))
-        found = deps.signal_findings(inv["signals"], language) + \
-            deps.vulnerability_findings(inv["components"], language)
-        ghosts = deps.ghost_dependencies(inv["components"], texts, inv["manifests"])
+                                  purl=c["purl"][:512], vulns=c.get("vulns"),
+                                  maintenance=c.get("maintenance")))
+        found = part["signals"] + \
+            deps.vulnerability_findings(inv["components"], language) + \
+            deps.maintenance_findings(inv["components"], language,
+                                      part.get("manifest_texts"))
         by_eco: dict[str, int] = {}
         for c in inv["components"]:
             by_eco[c["ecosystem"]] = by_eco.get(c["ecosystem"], 0) + 1
@@ -814,20 +872,33 @@ def run_rule_scanners(session: Session, audit: Audit, checkout: Path | None,
                        "direct": sum(1 for c in inv["components"] if c["direct"]),
                        "by_ecosystem": by_eco, "manifests": inv["manifests"][:50],
                        "truncated": inv["truncated"], "osv": osv,
-                       "ghosts": ghosts, "version": deps.DEPS_VERSION}
+                       "maintenance": maintenance,
+                       "transitive_note": "transitive" if any(
+                           not c["direct"] for c in inv["components"]) else "direct_only",
+                       "ghosts": part["ghosts"], "version": deps.DEPS_VERSION}
 
-    def mcp():
-        result = mcp_audit.analyze(texts, language)
-        inv = result["inventory"]
+    def mcp(part):
+        inv = part["inventory"]
         inv["tools"] = inv["tools"][:200]
-        return result["findings"], {"detected": result["detected"],
-                                    "by_category": result["by_category"],
-                                    "inventory": inv, "taxonomy": result["taxonomy"],
-                                    "version": result["version"]}
+        return part["findings"], {"detected": part["detected"],
+                                  "by_category": part["by_category"],
+                                  "inventory": inv, "taxonomy": part["taxonomy"],
+                                  "version": part["version"]}
 
-    run("secrets", secrets)
-    run("dependencies", dependencies)
-    run("mcp", mcp)
+    def taint_(part):
+        found = [f for f in part.pop("findings") if not duplicate(f)]
+        return found, part
+
+    def plain(part):
+        return [], {"items": len(part.get("items") or []), **part}
+
+    run("secrets", "secrets", secrets)
+    run("dependencies", "dependencies", dependencies)
+    run("mcp", "mcp", mcp)
+    run("taint", "taint", taint_)
+    run("surface", "surface", plain)
+    run("claims", "claims", plain)
+    run("deadcode", "deadcode", plain)
     return out
 
 
@@ -836,32 +907,23 @@ def immune_history_depth() -> str:
     return history_depth()
 
 
-def record_surface(session: Session, audit: Audit, texts: dict | None) -> None:
-    """C27/B21: the attack surface and the trust boundaries, from the code."""
-    start = time.monotonic()
-    try:
-        if texts is None:
-            raise RuntimeError("the audited commit could not be checked out")
-        result = surface.analyze(texts)
-        detail = {"items": len(result["items"]), **result}
-        status, error = "ok", None
-    except Exception as e:
-        log.exception("surface failed for audit %s", audit.id)
-        detail, status, error = {"items": 0}, "error", sanitize_error(str(e))[:500]
-    session.add(ModuleRun(audit_id=audit.id, module="surface", status=status,
-                          duration_ms=_ms_since(start), error=error, detail=detail))
-
-
 def record_drift(session: Session, audit: Audit, checkout: Path | None) -> None:
     """B14/C24: what changed since the previous audit, and what got weaker."""
     start = time.monotonic()
     try:
         if checkout is None:
             raise RuntimeError("the audited commit could not be checked out")
-        previous = previous_audit(session, audit)
-        result = drift.compare(checkout, previous.commit_sha if previous else None,
-                               audit.language or "en")
-        result["previous_audit"] = previous.id if previous else None
+        previous = comparison_audit(session, audit)
+        base = previous.commit_sha if previous else None
+        if audit.base_ref:
+            # A pull request's base, or one chosen: fetched if not already here.
+            base = audit.base_ref
+            if not drift._has_commit(checkout, base):
+                base = fetch_ref(checkout, base) or base
+        result = drift.compare(checkout, base, audit.language or "en")
+        result["previous_audit"] = previous.id if previous and not audit.base_ref else None
+        result["base_ref"] = audit.base_ref
+        result["pr_number"] = audit.pr_number
         detail = {"items": len(result.get("drift") or []), **result}
         status, error = "ok", None
     except Exception as e:
@@ -869,10 +931,6 @@ def record_drift(session: Session, audit: Audit, checkout: Path | None) -> None:
         detail, status, error = {"items": 0}, "error", sanitize_error(str(e))[:500]
     session.add(ModuleRun(audit_id=audit.id, module="drift", status=status,
                           duration_ms=_ms_since(start), error=error, detail=detail))
-
-
-def _texts_of(checkout: Path | None):
-    return parallax.repository_texts(checkout) if checkout is not None else None
 
 
 def execute_audit(audit_id: str) -> None:
@@ -902,8 +960,10 @@ def execute_audit(audit_id: str) -> None:
         with tempfile.TemporaryDirectory(prefix="secaudit-") as tmp:
             dest = Path(tmp) / "repo"
             try:
-                audit.commit_sha = clone_repo(audit.repo_url, dest,
-                                              branch=audit.branch)
+                audit.commit_sha = (
+                    clone_at_commit(audit.repo_url, dest, audit.pinned_commit)
+                    if audit.pinned_commit else
+                    clone_repo(audit.repo_url, dest, branch=audit.branch))
                 audit.status = "running"
                 session.commit()
                 start = time.monotonic()
@@ -915,8 +975,7 @@ def execute_audit(audit_id: str) -> None:
                 # the process that talked to the backend.
                 findings = check_evidence(session, audit, dest, result["findings"],
                                           result.get("manifest"))
-                texts = _texts_of(dest)
-                rules = run_rule_scanners(session, audit, dest, texts, findings)
+                rules = run_rule_scanners(session, audit, dest, findings)
                 stored = store_result(session, audit, findings, result.get("coverage"),
                                       result.get("coverage_summary"), rules)
                 record_falsifiability(session, audit, dest, stored,
@@ -929,7 +988,6 @@ def execute_audit(audit_id: str) -> None:
                               *backend_identity(config))
                 record_leverage(session, audit, dest, stored)
                 record_attacker(session, audit, dest, stored)
-                record_surface(session, audit, texts)
                 record_drift(session, audit, dest)
             except (CloneError, AuditError) as e:
                 audit.status = "error"
@@ -950,14 +1008,19 @@ def execute_audit(audit_id: str) -> None:
 def queue_audit(session: Session, background_tasks: BackgroundTasks, repo_url: str,
                 trigger: str, branch: str | None = None,
                 commit_sha: str | None = None, user_id: int | None = None,
-                language: str = "en") -> Audit:
+                language: str = "en", base_ref: str | None = None,
+                pinned_commit: str | None = None, replay_of: str | None = None,
+                pr_number: int | None = None) -> Audit:
     """Record a pending audit and hand it to a background worker.
 
     commit_sha is what the caller announced; the worker replaces it with the
-    sha it actually checked out.
+    sha it actually checked out. pinned_commit, when given, is the one it
+    checks out: a replay or a pull request's head.
     """
     audit = Audit(repo_url=repo_url, branch=branch, trigger=trigger,
                   commit_sha=commit_sha, user_id=user_id, language=language,
+                  base_ref=base_ref, pinned_commit=pinned_commit, replay_of=replay_of,
+                  pr_number=pr_number,
                   project_id=project_for(session, user_id, repo_url).id)
     session.add(audit)
     session.commit()
@@ -1104,8 +1167,17 @@ def create_audit(req: AuditRequest, background_tasks: BackgroundTasks,
                             detail=f"unsupported language '{req.language}'. "
                                    f"Valid: {', '.join(LANGUAGES)}")
 
+    try:
+        branch = validate_branch(req.branch) if req.branch else None
+        base_ref = validate_ref(req.base_ref) if req.base_ref else None
+        commit = validate_ref(req.commit) if req.commit else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if commit and len(commit) != 40:
+        raise HTTPException(status_code=400, detail="commit must be a full 40-character sha")
     audit = queue_audit(session, background_tasks, url, "manual",
-                        user_id=user.id, language=language)
+                        user_id=user.id, language=language, branch=branch,
+                        base_ref=base_ref, pinned_commit=commit)
     return audit_to_dict(audit)
 
 
@@ -1129,15 +1201,33 @@ async def github_webhook(request: Request, response: Response,
     if event == "ping":
         response.status_code = 200
         return {"status": "pong"}
-    if event != "push":
+    if event not in ("push", "pull_request"):
         response.status_code = 200
         return {"status": "ignored", "reason": f"unsupported event '{event}'"}
 
     try:
         payload = decode_payload(body, request.headers.get("content-type", ""))
-        push = parse_push_event(payload)
+        push = parse_push_event(payload) if event == "push" else \
+            parse_pull_request_event(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if event == "pull_request":
+        if push is None:
+            response.status_code = 200
+            return {"status": "ignored", "reason": "pull request action not audited"}
+        try:
+            # The head may be a fork: it is what gets cloned, so its owner counts.
+            check_repo_owner(push["repo_url"])
+        except (PermissionError, ValueError) as e:
+            response.status_code = 200
+            return {"status": "ignored", "reason": str(e)}
+        language = os.environ.get("SECAUDIT_DEFAULT_LANGUAGE", "en").lower()
+        audit = queue_audit(session, background_tasks, push["repo_url"], "webhook",
+                            branch=push["branch"], commit_sha=push["sha"],
+                            language=language if language in LANGUAGES else "en",
+                            base_ref=push["base_sha"], pinned_commit=push["sha"],
+                            pr_number=push["number"])
+        return audit_to_dict(audit)
     if push is None:
         response.status_code = 200
         return {"status": "ignored", "reason": "push does not update a branch"}
@@ -1292,10 +1382,48 @@ def export_immune_rules(project_id: int, user: User = Depends(require_user),
     if project is None or not (user.is_admin or project.user_id == user.id):
         raise HTTPException(status_code=404, detail="project not found")
     rules = [r.validation["rule"] for r in project.immune_rules
-             if r.validated and (r.validation or {}).get("rule")]
+             if r.validated and r.approved and (r.validation or {}).get("rule")]
     return Response(content=immune.to_yaml(rules), media_type="application/x-yaml",
                     headers={"Content-Disposition":
                              f'attachment; filename="secaudit-immune-{project_id}.yaml"'})
+
+
+def _owned_rule(session: Session, user: User, project_id: int, rule_id: int) -> ImmuneRule:
+    project = owned_project(session, user, project_id)
+    rule = session.get(ImmuneRule, rule_id)
+    if rule is None or rule.project_id != project.id:
+        raise HTTPException(status_code=404, detail="rule not found")
+    return rule
+
+
+@app.post("/api/projects/{project_id}/immune-rules/{rule_id}/approval")
+def approve_immune_rule(project_id: int, rule_id: int, user: User = Depends(require_user),
+                        session: Session = Depends(db_session)):
+    """A person accepts a learnt rule: from the next audit it looks for regressions.
+
+    Only a rule that passed its test (caught the code before the fix and not
+    after) can be approved; a proposal that failed stays a proposal.
+    """
+    rule = _owned_rule(session, user, project_id, rule_id)
+    if not rule.validated:
+        raise HTTPException(status_code=409,
+                            detail="only a rule that passed its test can be approved")
+    rule.approved = True
+    rule.approved_by = user.login[:64]
+    rule.approved_at = datetime.now(timezone.utc)
+    session.commit()
+    return immune_rule_to_dict(rule)
+
+
+@app.delete("/api/projects/{project_id}/immune-rules/{rule_id}/approval")
+def revoke_immune_rule(project_id: int, rule_id: int, user: User = Depends(require_user),
+                       session: Session = Depends(db_session)):
+    rule = _owned_rule(session, user, project_id, rule_id)
+    rule.approved = False
+    rule.approved_by = None
+    rule.approved_at = None
+    session.commit()
+    return immune_rule_to_dict(rule)
 
 
 # ---------------------------------------------------------------------------
@@ -1313,6 +1441,10 @@ ENGINE_VERSIONS = {
     "surface": surface.SURFACE_VERSION,
     "drift": drift.DRIFT_VERSION,
     "reports": reports.REPORT_VERSION,
+    "taint": taint.TAINT_VERSION,
+    "doc_claims": doc_claims.CLAIMS_VERSION,
+    "deadcode": deadcode.DEADCODE_VERSION,
+    "twin": twin.TWIN_VERSION,
 }
 
 
@@ -1352,6 +1484,18 @@ def get_evidence_chain(audit_id: str, finding_id: int, user: User = Depends(requ
     return evidence_chain.build(finding_to_dict(row), d, language=audit.language or "en")
 
 
+@app.get("/api/audits/{audit_id}/findings/{finding_id}/blue-team")
+def get_blue_team(audit_id: str, finding_id: int, user: User = Depends(require_user),
+                  session: Session = Depends(db_session)):
+    """Detection proposals for a finding: logs, a detection idea, a Sigma
+    skeleton. Always marked NOT VALIDATED."""
+    audit = owned_audit(session, user, audit_id)
+    row = next((f for f in audit.findings if f.id == finding_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    return reports.blue_team(finding_to_dict(row), audit.language or "en") or {}
+
+
 @app.get("/api/audits/{audit_id}/report.sarif")
 def report_sarif(audit_id: str, user: User = Depends(require_user),
                  session: Session = Depends(db_session)):
@@ -1385,6 +1529,18 @@ def report_html(audit_id: str, user: User = Depends(require_user),
         "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"})
 
 
+@app.get("/api/audits/{audit_id}/report.pdf")
+def report_pdf(audit_id: str, user: User = Depends(require_user),
+               session: Session = Depends(db_session)):
+    """The report as a PDF: text only, nothing in it able to run."""
+    audit = owned_audit(session, user, audit_id)
+    body = pdf.to_pdf(audit_to_dict(audit, include_findings=True), _trust_of(audit),
+                      TOOL_VERSION)
+    return Response(content=body, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="secaudit-{audit.id}.pdf"',
+        "X-Content-Type-Options": "nosniff"})
+
+
 @app.get("/api/audits/{audit_id}/components")
 def list_components(audit_id: str, user: User = Depends(require_user),
                     session: Session = Depends(db_session)):
@@ -1409,7 +1565,7 @@ def audit_diff(audit_id: str, user: User = Depends(require_user),
     """New, fixed, persisting and reintroduced findings since the previous
     audit of the project, with the files and controls that changed."""
     audit = owned_audit(session, user, audit_id)
-    previous = previous_audit(session, audit)
+    previous = comparison_audit(session, audit)
     fixed_before = set()
     if audit.project_id is not None:
         fixed_before = {fp for (fp,) in session.execute(
@@ -1426,6 +1582,8 @@ def audit_diff(audit_id: str, user: User = Depends(require_user),
                                       "line", "fingerprint", "assessment")}
     return {"previous_audit": previous.id if previous else None,
             "previous_commit": previous.commit_sha if previous else None,
+            "base_ref": audit.base_ref, "pr_number": audit.pr_number,
+            "replay_of": audit.replay_of,
             "commit": audit.commit_sha,
             **{k: [brief(f) for f in v] for k, v in diff.items()},
             "changes": run.detail if run else None}
@@ -1451,6 +1609,133 @@ def replay(audit_id: str, user: User = Depends(require_user),
                                    TOOL_VERSION)
     return _download(json.dumps(body, indent=2, default=str), "application/json",
                      f"secaudit-{audit.id}-replay.json")
+
+
+class WhatIfRequest(BaseModel):
+    finding_id: int
+    patch: str
+
+
+@app.post("/api/audits/{audit_id}/what-if")
+def what_if(audit_id: str, req: WhatIfRequest, user: User = Depends(require_user),
+            session: Session = Depends(db_session)):
+    """Try a fix for a finding on a temporary copy of the audited commit (C29).
+
+    The original repository is never touched and the repository's code is
+    never run: the copy is measured with the server's own checks (web/whatif).
+    """
+    audit = owned_audit(session, user, audit_id)
+    row = next((f for f in audit.findings if f.id == req.finding_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    if not audit.commit_sha:
+        raise HTTPException(status_code=409, detail="the audit has no commit to patch")
+    try:
+        whatif.check_patch(req.patch)
+    except whatif.WhatIfError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    rules = [r.validation for r in (audit.project.immune_rules if audit.project else [])
+             if r.validated and r.approved and (r.validation or {}).get("rule")]
+    try:
+        result = whatif.run(audit.repo_url, audit.commit_sha, finding_to_dict(row), req.patch,
+                            audit.language or "en", rules, int(immune_history_depth()))
+        status = "ok"
+    except (whatif.WhatIfError, scanproc.ScanError) as e:
+        result, status = {"error": sanitize_error(str(e))[:500]}, "error"
+    record = WhatIf(audit_id=audit.id, finding_id=row.id, user_id=user.id,
+                    patch=req.patch, status=status, result=result)
+    session.add(record)
+    session.commit()
+    return what_if_to_dict(record)
+
+
+@app.get("/api/audits/{audit_id}/what-if")
+def list_what_ifs(audit_id: str, user: User = Depends(require_user),
+                  session: Session = Depends(db_session)):
+    audit = owned_audit(session, user, audit_id)
+    return [what_if_to_dict(w) for w in session.scalars(
+        select(WhatIf).where(WhatIf.audit_id == audit.id).order_by(WhatIf.id.desc()))]
+
+
+@app.get("/api/audits/{audit_id}/twin")
+def digital_twin(audit_id: str, user: User = Depends(require_user),
+                 session: Session = Depends(db_session)):
+    """Security Digital Twin: areas, entries, assets, services, dependencies,
+    findings and attack paths of the audited commit, with what is unknown."""
+    audit = owned_audit(session, user, audit_id)
+    d = audit_to_dict(audit, include_findings=True)
+    d["components"] = [component_to_dict(c) for c in audit.components]
+    return twin.build(d, [coverage_to_dict(r) for r in audit.coverage])
+
+
+@app.post("/api/audits/{audit_id}/replay", status_code=202)
+def replay_audit(audit_id: str, background_tasks: BackgroundTasks,
+                 user: User = Depends(require_user), session: Session = Depends(db_session)):
+    """SecAudit Replay, executed: the same commit audited again.
+
+    Same repository, same exact commit, same language, with the engine and
+    settings in force now. A model does not answer twice the same, so the
+    result is compared with the original (GET .../reproducibility) rather
+    than expected to match.
+    """
+    original = owned_audit(session, user, audit_id)
+    if not original.commit_sha:
+        raise HTTPException(status_code=409, detail="the audit has no commit to replay")
+    try:
+        check_repo_owner(original.repo_url)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    audit = queue_audit(session, background_tasks, original.repo_url, "replay",
+                        branch=original.branch, user_id=user.id,
+                        language=original.language or "en",
+                        pinned_commit=original.commit_sha, replay_of=original.id)
+    return audit_to_dict(audit)
+
+
+@app.get("/api/audits/{audit_id}/reproducibility")
+def reproducibility(audit_id: str, user: User = Depends(require_user),
+                    session: Session = Depends(db_session)):
+    """A replay against the audit it repeats: what both found, and what only one did."""
+    audit = owned_audit(session, user, audit_id)
+    if not audit.replay_of:
+        raise HTTPException(status_code=404, detail="this audit is not a replay")
+    original = session.get(Audit, audit.replay_of)
+    if original is None:
+        raise HTTPException(status_code=404, detail="the original audit is gone")
+
+    def by_fp(a):
+        return {f.fingerprint: finding_to_dict(f) for f in a.findings if f.fingerprint}
+
+    def brief(f):
+        return {k: f.get(k) for k in ("id", "title", "severity", "file", "line",
+                                      "source", "assessment")}
+
+    def modules(a):
+        return {m.module: {"backend": m.backend, "model": m.model, "status": m.status}
+                for m in a.module_runs}
+
+    old, new = by_fp(original), by_fp(audit)
+    both = sorted(set(old) & set(new))
+    changed = [{"fingerprint": fp, "before": old[fp]["assessment"],
+                "after": new[fp]["assessment"], "title": new[fp]["title"]}
+               for fp in both if old[fp]["assessment"] != new[fp]["assessment"]]
+    rule_old = {fp for fp, f in old.items() if f.get("source") == "rule"}
+    rule_new = {fp for fp, f in new.items() if f.get("source") == "rule"}
+    union = set(old) | set(new)
+    return {
+        "original": original.id, "replay": audit.id, "commit": audit.commit_sha,
+        "same_commit": original.commit_sha == audit.commit_sha,
+        "in_both": len(both), "only_original": [brief(old[fp]) for fp in sorted(set(old) - set(new))],
+        "only_replay": [brief(new[fp]) for fp in sorted(set(new) - set(old))],
+        "assessment_changed": changed,
+        "agreement": round(len(both) / len(union), 3) if union else None,
+        # Deterministic rules on the same commit should agree exactly.
+        "rules_agree": rule_old == rule_new,
+        "modules": {"original": modules(original), "replay": modules(audit)},
+        "note": ("The model's findings vary between runs; rule findings on the same "
+                 "commit should not. Disagreement on a rule finding means the engine "
+                 "or its settings changed."),
+    }
 
 
 @app.get("/api/projects/{project_id}/history")
@@ -1479,12 +1764,33 @@ def project_history(project_id: int, user: User = Depends(require_user),
             "recurrent_fingerprints": sum(1 for n in recurring.values() if n > 1)}
 
 
+_TAXONOMY_CHECK: dict = {}
+TAXONOMY_TTL = 24 * 3600
+
+
 @app.get("/api/mcp/catalog")
 def mcp_catalog(language: str = "en", user: User = Depends(require_user)):
     """The MCP rules per OWASP MCP category: what, how, limits."""
     return {"taxonomy": {"name": mcp_audit.OWASP_MCP_VERSION, "url": mcp_audit.OWASP_MCP_URL,
-                         "checked": mcp_audit.OWASP_MCP_CHECKED},
+                         "checked": mcp_audit.OWASP_MCP_CHECKED,
+                         "last_check": _TAXONOMY_CHECK.get("result")},
             "categories": mcp_audit.catalog(language)}
+
+
+@app.post("/api/mcp/taxonomy-check")
+def mcp_taxonomy_check(user: User = Depends(require_user)):
+    """Compare the pinned OWASP MCP names with the official page, now.
+
+    Fetches only the public OWASP page; nothing about any audit leaves. The
+    answer is kept for a day so the page is not asked on every click.
+    """
+    cached = _TAXONOMY_CHECK.get("result")
+    if cached and time.monotonic() - _TAXONOMY_CHECK.get("at", 0) < TAXONOMY_TTL \
+            and cached.get("checked"):
+        return cached
+    result = mcp_audit.check_taxonomy()
+    _TAXONOMY_CHECK.update(result=result, at=time.monotonic())
+    return result
 
 
 @app.delete("/api/audits/{audit_id}", status_code=204)
@@ -1604,8 +1910,7 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
             record_llm_audit(session, audit, runnerqueue.RUNNER_BACKEND, None,
                              result.get("usage"), result.get("duration_ms"),
                              result.get("coverage_summary"))
-            texts = _texts_of(checkout)
-            rules = run_rule_scanners(session, audit, checkout, texts, findings)
+            rules = run_rule_scanners(session, audit, checkout, findings)
             stored = store_result(session, audit, findings, result.get("coverage"),
                                   result.get("coverage_summary"), rules)
             record_falsifiability(session, audit, checkout, stored,
@@ -1618,7 +1923,6 @@ def verify_runner_result(audit_id: str, result: dict) -> None:
                           runnerqueue.RUNNER_BACKEND, None)
             record_leverage(session, audit, checkout, stored)
             record_attacker(session, audit, checkout, stored)
-            record_surface(session, audit, texts)
             record_drift(session, audit, checkout)
         audit.runner_claimed_at = None
         session.commit()

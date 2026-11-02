@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from web.engine import AuditError, backend_config, run_audit_in_process
-from web.gitclone import CloneError, clone_repo
+from web.gitclone import CloneError, clone_at_commit, clone_repo
 
 POLL_SECONDS = 15
 BACKOFF_MAX = 300
@@ -67,8 +67,12 @@ def run_one(server: str, token: str, job: dict, timeout: int) -> None:
     with tempfile.TemporaryDirectory(prefix="secaudit-runner-") as tmp:
         dest = Path(tmp) / "repo"
         try:
-            result["commit_sha"] = clone_repo(job["repo_url"], dest,
-                                              branch=job.get("branch"))
+            # A replay or a pull request names its exact commit: that one, not the branch tip.
+            if job.get("commit"):
+                result["commit_sha"] = clone_at_commit(job["repo_url"], dest, job["commit"])
+            else:
+                result["commit_sha"] = clone_repo(job["repo_url"], dest,
+                                                  branch=job.get("branch"))
             config = backend_config({"backend": "claude-code",
                                      "language": job.get("language") or "en",
                                      # The previous audit's findings, for the

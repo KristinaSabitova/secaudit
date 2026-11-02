@@ -106,6 +106,13 @@ class Audit(Base):
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True,
     )
+    # What a differential audit compares with, instead of the previous audit:
+    # a pull request's base, or a commit or branch chosen by hand.
+    base_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The exact commit to check out: a replay, or a pull request's head.
+    pinned_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    replay_of: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="audit", cascade="all, delete-orphan", order_by="Finding.id",
@@ -140,6 +147,9 @@ class Audit(Base):
     )
     components: Mapped[list["Component"]] = relationship(
         cascade="all, delete-orphan", order_by="Component.id",
+    )
+    what_ifs: Mapped[list["WhatIf"]] = relationship(
+        cascade="all, delete-orphan", order_by="WhatIf.id",
     )
     project: Mapped["Project | None"] = relationship()
 
@@ -412,6 +422,12 @@ class ImmuneRule(Base):
     source_fix_commit: Mapped[str] = mapped_column(String(40), nullable=False)
     vulnerable_commit: Mapped[str] = mapped_column(String(40), nullable=False)
     validated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Validated is the test passing; approved is a person accepting the rule.
+    # Only approved rules look for regressions (C26).
+    approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                         nullable=True)
     validation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     matches_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -550,12 +566,41 @@ class Component(Base):
     manifest: Mapped[str] = mapped_column(String(512), nullable=False)
     purl: Mapped[str | None] = mapped_column(String(512), nullable=True)
     vulns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    maintenance: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class WhatIf(Base):
+    """A fix tried on a temporary copy of the audited commit (C29)."""
+
+    __tablename__ = "what_ifs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    audit_id: Mapped[str] = mapped_column(
+        ForeignKey("audits.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    finding_id: Mapped[int | None] = mapped_column(
+        ForeignKey("findings.id", ondelete="SET NULL"), nullable=True,
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow,
+                                                 nullable=False)
+    patch: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+def what_if_to_dict(w: "WhatIf") -> dict:
+    return {"id": w.id, "audit_id": w.audit_id, "finding_id": w.finding_id,
+            "created_at": isoformat_utc(w.created_at), "patch": w.patch,
+            "status": w.status, "result": w.result}
 
 
 def component_to_dict(c: "Component") -> dict:
     return {"id": c.id, "ecosystem": c.ecosystem, "name": c.name, "version": c.version,
             "direct": c.direct, "scope": c.scope, "manifest": c.manifest,
-            "purl": c.purl, "vulns": c.vulns}
+            "purl": c.purl, "vulns": c.vulns, "maintenance": c.maintenance}
 
 
 def _line_number(value) -> int | None:
@@ -677,6 +722,10 @@ def audit_to_dict(audit: Audit, include_findings: bool = False,
         "summary": audit.summary or empty_summary(),
         "coverage": audit.coverage_summary,
         "project_id": audit.project_id,
+        "base_ref": audit.base_ref,
+        "pinned_commit": audit.pinned_commit,
+        "replay_of": audit.replay_of,
+        "pr_number": audit.pr_number,
     }
     if include_findings:
         findings = audit.findings
@@ -749,6 +798,9 @@ def immune_rule_to_dict(r: "ImmuneRule") -> dict:
     return {"id": r.id, "rule_id": r.rule_id, "finding_id": r.finding_id,
             "file": v.get("file"), "explanation": v.get("explanation"),
             "validated": r.validated, "reason": v.get("reason") or v.get("error"),
+            "approved": r.approved, "approved_by": r.approved_by,
+            "approved_at": isoformat_utc(r.approved_at) if r.approved_at else None,
+            "active": bool(r.validated and r.approved),
             "before": v.get("before"), "after": v.get("after"),
             "fix_commit": r.source_fix_commit,
             "vulnerable_commit": r.vulnerable_commit, "yaml": r.rule_yaml,

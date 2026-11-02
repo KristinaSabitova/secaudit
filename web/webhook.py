@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import re
 import os
 from urllib.parse import parse_qs
 
@@ -83,4 +84,32 @@ def parse_push_event(payload: dict) -> dict | None:
         "repo_url": validate_repo_url(repo.get("clone_url") or ""),
         "branch": validate_branch(branch),
         "sha": sha or None,
+    }
+
+
+PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review")
+
+
+def parse_pull_request_event(payload: dict) -> dict | None:
+    """Describe the differential audit a pull request asks for, or None.
+
+    The head is audited at its exact commit and compared with the base
+    commit. The head repository may be a fork: it is the one cloned, so it is
+    the one whose owner must be allowed. Raises ValueError for a repository
+    we refuse to clone.
+    """
+    if payload.get("action") not in PR_ACTIONS:
+        return None
+    pr = payload.get("pull_request") or {}
+    head, base = pr.get("head") or {}, pr.get("base") or {}
+    sha, base_sha = head.get("sha") or "", base.get("sha") or ""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+        return None
+    repo = head.get("repo") or {}
+    return {
+        "repo_url": validate_repo_url(repo.get("clone_url") or ""),
+        "branch": validate_branch(head.get("ref") or ""),
+        "sha": sha,
+        "base_sha": base_sha,
+        "number": int(pr.get("number") or payload.get("number") or 0) or None,
     }

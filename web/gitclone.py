@@ -203,3 +203,33 @@ def clone_repo(url: str, dest: Path, timeout: int = CLONE_TIMEOUT,
     if rev.returncode != 0:
         raise CloneError("could not resolve HEAD of cloned repository")
     return rev.stdout.strip()
+
+
+def fetch_ref(dest: Path, ref: str, timeout: int = CLONE_TIMEOUT) -> str | None:
+    """Fetch a commit or a branch into an existing checkout; its sha, or None.
+
+    For a differential audit whose base is not in the history already
+    fetched (another branch, a pull request's base). Same hardening as the
+    clone: no hooks, no submodules, no ext transport.
+    """
+    ref = ref.strip()
+    if not _SHA_RE.match(ref):
+        ref = validate_branch(ref)
+    try:
+        _git(["-C", str(dest), "fetch", "--depth", history_depth(), "--no-recurse-submodules",
+              "origin", ref], timeout, "git fetch")
+    except CloneError:
+        return None
+    r = subprocess.run(["git", *git_config_args(), "-C", str(dest), "rev-parse",
+                        "FETCH_HEAD"], capture_output=True, text=True, timeout=30,
+                       env=git_env())
+    sha = r.stdout.strip()
+    return sha if r.returncode == 0 and _SHA_RE.match(sha) else None
+
+
+def validate_ref(ref: str) -> str:
+    """A full commit sha or a branch name; anything else is refused."""
+    ref = (ref or "").strip()
+    if _SHA_RE.match(ref):
+        return ref
+    return validate_branch(ref)
