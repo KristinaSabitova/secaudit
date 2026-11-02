@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.0 — 2026-11-02
+
+Added
+- Taint analysis (`analysis/taint.py`): intra-procedural for Python with ast,
+  by pattern for JavaScript/TypeScript. Each finding records its
+  source → sink flow and stays potential.
+- Documentation against code (`analysis/doc_claims.py`): security claims in
+  READMEs and docs, each marked backed, unbacked or contradicted. Unbacked
+  claims lower confidence.
+- Dead code (`analysis/deadcode.py`): unreferenced functions, exports and
+  files, and unregistered Flask blueprints.
+- Dependencies:
+  - crates.io, RubyGems, Packagist and Maven (literal versions only);
+  - opt-in stale and deprecated package checks (`SECAUDIT_ABANDONED_CHECK`);
+  - a note when only direct dependencies are known.
+- Surface: per-entry input validation, and an inventory of services
+  (containers, Kubernetes objects, datastores, external hosts, third-party
+  SDKs).
+- MCP findings become steps in attack paths, and there is an MCP tool decoy.
+  The OWASP taxonomy can be checked against the official page on demand.
+- A PDF report written without a PDF library (`analysis/pdf.py`).
+- What If (`web/whatif.py`): try a patch on a temporary clone of the audited
+  commit and measure it without running anything. The repository's tests
+  are listed, not run.
+- Replay on the exact commit, with a reproducibility comparison.
+- Differential audits against a chosen base, and pull request webhooks
+  audited at their head against their base.
+- Digital twin (`analysis/twin.py`) with the uncertainty of every node.
+- UI:
+  - Views (executive, developer, analyst), Twin and Blue Team;
+  - What If, replay, PDF and rule approval;
+  - taint flows, documentation claims, dead code and services;
+  - branch, base and commit fields on the audit form.
+- A labelled benchmark corpus (`benchmark/`, 34 labels over 7 repositories),
+  run with `python3 -m analysis.benchmark --corpus benchmark`.
+- Migration `0017_approval_replay_whatif`.
+
+Changed
+- The rule scanners run in an isolated child process (`analysis/scan.py`,
+  `web/scanproc.py`), with:
+  - a reduced environment;
+  - CPU, memory and file-size limits;
+  - a timeout (`SECAUDIT_SCAN_TIMEOUT`, `SECAUDIT_SCAN_MEMORY_MB`).
+- Learnt immune rules need a person's approval before they look for
+  regressions or are exported. Existing rules start unapproved.
+
+Fixed
+- Dependency signals from Cargo.toml and lockfiles now quote the manifest
+  line as written, so the evidence check can verify them.
+
 ## 0.3.0 — 2026-11-02
 
 Added

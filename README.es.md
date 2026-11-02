@@ -639,19 +639,32 @@ Consulta [DEPLOY.md](DEPLOY.md) para ponerlo en producción.
 ### Escáneres de reglas, evaluación y exportaciones
 
 Junto al modelo, cada auditoría ejecuta escáneres deterministas sobre el
-checkout del propio servidor, sin ejecutar nada de él. Sus hallazgos llevan
-`source: "rule"` y un `rule_id`:
+checkout del propio servidor, sin ejecutar nada de él. Corren en un proceso
+hijo aparte, con el entorno reducido, límites de recursos y timeout. Sus
+hallazgos llevan `source: "rule"` y un `rule_id`:
 
 - secretos, con línea temporal de exposición: primer commit, eliminación y si
   el secreto sigue en HEAD;
-- dependencias de manifiestos y lockfiles, con SBOM CycloneDX, señales de
-  confusión de dependencias y dependencias fantasma;
-- un auditor OWASP MCP Top 10 para MCP01-MCP10.
+- dependencias de manifiestos y lockfiles (PyPI, npm, Go, crates.io,
+  RubyGems, Packagist, Maven), con SBOM CycloneDX, señales de confusión de
+  dependencias, dependencias fantasma y, si se activa, paquetes abandonados o
+  deprecados;
+- flujos de taint desde la entrada de la petición hasta sumideros
+  peligrosos: Python con ast, y JS/TS por patrón;
+- un auditor OWASP MCP Top 10 para MCP01-MCP10, cuyos hallazgos también son
+  pasos de los caminos de ataque.
 
-Dos etapas más aportan contexto, no hallazgos. La primera inventaría la
-superficie de ataque: puntos de entrada, si se ve autenticación en ellos y
-las fronteras de confianza que cruzan. La segunda mide la deriva de
-seguridad frente a la auditoría anterior.
+Otras etapas aportan contexto, no hallazgos:
+
+- la superficie de ataque: puntos de entrada, si se ve autenticación y
+  validación en ellos, las fronteras de confianza y los servicios
+  (contenedores, almacenes de datos, hosts externos);
+- lo que afirma la documentación, contrastado con el código;
+- el código muerto;
+- la deriva de seguridad frente a la auditoría anterior, una base elegida o
+  la base de un pull request.
+
+Un gemelo digital lo reúne todo, con lo que se desconoce de cada nodo.
 
 Cada hallazgo tiene una evaluación, **CONFIRMADO**, **POTENCIAL**,
 **DESCARTADO** o **NO VERIFICABLE**, y una cadena de evidencia:
@@ -662,22 +675,35 @@ garantía.
 
 Exportaciones:
 
-- `report.sarif`, `report.json` y `report.html` (para PDF, imprímelo);
+- `report.sarif`, `report.json`, `report.html` y `report.pdf`;
 - `sbom.cdx.json`;
 - `replay.json`;
 - `diff`, más `/api/projects/{id}/history` para la historia del proyecto.
 
 Todas cuelgan de `/api/audits/{id}/`, salvo la historia del proyecto.
 
+What If (`POST /api/audits/{id}/what-if`) prueba un parche en un clon
+temporal del commit auditado. Mide si el código citado desaparece, qué
+hallazgos de regla se van o aparecen y si el parche debilita un control.
+Lista los tests que habría que pasar, pero **no los ejecuta**: sería
+ejecutar el código auditado. `POST /api/audits/{id}/replay` repite una
+auditoría sobre el mismo commit y `GET .../reproducibility` compara ambas. Las
+reglas inmunes aprendidas necesitan la aprobación de una persona. Guía de
+uso: [docs/GUIA_USO.md](docs/GUIA_USO.md).
+
 ```bash
 python3 -m analysis.mcp_audit /ruta/al/repo     # auditoría MCP sin servidor
+python3 -m analysis.mcp_audit --check-taxonomy  # comparar con la página de OWASP
+python3 -m analysis.benchmark --corpus benchmark  # puntuar los escáneres
 ```
 
 | Variable | Por defecto | Efecto |
 |---|---|---|
 | `SECAUDIT_ALLOWED_REPO_OWNERS` | cualquiera | Propietarios de GitHub (separados por comas) cuyos repos se pueden auditar |
 | `SECAUDIT_OSV_CHECK` | `0` | `1` envía nombres y versiones de paquetes (nada más) a OSV.dev |
+| `SECAUDIT_ABANDONED_CHECK` | `0` | `1` pregunta a PyPI, npm y crates.io por el último release y la deprecación (solo nombres de paquete) |
 | `SECAUDIT_MAX_SCAN_CHARS` / `SECAUDIT_MAX_SCAN_FILES` | 64M / 20000 | Límites de lo que leen los escáneres |
+| `SECAUDIT_SCAN_TIMEOUT` / `SECAUDIT_SCAN_MEMORY_MB` | 600 / 2048 | Límites del proceso aislado de escáneres |
 
 Estado de cada funcionalidad, límites y plan pendiente: [docs/PRACTICA3.md](docs/PRACTICA3.md).
 Cambios: [CHANGELOG.md](CHANGELOG.md).

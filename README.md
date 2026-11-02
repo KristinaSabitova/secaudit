@@ -622,19 +622,31 @@ See [DEPLOY.md](DEPLOY.md) for running it in production.
 ### Rule scanners, assessment and exports
 
 Next to the model, each audit runs deterministic scanners on the server's own
-checkout, never executing anything from it. Their findings carry
-`source: "rule"` and a `rule_id`:
+checkout, never executing anything from it. They run in a separate child
+process with a reduced environment, resource limits and a timeout. Their
+findings carry `source: "rule"` and a `rule_id`:
 
 - secrets, with an exposure timeline: first commit, removal and whether the
   secret is still at HEAD;
-- dependencies from manifests and lockfiles, with a CycloneDX SBOM,
-  dependency-confusion signals and ghost dependencies;
-- an OWASP MCP Top 10 auditor for MCP01-MCP10.
+- dependencies from manifests and lockfiles (PyPI, npm, Go, crates.io,
+  RubyGems, Packagist, Maven), with a CycloneDX SBOM, dependency-confusion
+  signals, ghost dependencies and opt-in stale/deprecated checks;
+- taint flows from request input to dangerous sinks: Python with ast, and
+  JS/TS by pattern;
+- an OWASP MCP Top 10 auditor for MCP01-MCP10, whose findings also become
+  attack-path steps.
 
-Two more stages add context rather than findings. The first inventories the
-attack surface: entry points, whether auth is visible on them, and the trust
-boundaries they cross. The second measures security drift against the
-previous audit.
+More stages add context rather than findings:
+
+- the attack surface: entry points, whether auth and input validation are
+  visible on them, the trust boundaries they cross, and the services
+  (containers, datastores, external hosts);
+- documentation claims checked against the code;
+- dead code;
+- security drift against the previous audit, a chosen base, or a pull
+  request's base.
+
+A digital twin maps all of it, marking what is unknown about each node.
 
 Every finding has an assessment, **confirmed**, **potential**, **discarded** or
 **unverifiable**, and an evidence chain:
@@ -644,22 +656,35 @@ resistance separately. A clean audit is never presented as a guarantee.
 
 Exports:
 
-- `report.sarif`, `report.json` and `report.html` (print it for a PDF);
+- `report.sarif`, `report.json`, `report.html` and `report.pdf`;
 - `sbom.cdx.json`;
 - `replay.json`;
 - `diff`, plus `/api/projects/{id}/history` for the project's history.
 
 All of them live under `/api/audits/{id}/`, except the project history.
 
+What If (`POST /api/audits/{id}/what-if`) tries a patch on a temporary clone
+of the audited commit. It reports whether the cited code is gone, which rule
+findings go or appear, and whether the patch weakens a control. It lists the
+tests to run but **does not run them**, because that would run the audited
+code. `POST /api/audits/{id}/replay` repeats an audit on the same commit, and
+`GET .../reproducibility` compares the two. Learnt immune rules need a
+person's approval before they are used. Usage guide in Spanish:
+[docs/GUIA_USO.md](docs/GUIA_USO.md).
+
 ```bash
 python3 -m analysis.mcp_audit /path/to/repo     # MCP audit, no server needed
+python3 -m analysis.mcp_audit --check-taxonomy  # compare with the OWASP page
+python3 -m analysis.benchmark --corpus benchmark  # score the scanners
 ```
 
 | Variable | Default | Effect |
 |---|---|---|
 | `SECAUDIT_ALLOWED_REPO_OWNERS` | any | Comma-separated GitHub owners whose repos may be audited |
 | `SECAUDIT_OSV_CHECK` | `0` | `1` sends package names and versions (nothing else) to OSV.dev |
+| `SECAUDIT_ABANDONED_CHECK` | `0` | `1` asks PyPI, npm and crates.io for last release and deprecation (package names only) |
 | `SECAUDIT_MAX_SCAN_CHARS` / `SECAUDIT_MAX_SCAN_FILES` | 64M / 20000 | Bounds on what the scanners read |
+| `SECAUDIT_SCAN_TIMEOUT` / `SECAUDIT_SCAN_MEMORY_MB` | 600 / 2048 | Limits of the isolated scanner process |
 
 Status of every feature, limits and the pending plan: [docs/PRACTICA3.md](docs/PRACTICA3.md).
 Changes: [CHANGELOG.md](CHANGELOG.md).
