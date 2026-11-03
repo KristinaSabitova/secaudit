@@ -1133,14 +1133,24 @@ pre.snippet {
 
 .audit-form {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   max-width: 760px;
   margin-bottom: 8px;
 }
 
-.audit-form input {
-  flex: 1;
+.audit-form #repo-url {
+  flex: 1 1 320px;
   min-width: 0;
+  min-height: 42px;
+  padding: 0 14px;
+  font-size: 1.05em;
+}
+
+.audit-form > button[type="submit"] {
+  min-height: 42px;
+  padding: 0 18px;
 }
 
 tr.current td {
@@ -1306,6 +1316,11 @@ tr.current td:first-child {
 
   .audit-form {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .audit-form #repo-url {
+    flex-basis: auto;
   }
 
   .hide-narrow {

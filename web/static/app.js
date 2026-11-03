@@ -820,6 +820,11 @@ const TEXT = {
     "audit.base": "compare with (branch or commit)",
     "audit.baseph": "main or a commit sha",
     "audit.commit": "exact commit",
+    "audit.err.url": "Enter a GitHub repository: https://github.com/<owner>/<repo> or <owner>/<repo>.",
+    "audit.err.name": "That repository name is not valid.",
+    "audit.err.owner": (owners) => `This instance only audits repositories of: ${owners}.`,
+    "audit.err.ref": "A branch or commit in the options is not valid: use a branch name (main, feature/x) or a full commit sha.",
+    "audit.err.sha": "The exact commit must be a full 40-character sha.",
     "p3.discarded": "Discarded hypotheses",
     "p3.unknowns": "Unknowns",
     "p3.showchain": "show the evidence chain",
@@ -1685,6 +1690,11 @@ const TEXT = {
     "audit.base": "comparar con (rama o commit)",
     "audit.baseph": "main o un sha de commit",
     "audit.commit": "commit exacto",
+    "audit.err.url": "Introduce un repositorio de GitHub: https://github.com/<owner>/<repo> o <owner>/<repo>.",
+    "audit.err.name": "Ese nombre de repositorio no es válido.",
+    "audit.err.owner": (owners) => `Esta instancia solo audita repositorios de: ${owners}.`,
+    "audit.err.ref": "Una rama o un commit de las opciones no es válido: usa un nombre de rama (main, feature/x) o un sha de commit completo.",
+    "audit.err.sha": "El commit exacto tiene que ser un sha completo de 40 caracteres.",
     "p3.discarded": "Hipótesis descartadas",
     "p3.unknowns": "Incógnitas",
     "p3.showchain": "ver la cadena de evidencia",
@@ -3972,6 +3982,30 @@ function renderHistory() {
     })));
 }
 
+// What people paste is rarely the bare clone URL: "owner/repo", a URL without
+// the scheme, "http://", "www.", or a link to a branch, file or PR. The server
+// accepts only https://github.com/<owner>/<repo>, so the form turns any of
+// those into that shape and leaves anything else for the server to reject.
+function normalizeRepoUrl(raw) {
+  let v = raw.trim().replace(/[?#].*$/, "");
+  if (/^[\w.-]+\/[\w.-]+\/?$/.test(v)) v = `github.com/${v}`;
+  v = v.replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//i, "https://github.com/");
+  const m = v.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/.*)?$/);
+  return m ? `https://github.com/${m[1]}/${m[2]}` : v;
+}
+
+// The API answers in English for every client; the form shows its refusals
+// in the language of the interface. Anything unrecognised is shown as sent.
+function auditFormError(message) {
+  if (message.startsWith("repo_url must be")) return t("audit.err.url");
+  if (message === "invalid repository name") return t("audit.err.name");
+  const owners = message.match(/^this instance only audits repositories of: (.*)$/);
+  if (owners) return t("audit.err.owner", owners[1]);
+  if (message === "invalid branch name") return t("audit.err.ref");
+  if (message.startsWith("commit must be a full")) return t("audit.err.sha");
+  return message;
+}
+
 el("audit-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = el("repo-url");
@@ -3987,7 +4021,7 @@ el("audit-form").addEventListener("submit", async (event) => {
       // The findings come back written in the language of the interface: the
       // backend is asked for it, so nothing is translated afterwards.
       body: JSON.stringify({
-        repo_url: input.value.trim(), language: lang,
+        repo_url: normalizeRepoUrl(input.value), language: lang,
         branch: el("audit-branch").value.trim() || null,
         base_ref: el("audit-base").value.trim() || null,
         commit: el("audit-commit").value.trim() || null,
@@ -3998,7 +4032,7 @@ el("audit-form").addEventListener("submit", async (event) => {
     await refresh();
     go("summary", audit.id);
   } catch (e) {
-    error.textContent = e.message;
+    error.textContent = auditFormError(e.message);
     error.hidden = false;
   } finally {
     submit.disabled = false;
